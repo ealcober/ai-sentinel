@@ -1,7 +1,7 @@
 # STATE — live project status
 
 > **Update this file at the end of every working session.** It is the first thing the next session reads.
-> Last updated: **2026-08-17** · Phase: **F0 ready to start** · Code written: **none**
+> Last updated: **2026-08-17** · Phase: **F0 ready to start — plan complete and executable** · Code written: **none**
 
 ## Where we are
 
@@ -9,7 +9,11 @@
 
 Two reviews shaped it. `ADR-03` fixed three structural defects (a circular dependency between the kernel phase and the policy language, horizontal layering that deferred all integration risk to week 10, an under-specified interface layer) and renumbered the phases **once**; **task IDs freeze at F0 start**. Then `docs/02_challenge_ampliacion_sistema.md` challenged all 34 points of the system, producing 209 numbered findings, an R1 register of 18 unverified claims, an R2 register of 13 claims that fell, and ten owner decisions (Q-01…Q-10, all answered).
 
-**All 34 points' patches are applied**, one commit per point, and a coherence pass runs clean: no undefined task, invariant, detector or red-flag reference; no broken link; the critical path is the sum of its table; `budgets.toml` parses with a direction on every metric. **F0 can start.**
+**All 34 points' patches are applied**, one commit per point, and a coherence pass runs clean.
+
+Then a **second review** asked a different question — *is this executable?* — and found that it was not: `docs/03_challenge_accionabilidad.md` measured 67 `xtask` commands cited by the gates with five assigned to a task, zero enumerated `EventKind` variants, a policy language with examples and no grammar, a protocol with method names and no shapes, four of five corpora with no format, and five named deliverables that did not exist. Twelve points (`P-35`…`P-46`), 35 findings (`D-210`…`D-244`), all applied.
+
+**The plan is now executable end to end**: every gate command exists from F0 (unimplemented ones exit 3 naming the phase that owes them), every type has values, every language has a grammar, every protocol has shapes, every corpus has a manifest, every named deliverable has a task, and every phase states what it assumes and what it hands on. **F0 can start.**
 
 ## Done
 
@@ -35,15 +39,26 @@ Two reviews shaped it. `ADR-03` fixed three structural defects (a circular depen
 | `warn` verdict and suppression rules (`I-26`) across policy, engine and UI | Plan F1/F7/F8, `01_permission-model.md` |
 | Tier L2 made real: Landlock + cgroup connect hooks, both without a reboot | Plan §2.2.1, F3.3 |
 | `layers.toml`, `budgets.toml` with directions and profiles, `docs/adr/00_template.md`, `docs/design/02_aisme-run.md` | repo root, `docs/` |
+| **Actionability review**: 12 points, 35 findings, all applied | `docs/03_challenge_accionabilidad.md` |
+| **Annex H** — the `xtask` command surface: 68 commands, each with its owning task and gate level | Plan Annex H |
+| **Annex I** — the control-plane protocol: 12 methods, three authorization classes, error model | Plan Annex I |
+| `EventKind` taxonomy with reserved ranges; AISME-PL grammar, backend matrix and precedence | Plan §F1.1.1, Annex B §B.0/B.9/B.10 |
+| Test-asset formats; the verification backlog (20 rows, 4 blocking); the reference trace | Plan §4.14, §F0.4, `F0.ASSET.02` |
+| **ADR-04** (Tauri v2 + uniffi) and **ADR-05** (multiplatform detection scope) | `docs/adr/` |
+| **Threat model**: ranked adversaries, trust boundaries, collected non-goals | `docs/security/01_threat-model.md` |
+| Phase Entry/Exit contracts and the seven-item freeze list | Plan §3.7.1 |
 
 ## Next up
 
-**Phase 0 — apply the challenge patches: DONE.** All 34 points applied in order, one commit per point, plus the renames from Q-04/06/07. The report (`docs/02_challenge_ampliacion_sistema.md`) is now a record rather than a queue: its §3 sections describe what was done, and its R1 register became `F0.VER.01…18`.
+**Phase 0 — apply both reviews' patches: DONE.** Reports 02 (34 points) and 03 (12 points) are applied, one commit per point. Both are now records rather than queues; their R1 registers became the twenty-row verification backlog in plan §F0.4.
+
+**One owner question is open**: `Q-11` — AISME-PL rule precedence, **strictest-verdict-wins** (implemented, order-independent, fails safe) versus most-specific-wins. The safe default is in place; answering it either confirms Annex B §B.10 or triggers one edit there.
 
 **Phase F0.** Ordered; task IDs from Plan Part III.
 
 0. `F0.REPO.00` — **done**: the owner initialised the repository before the patches (`b8b7a27`).
-1. **`F0.WSL.01`** — probe the stock WSL2 kernel: `CONFIG_BPF_LSM`, **Landlock presence and ABI**, cgroup v2, systemd, and whether a TPM exists. **Do this first**: it decides whether WSL2 reaches L2 or L3, whether the L2 row reads as written (`R1-04`), and it confirms `R1-18` (no TPM ⇒ software-signed forensics for Windows users).
+1. **The four `[BLOCKING]` verifications of §F0.4, in week 1** — `F0.VER.04` (Landlock), `F0.VER.16` (cgroup connect hook), `F0.VER.18` (WSL2 TPM), `F0.VER.12` (hardware curves). They do not confirm claims, they decide what plan rows say, and three phases plus a High/High risk rest on them. `F0.WSL.01` is where three of the four are measured.
+2. **`F0.WSL.01`** — probe the stock WSL2 kernel: `CONFIG_BPF_LSM`, **Landlock presence and ABI**, cgroup v2, systemd, and whether a TPM exists. **Do this first**: it decides whether WSL2 reaches L2 or L3, whether the L2 row reads as written (`R1-04`), and it confirms `R1-18` (no TPM ⇒ software-signed forensics for Windows users).
 2. `F0.REPO.01` / `F0.REPO.05` — populate the Cargo workspace with each crate **in its §3.1 layer**, dependency direction correct from the first commit.
 3. `F0.REPO.03` — `xtask` orchestrator: `build-ebpf`, `verify-budgets`, `verify-layering`, `vm up`.
 4. `F0.GATE.04`…`F0.GATE.08` — budget gate, forbidden-dependency gate, **dependency-direction gate**, doc-drift gate, `verify-docs`. **All must exist before F1 code lands**, or the invariants become retrofits nobody enforces. All run locally (`I-27`); there is no hosted CI.

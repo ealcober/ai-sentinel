@@ -477,7 +477,7 @@ An LLM takes 200 ms–3 s, is non-deterministic, depends on the network, and can
 **Correction — the Observer LLM has exactly three functions, none synchronous:**
 
 1. **Asynchronous risk scoring** over events that already happened (feeds UI, forensics and SIEM).
-2. **Policy rule proposals**, entering a promotion flow (`proposal` → `human review, or auto-promotion if confidence ≥ threshold and class ≤ medium`) → BPF map / driver trie. This converts LLM learning into **deterministic enforcement**, which is fast.
+2. **Policy rule proposals**, entering a promotion flow (`proposal` → human review; auto-promotion only for **tightening** rules with confidence ≥ threshold and class ≤ medium — never for an `allow` or a grant, which would let the Observer authorize indirectly) → BPF map / mobile trie. This converts LLM learning into **deterministic enforcement**, which is fast.
 3. **Adjudication of already-frozen processes** (T2). Here it does affect the outcome, but the process is already stopped: 2 s of latency is acceptable and no kernel thread is retained.
 
 **Enforcement at T0 and T1 is 100% deterministic.** If the Observer is unavailable, the system protects exactly the same; it only loses forensic scoring. This is an availability requirement, not an optimization.
@@ -1647,20 +1647,39 @@ cargo xtask test-degrade-no-uprobe  # kernel layer at 100% with semantic layer o
 | `F5.CO.01` | Correlation engine: lineage ∧ temporal window ∧ argument match | Three rules from the research |
 | `F5.CO.02` | **Dynamic temporal window**: adaptive 100–500 ms, widened under load, narrowed when unambiguous | Research had this right |
 | `F5.CO.03` | Lamport/vector clock ordering across heterogeneous producers (BPF ring, ETW, uprobe, cooperative) | Sources have different clocks; normalize to boot-monotonic |
-| `F5.CO.04` | Canonical path matching (symlink/relative resolution) with a bounded resolution cache | Shared with F2.PT.03 |
-| `F5.TA.01` | Taint bitmask, propagation, decay, declassification (H-13) | Learning mode default-on |
+| `F5.CO.04` | Canonical path matching (symlink/relative resolution) with a bounded resolution cache | Shared with `F3.PT.03` |
+| `F5.TA.01` | **Runtime application** of the F1 taint algebra in the hot loop: propagation on fork/exec/pipe, `File.taint` labelling on write and read, decay clocks, declassification edges recorded | Algebra: `F1.ON.04/05`. Learning mode: `F7.CB.04` |
 | `F5.TA.02` | Compound Network Slam condition | Never taint-alone |
 | `F5.FO.01` | Merkle chain: BLAKE3 leaves, block per ToolCall-completion or 5 s | H-17 |
-| `F5.FO.02` | Ed25519 signing with TPM 2.0 / platform keystore, non-exportable | H-17 |
+| `F5.FO.02` | Signing with the **hardware P-256 key** where present (TPM 2.0 / Secure Enclave / StrongBox), software Ed25519 otherwise; `key_hw` recorded in every block header and shown in the UI | H-17 as corrected. Installs with no hardware key anchor roots externally by default (`I-18`) |
 | `F5.FO.03` | **External root anchoring** to collector/SIEM | This is what makes it meaningful |
 | `F5.FO.04` | Inclusion-proof verifier CLI (`aisme verify --event <id>`) | Auditor-facing |
 | `F5.ST.01` | DuckDB + Parquet in `forensicd`; batched inserts; retention policy | Cold path only |
 
+#### F5.4 Detectors at runtime (Annex G)
+
+The detector functions are L1 (`F1.DT.*`); their *execution* and per-detector state live in the hot loop, between correlation and adjudication (§3.3 step 8b). Zero-alloc steady state applies to all of it.
+
+| ID | Task | Notes |
+|---|---|---|
+| `F5.DT.01` | Run the ordered detector list over each graph delta; findings become `Finding` nodes and feed adjudication severity | The engine side of Annex G |
+| `F5.DT.02` | `DT-04(b)`: POSIX shell parse of `Bash` tool argv to derive the expected child-exec graph, compared with observed `execve` children | Parsed once per ToolCall, never per syscall; the parser dependency is reviewed under `DEP.SUP.06` |
+| `F5.DT.03` | `DT-05` deny memory: per-session table of denied canonical targets, and of each later attempt's lineage, syscall family and path spelling | Bounded, LRU. The join key is the kernel-resolved target, so path tricks collapse to one identity |
+| `F5.DT.04` | `DT-02` ordered join: instruction-bearing `ToolResult` followed by a first-of-kind action class within k tool calls | Neither half fires alone |
+| `F5.DT.05` | `DT-08` secret-to-VCS and `DT-13` write-then-exec joins | Cross-plane joins over the causal window |
+| `F5.DT.06` | `DT-09` session risk: deterministic accumulator with decay; exposes `aisme.session.risk` and the policy-severity value the prompt displays | Weights via `F1.DT.03` |
+| `F5.DT.07` | `DT-14` self-permission edits and `DT-15` unattributed provider flows | `.aisme/**` is `SELF_PROTECTION` |
+
 **GATE F5**
 ```bash
 cargo xtask test-correlation --harness ground-truth   # precision ≥0.98, recall ≥0.95
-cargo xtask test-taint --scenarios annex-c            # zero false positives on the benign corpus
-cargo xtask test-merkle-tamper                        # mutate a Parquet row → verification fails
+cargo xtask test-taint --scenarios rf-09,rf-18..24 --mock  # the corrected algebra reaches the agent
+cargo xtask test-taint --corpus benign                # zero false positives on the benign corpus
+cargo xtask test-detect --corpus annex-g --benign-twins    # every DT fires on its scenario,
+                                                      # and stays silent on its twin
+cargo xtask test-detect --determinism
+cargo xtask test-merkle-tamper                        # mutate a Parquet row → verification fails;
+                                                      # a block's key_hw claim must match its signer
 cargo xtask verify-budgets --profile reference
 ```
 
@@ -1677,20 +1696,23 @@ cargo xtask verify-budgets --profile reference
 | `F6.L3.01` | L3 | Causal-graph delta computation since last verdict |
 | `F6.L3.02` | L3 | Aggregate-node collapse (N writes in a dir → 1 node with count/bytes/entropy/extensions) |
 | `F6.L4.01` | L4 | Anchor scoring function with documented, tunable weights |
-| `F6.L4.02` | L4 | Top-K selection with guaranteed inclusion of all taint≠0 and all blocked events |
+| `F6.L4.02` | L4 | Top-K selection with guaranteed inclusion of all taint≠0, all blocked and escalated events, **every Annex G finding, and every suppressed event** — suppression is notification-only and must never blind the auditor path (`I-26`) |
 | `F6.L5.01` | L5 | Structured prompt renderer with hard token budget and `<untrusted_telemetry>` fencing (H-12) |
 | `F6.OB.01` | — | Observer LLM client with strict JSON Schema output validation |
 | `F6.OB.02` | — | Severity-monotonicity enforcement (**the LLM can never authorize**) |
 | `F6.OB.03` | — | Input sanitization: NFKC, control/bidi stripping, per-field truncation |
 | `F6.OB.04` | — | Injection-attempt detection → `aisme.observer.injection_attempt` |
-| `F6.OB.05` | — | Rule-proposal pipeline: proposal → review/auto-promote → compiled policy |
+| `F6.OB.05` | — | Rule-proposal pipeline: proposal → **human review** → compiled policy. Auto-promotion is permitted **only for proposals that tighten** (`deny`, `escalate`, `warn`, narrowing a suppression) and only for class ≤ medium; **an `allow` or a grant proposal is never auto-promoted**. Otherwise a prompt-injected Observer authorizes through the back door `I-04` locks at the front |
 | `F6.IRR.01` | — | **IRR measurement harness** as a CI gate (§4.7) |
 
 **GATE F6**
 ```bash
-cargo xtask test-compression --corpus annex-c   # reduction ≥60%, IRR ≥0.85, precision ≥0.90
+cargo xtask test-compression --corpus annex-c   # 24 classes + benign twins; reduction ≥60%,
+                                                # IRR ≥0.85, precision ≥0.90
 cargo xtask test-observer-injection             # 0 successful severity downgrades
 cargo xtask test-observer-schema                # malformed output rejected, event raised
+cargo xtask test-observer-proposals             # an allow or grant proposal never reaches
+                                                # CompiledPolicy without a human approval event
 ```
 
 ---
@@ -1706,17 +1728,37 @@ cargo xtask test-observer-schema                # malformed output rejected, eve
 | ~~`F7.PL.01`~~ | ~~AISME-PL language definition~~ | **Moved to `F1.PL.01`** — F3 cannot build a policy trie before the language that compiles into it exists. This circular dependency was the main defect found in review |
 | ~~`F7.PL.02`~~ | ~~Policy compiler~~ | **Moved to `F1.PL.02`** |
 | `F7.PL.03` | Default policy set: workspace-permissive, system-protective (the research's "contextual permissions by default", which was correct) | Zero friction inside the project dir |
-| `F7.CB.01` | Decision pipeline `T0 → T1 → T2` with per-channel adjudication budgets (§2.20.1) | Channel-aware timeouts |
-| `F7.CB.02` | Red Flag detectors (Annex C): fileless exec, obfuscated script generation, config mutation, credential access, exfiltration, BYOVD |
-| `F7.CB.03` | Network Slam implementation on both platforms |
+| `F7.CB.01` | Decision pipeline `T0 → T1 → T2` with per-channel adjudication budgets (§2.20.5) | Channel-aware timeouts |
+| `F7.CB.02` | **Detector → policy mapping**: the default verdict per `DT-xx` (Annex G), group membership and severity floors. The detectors themselves are `F1.DT.*` and `F5.DT.*`; this is where they meet policy |
+| `F7.CB.03` | Network Slam: L3 via `lsm/socket_connect`; **L2 via `CgroupConnectEnforcer` (`F3.EN.10`)**; mobile via the tunnel (F10). One compound condition (H-13), three backends |
 | `F7.CB.04` | Learning mode (`WOULD_BLOCK`) with 7-day default and a promotion report | H-13; adoption-critical |
-| `F7.CB.05` | Kill-switch: `aisme disable --duration 30m` with a forensic record of who/when/why | Operators need an escape hatch that is auditable rather than a `kill -9` |
-| `F7.CB.06` | Fail-safe matrix: what happens on daemon crash, driver unload, probe detach, relay loss | Explicit for every component |
+| `F7.CB.05` | Kill-switch: `aisme disable --duration 30m` with a forensic record of who, when and why; human principal only (`F7.PS.08`) | Operators need an escape hatch that is auditable rather than a `kill -9` |
+| `F7.CB.06` | Fail-safe matrix: `agentd` crash **and its restart window**, probe or link detach, **Landlock absent**, **cgroup hook unavailable**, `aisme-uiagent` death, relay loss — each with documented, tested behaviour (§3.5) | Explicit for every component |
+
+#### F7.2 Permission surface
+
+This is where the product's four verbs — forensic, act, warn, suppress — become tasks. Specification: `docs/design/01_permission-model.md`.
+
+| ID | Task | Notes |
+|---|---|---|
+| `F7.PS.01` | Permission groups (§4 of the note) with default verdicts including **`warn`** (§4.1); the three `I-05` groups compiled `promptable = false, suppressible = false` | `I-05`, `I-26` |
+| `F7.PS.02` | Grant lifecycle: Deny / Allow once / Allow this session / Always; `grant_ttl_days` decay; **per-machine, never synced**; one-click revoke | Owner decision Q-03 |
+| `F7.PS.03` | **Suppression engine**: `SuppressionRule` evaluated on the notification path only; hit counts; decay; learned-rule generation from the learning-mode report | `I-26` at runtime, backed by the compile-time constraint in `F1.PL.07` |
+| `F7.PS.04` | **Intent coalescing**: one prompt or warn per intent — a directory, a host, a tool — never per syscall | 150 reads under `~/.cargo` is one prompt |
+| `F7.PS.05` | Budgets as telemetry: `aisme.permission.prompts_per_day` and `warns_per_day`; over budget is a product bug, surfaced in the learning report | `budgets.toml [ux]` |
+| `F7.PS.06` | `profile = "strict"`: every group non-promptable, shipped as a policy file rather than a code path | Owner decision Q-04 of the note |
+| `F7.PS.07` | Session scope manifest: declared (`aisme run --scope`, `.aisme/scope.toml` **narrow-only**) → detected → baseline profile (`DT-10`); a widening key is ignored and emits `aisme.scope.widen_attempt` | Owner decision Q-02; ADR to be written with this task |
+| `F7.PS.08` | `aisme disable` and **every** policy, grant or suppression mutation is accepted only from a human principal (peer-cred UID, never from a session lineage); an agent-originated attempt is a `DT-14` finding | `.aisme/**` is `SELF_PROTECTION` |
 
 **GATE F7**
 ```bash
-cargo xtask test-redteam --all             # every Annex C scenario blocked at the expected tier
-cargo xtask test-benign --corpus workflows # 0 blocks on: cargo build, npm ci, git push, docker build
+cargo xtask test-redteam --all             # every Annex C scenario (RF-01..24) at the expected tier
+cargo xtask test-benign --corpus benign    # the whole 4.8.2 corpus, including the benign twins
+cargo xtask test-prompt-budget             # reference workload: ≤3 prompts/day, ≤30 warns/day
+cargo xtask test-suppression --scenario rf-17   # suppressed event still recorded, chained, enforced
+cargo xtask test-warn-semantics            # allowed, recorded, one coalesced notice, zero modals
+cargo xtask test-grant-lifecycle           # expiry, revoke, per-machine
+cargo xtask test-scope-narrow              # a widening scope.toml is ignored and emits the event
 cargo xtask test-failsafe                  # kill -9 agentd mid-verdict → defined behaviour, no hang
 ```
 

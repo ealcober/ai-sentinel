@@ -42,18 +42,18 @@ Every wait is bounded. Every fallback path is explicit and configurable. Daemon 
 Re-entrancy deadlock. *Test: `T4.3.05`.*
 
 **I-12 — No kernel-touching test ever runs on a host OS.**
-Snapshot-restored disposable VMs only, for every developer and every CI runner.
+Snapshot-restored disposable VMs only, for every developer and every local gate run (`I-27`).
 
 **I-13 — The Windows minifilter contains no business logic.** *(INACTIVE — deferred by ADR-02; specification in plan Annex F.)*
 Filtering, lookup and message passing only. Target < 3,000 LoC. All intelligence lives in the Rust daemon. (Finding `H-14`.)
 
-## 3. Resource invariants (CI-enforced)
+## 3. Resource invariants (gate-enforced)
 
 **The numbers live in `budgets.toml`**, which `cargo xtask verify-budgets` reads, and in the plan's §2.22 table with their rationale and measurement protocol. They are deliberately **not** restated here — a third copy would drift, and the doc-drift gate `F0.GATE.07` fails the build if the two authoritative copies disagree.
 
 The invariant is the enforcement, not the number:
 
-> Every budget in `budgets.toml` has a `hard` value. Exceeding it fails CI and blocks release. Changing a `hard` value requires an ADR.
+> Every budget in `budgets.toml` has a `hard` value. Exceeding it fails the local gate and blocks release. Changing a `hard` value requires an ADR.
 
 **I-14 — Non-session processes pay effectively nothing.**
 Overhead on processes outside an AI session ≤ 0.5% (value: `budgets.toml` `non_session_pct`). This is the architecture's central performance claim. *Test: `T4.4.14`.*
@@ -85,7 +85,7 @@ A suppression rule — learned, manual or shipped — changes only what is *show
 
 **I-21 — No JSON on the hot path.** `serde_json` is a forbidden dependency of `aisme-agentd`.
 **I-22 — Zero heap allocation in the hot loop steady state.** *Test: `F1.RT.03`.*
-**I-23 — Task IDs are stable and append-only.** Dead tasks become `DEPRECATED`.
+**I-23 — Task and invariant IDs are stable and append-only.** Dead tasks become `DEPRECATED`.
 **I-24 — All code and documentation in English.**
 **I-25 — Findings `H-01`…`H-19` override the original research.** Contradicting one requires an ADR.
 

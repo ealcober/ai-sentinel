@@ -7,7 +7,10 @@
 > below predate two later changes. Read "phase `F3`" as *the Windows phase, now plan
 > Annex F*; "the F2 Linux engine" as *F3*; and the traits `KernelSource` /
 > `PolicyPublisher` / `Enforcer` as their current names `Sensor` / `Enforcer` /
-> `Adjudicator` (plan §3.2). The body is otherwise unchanged.
+> `Adjudicator` (plan §3.2). "Removed" below means excluded from the workspace and
+> the gate matrix; the code stays in the tree as the Annex F specification. Read the
+> tier L2 definition as plan §2.17 today (Landlock + cgroup connect hooks + seccomp);
+> the seccomp-only shape is `L2-`. The body is otherwise unchanged.
 
 ## Context
 

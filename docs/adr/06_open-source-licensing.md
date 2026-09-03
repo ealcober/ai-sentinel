@@ -1,6 +1,6 @@
 # ADR-06 — Open-source licensing: Apache-2.0, with GPL where the kernel requires it
 
-**Status**: **Accepted** 2026-08-17 · **Raised by**: project owner
+**Status**: **Accepted** 2026-09-03 · **Raised by**: project owner
 
 ## Context
 
@@ -43,5 +43,5 @@ The project is released as open source. The owner's stated goal has two parts: g
 
 - [ ] Register the trademarks **AISME** and **AI Sentinel**, since the licence explicitly does not cover them.
 - [ ] `F0.GATE.08` (`verify-docs`) checks the SPDX header of every source file against the map in `LICENSE.md`, and fails on a missing or contradicting header.
-- [ ] `cargo-deny` is already configured for licence policy (`F0.GATE.03`); its allow-list must reflect the map, and must reject an Apache-2.0-only dependency inside `aisme-ebpf-common`.
+- [ ] `F0.GATE.03` configures `cargo-deny` for licence policy; its allow-list must reflect the map, and must reject an Apache-2.0-only dependency inside `aisme-ebpf-common`.
 - [ ] Decide the commercial question before merging the first external contribution.

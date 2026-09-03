@@ -26,10 +26,10 @@ The canonical list lives in `CLAUDE.md`; it is repeated here verbatim and a gate
 ### On finish (non-optional)
 ```
 1. Update docs/ai/STATE.md      ← statuses, learnings, blockers
-2. Append docs/ai/memory/*.md   ← only durable, non-obvious discoveries
-3. Write an ADR if you decided something architectural
-4. Update the plan if reality diverged from it
-5. Add a line to docs/CHANGELOG.md for every task closed
+2. Add a line to docs/CHANGELOG.md for every task closed
+3. Append docs/ai/memory/*.md   ← only durable, non-obvious discoveries
+4. Write an ADR if you decided something architectural
+5. Update the plan if reality diverged from it
 6. Leave a handoff note in docs/ai/handoff/ if the task is mid-flight
 ```
 
@@ -37,7 +37,7 @@ The execution directives — how to pick a task, edit, commit, measure and close
 
 ## 2. Definition of done
 
-A task is done when **all** of these hold. Not four out of five.
+A task is done when **all** of these hold. Not seven out of eight.
 
 - [ ] Code compiles clean with `clippy -D warnings`.
 - [ ] Tests exist and pass, including at least one negative/adversarial case.
@@ -71,7 +71,7 @@ A phase is done when its `GATE F<n>` block passes in full. Code that works but w
 | Add a workflow that triggers on push, pull request or schedule | `I-27` — this project incurs zero hosted-CI cost |
 | Let a suppression rule remove evidence or weaken enforcement | `I-26` — suppression is notification-only |
 | Regenerate a file instead of editing it | A rewrite silently loses the reasoning nobody is looking at; ask the owner if one is genuinely needed |
-| Commit or push without being asked | Standard |
+| Push without being asked | `CLAUDE.md` asks for one commit per task; pushing is the owner's call |
 
 ## 5. Memory discipline
 
@@ -82,7 +82,7 @@ A phase is done when its `GATE F<n>` block passes in full. Code that works but w
 
 Do **not** write there: task status (that is `STATE.md`), architectural decisions (those are ADRs), or anything the code already says.
 
-Files in `docs/ai/` are instruction files, referenced by fixed name from `CLAUDE.md`, and are **exempt** from the `NN_` numbering that applies to the rest of `docs/`. A challenge report (`docs/NN_*.md`) is a fourth kind: it holds *what is wrong and what the patch is*, its points are append-only, and it is a proposal until its patches are applied.
+Files in `docs/ai/` are instruction files, referenced by fixed name from `CLAUDE.md`, and are **exempt** from the `NN_` numbering that applies to the rest of `docs/`. A challenge report (`docs/NN_*.md`) is a further kind: it holds *what is wrong and what the patch is*, its points are append-only, and it is a proposal until its patches are applied.
 
 ## 6. When to ask the human
 

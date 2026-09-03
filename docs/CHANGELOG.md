@@ -7,13 +7,30 @@ All notable changes to this repository. Format: [Keep a Changelog](https://keepa
 ## [Unreleased]
 
 ### State
-- Planning complete and executable; no product code. Next: phase F0, starting with the four `[BLOCKING]` verifications of plan §F0.4.
+- Plan sealed for implementation (`docs/04_final_coherence_seal.md`). No product code. Next: phase F0, starting with `F0.REPO.06` (host prerequisites, `cargo xtask doctor`) and the four `[BLOCKING]` verifications of plan §F0.4.
+
+## [0.2.0] — 2026-09-03 — sealed for implementation
+
+### Seal (`docs/04_final_coherence_seal.md`)
+- Three read-only audits (F0–F2 executability; cross-document contradictions; Parts IV–VIII and annexes) plus a manual pass and a probe of the owner's WSL2 host: 134 numbered findings, all applied except the four recorded in the seal §4.
+- **Day-one blockers removed**: GATE F0 `test -f` with four operands (a shell error), `grep "read-only"` case mismatch, GATE F1's inverted `serde_json` check, the F2 skeleton hooking `openat2` where glibc issues `openat` (also `F3.OB.03`), `F0.ASSET.02` needing `aisme run` before F2 exists.
+- **Host prerequisites** (`F0.REPO.06`, `cargo xtask doctor`, GATE F0) and `F0.VER.21` (KVM inside WSL2). Measured on the owner's host: `/dev/kvm` present, VT-x on all CPUs, user not in group `kvm`; no `qemu`, `virtme-ng`, `clang`, `bpf-linker` or nightly.
+- **`F0.VER.nn` numbering**: `F0.VER.nn` is `R1-nn` of `docs/02`; `F0.VER.15` is `DEPRECATED`; outcomes in `docs/reports/01_f0-verification.md` with an `Outcome` column that `verify-backlog` reads.
+- **Annex H**: 71 commands; owners corrected so no gate runs a command that exits 3 in that gate (`verify-budgets` → `F0.GATE.04`, `bench-hotloop` → `F1.RT.03`, `test-taint` → `F1.ON.05`, `test-detect` → `F1.DT.01`, and six more); `bench-soak` (`F7.CB.07`) and `test-fuzz` added; levels cumulative; `win *` and `test-battery` re-levelled.
+- **Gates**: GATE F8a (protocol freeze) separated from F8b; `T4.5.06` (`test-tls --integrity`) in GATE F4; `build-ebpf` in GATE F1; `cargo test --workspace`; L2- budget line in GATE F3; tiers on the F5 budget lines; `AISME_TERMINAL_ANSWER` for unattended GATE F2.
+- **Annex G/C**: `F5.DT.09`…`F5.DT.13` implement `DT-03`, `DT-04(a,c)`, `DT-06`, `DT-07`, `DT-10`; `BN-17`/`BN-18` twins for `RF-17`/`RF-22`; `annex-c` corpus view; fixture names aligned with §4.5.1.
+- **Annex B**: `assert` and `degrade_open` in the grammar; requirement IDs `PL-01`…`PL-08`; `tier` removed from the sketch; `scope_rel`.
+- **Annex I**: four authorization classes (remote peer added); `hw_pubkey?`; error rows for an unsigned remote `allow` and unknown ids; `F8.API.01` names all twelve methods.
+- **Budgets**: five §2.22 rows for machine-only keys; `compressor_precision`; boundary semantics (`>`/`<` hard, equality passes); gates cite `hard` with `target` in parentheses.
+- **Contradictions closed**: H-19 row vs `ADR-05`; four service tiers; twenty-two trait implementations; five tracks; F9 starts at GATE F1; milestone weeks 7.5/6.5/10.5/9.5; `Outcome` vs `Verdict`; T2 timeouts per channel; P-256 in both diagrams; Windows phase naming; `FILES_OUTSIDE_WORKSPACE` writes at L2 (Landlock deny, grant binds later processes); read/write orders and the commit rule aligned across `CLAUDE.md`/`AGENTS.md`; every "CI" wording made local (`I-27`); §7 numbering; history clauses removed (Rule 5).
+- `ADR-06`/`ADR-07` dated from git (2026-09-03); `ADR-01`…`ADR-04` follow-ups updated.
+
 
 ### Added
 - **`Q-11` resolved** (`ADR-07`): rule combining stays strictest-verdict-wins. Adds Annex B §B.10 (total order, combining, `decided_by` provenance), §B.11 (`except` narrows a rule, never overrides one), §B.12 (guardrails are compile-time assertions), §B.13 (tiers reserved for authority, never specificity); §B.9 gains a monotone verdict map per backend; `F1.PL.09`/`F1.PL.10`.
 - **Licensing** (`ADR-06`): Apache-2.0 workspace-wide; GPL-2.0-only for `crates/aisme-ebpf` and dual GPL-2.0-only OR BSD-2-Clause for `crates/aisme-ebpf-common`, both required by the kernel's `gpl_only` helper rule; CC-BY-4.0 for `docs/`. Adds `LICENSE.md`, `LICENSE-APACHE`, `LICENSE-GPL`, `LICENSE-BSD`, `NOTICE`, `CITATION.cff`, `CONTRIBUTING.md` (DCO, no CLA) and `SECURITY.md`.
 - `docs/03_challenge_accionabilidad.md` — executability review, 12 points, 35 findings, all applied. (`2ce1e47`…`bc667b6`)
-- Plan Annex H — the `xtask` command surface: 68 commands, each with an owning task and a gate level; exit code 3 = not implemented yet. (`19b9a0d`)
+- Plan Annex H — the `xtask` command surface: 71 commands, each with an owning task and a gate level; exit code 3 = not implemented yet. (`19b9a0d`)
 - Plan Annex I — control-plane protocol: 12 methods, three authorization classes, error model, backpressure rule. (`9627400`)
 - Plan §F1.1.1 — `EventKind` taxonomy in ten reserved ranges; payload variants tied to ranges. (`19b9a0d`)
 - Plan Annex B §B.0/B.9/B.10 — AISME-PL grammar, backend capability matrix, strictest-verdict precedence. (`9627400`)
@@ -28,7 +45,7 @@ All notable changes to this repository. Format: [Keep a Changelog](https://keepa
 - Plan §2.2.1 — tier L2 through Landlock and cgroup connect hooks; `F3.3` L2 enforcement tasks. (`859ac02`, `658a714`)
 - `warn` verdict and suppression rules; invariant `I-26`. (`546d4e4`, `dc4f389`, `c0c7a96`)
 - Invariant `I-27` — zero hosted-CI cost; `.github/` removed. (`ebd1255`, `dc4f389`)
-- `layers.toml`; `budgets.toml` directions and profiles; `docs/adr/00_template.md`; `docs/design/02_aisme-run.md`. (`481141b`, `95a454f`, `ad5958c`, `b0a82ee`)
+- `layers.toml`; `Cargo.lock` policy (tracked from `F0.REPO.01`); `budgets.toml` directions and profiles; `docs/adr/00_template.md`; `docs/design/02_aisme-run.md`. (`481141b`, `95a454f`, `ad5958c`, `b0a82ee`)
 - `docs/CHANGELOG.md` (this file); execution directives in `CLAUDE.md`.
 
 ### Changed

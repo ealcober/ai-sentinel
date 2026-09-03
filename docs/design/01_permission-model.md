@@ -8,7 +8,7 @@
 
 > The interface must block, by default, actions outside the permitted or detected scope of an AI session, and allow them after asking — a system similar to Android permissions.
 
-This is the **product-facing shape** of the enforcement engine described in Part III / F7 of the implementation plan. Everything below the UI already exists in the plan (BPF-LSM, minifilter, `seccomp_unotify`, cgroup freeze, Network Slam, AISME-PL). What this note adds is the **user-visible permission semantics** that sit on top, and the decision to make *deny-by-default outside scope* the product's default posture rather than an opt-in hardening mode.
+This is the **product-facing shape** of the enforcement engine described in Part III / F7 of the implementation plan. Everything below the UI is specified in the plan (BPF-LSM, Landlock, cgroup connect hooks, `seccomp_unotify`, cgroup freeze, Network Slam, AISME-PL). What this note adds is the **user-visible permission semantics** that sit on top, and the decision to make *deny-by-default outside scope* the product's default posture rather than an opt-in hardening mode.
 
 ## 2. Why the Android analogy is the right one
 
@@ -54,7 +54,7 @@ Deliberately small. Each maps to enforcement hooks already in the plan.
 
 | Group | Covers | Enforcement point | Default |
 |---|---|---|---|
-| `FILES_OUTSIDE_WORKSPACE` | Read/write outside declared roots | `lsm/file_open`, `IRP_MJ_CREATE` | **Ask** |
+| `FILES_OUTSIDE_WORKSPACE` | Read/write outside declared roots | `lsm/file_open`, Landlock, `IRP_MJ_CREATE` | **Ask** for reads. Writes: Ask at L3; **denied in-kernel at L2** (Landlock, plan §2.2.1) with the notice delivered, and a grant binds processes started after it |
 | `SYSTEM_CONFIG` | `/etc`, `System32`, boot config, systemd units, registry Run keys, shell profiles | same | **Deny** (never ask by default) |
 | `CREDENTIALS` | SSH keys, `.env`, keychain, credential manager, cloud config | same + taint | **Ask**, always with elevated framing |
 | `NETWORK_EGRESS` | Connections outside the allowlist | `lsm/socket_connect`, tunnel (mobile) | **Ask** |
@@ -216,7 +216,7 @@ This sidesteps the entire GNOME/KDE/Wayland/X11 problem for the most common deve
 | **Tier 2 (primary)** | **High-priority heads-up notification with `Action` buttons** — Allow / Deny answered without opening the app. This is the realistic default and it works |
 | Detail view | Tapping the notification opens the app with full context and the 4-option grant model |
 | Timing reality | With a 3 s enforcement budget (§2.20.5) the flow is **deny-first, grant retroactively**: the flow is blocked, the user is notified, and an `Allow` creates a rule for next time rather than un-blocking a dead connection |
-| Device permissions | The `DEVICE` group can reuse the platform's own runtime permission prompts where the AI app is SDK-integrated (F11) |
+| Device permissions | The `DEVICE` group can reuse the platform's own runtime permission prompts where the AI app is SDK-integrated (F9/F10) |
 
 ### 7.5 iOS
 
@@ -236,7 +236,8 @@ Not in Phase 5, but the shape is known: Endpoint Security framework for enforcem
 
 | | Modal | Notification + actions | Terminal | Realistic default posture |
 |---|---|---|---|---|
-| **Windows** | ✅ via `uiagent` | ✅ WinRT toast | ✅ with `aisme run` | Ask synchronously |
+| **Windows (native)** `[POST]` | ✅ via `uiagent` | ✅ WinRT toast | ✅ with `aisme run` | Ask synchronously |
+| **WSL2** (the Windows strategy, ADR-02) | ❌ | ❌ | ✅ with `aisme run` | Ask in the terminal, else policy |
 | **Linux (GUI)** | ⚠️ Wayland focus caveats | ✅ freedesktop (actions vary) | ✅ with `aisme run` | Ask synchronously |
 | **Linux (headless)** | ❌ | ❌ | ✅ **primary** | Ask in terminal, else policy |
 | **Android** | ❌ blocked by OS | ✅ **primary** | ❌ | **Deny-first, grant retroactively** |
@@ -280,4 +281,4 @@ Not in Phase 5, but the shape is known: Endpoint Security framework for enforcem
 
 **Still open:**
 
-5. Prompt UX when the agent runs unattended (CI, overnight). It currently falls to the policy default, which is `deny`-on-timeout for escalate-class operations. With `warn` now available, warns are batched into the run report instead of being dropped. Whether that is sufficient for an overnight agent is unproven and needs a real unattended run to answer.
+5. Prompt UX when the agent runs unattended (CI, overnight). It currently falls to the policy default, which is `deny`-on-timeout for escalate-class operations. With `warn`, warns are batched into the run report instead of being dropped. Whether that is sufficient for an overnight agent is unproven and needs a real unattended run to answer.

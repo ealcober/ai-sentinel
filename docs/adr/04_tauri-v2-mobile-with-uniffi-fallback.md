@@ -29,5 +29,5 @@ Rejected: React Native plus a separate desktop app (duplicates crypto and protoc
 ## Follow-up actions
 
 - [ ] `F11.CC.03` **builds** the `uniffi` fallback path, not merely plans it — a fallback that has never been compiled is not a fallback.
-- [ ] `F11.CC.01`/`F11.CC.02` keep the key split from ADR-02's correction: software X25519 for the Noise channel, hardware P-256 for verdict signing.
+- [ ] `F11.CC.01`/`F11.CC.02` keep the key split from plan §2.20.6: software X25519 for the Noise channel, hardware P-256 for verdict signing.
 - [ ] The iOS extension holds only the classifier and flow table, never the forensic store (`budgets.toml`, `mobile.ios_extension`).

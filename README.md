@@ -4,7 +4,7 @@ Kernel-level observability and containment for autonomous AI coding agents.
 
 AISME watches what an AI agent *says it is going to do* and what it *actually does to your machine*, links the two causally, and stops the operations that do not match. It runs on Linux workstations from Ring-0 — including **Windows via WSL2** — and on Android and iOS through the **AI Sentinel** app.
 
-> **Status: pre-implementation.** The architecture and implementation plan are complete (Parts 0–VIII, Annexes A–I), reviewed twice — for correctness and for executability — with every finding applied; no product code exists yet. Start at [the plan](docs/01_phase5_implementation_plan.md); the live position is in [STATE](docs/ai/STATE.md); every change is in the [changelog](docs/CHANGELOG.md).
+> **Status: pre-implementation.** The architecture and implementation plan are complete (Parts 0–VIII, Annexes A–I), reviewed three times — for correctness, for executability, and a final coherence seal — with every finding applied; no product code exists yet. Start at [the plan](docs/01_phase5_implementation_plan.md); the live position is in [STATE](docs/ai/STATE.md); every change is in the [changelog](docs/CHANGELOG.md).
 
 ---
 
@@ -41,8 +41,8 @@ Control plane   aisme-ui (desktop) · AI Sentinel (Android/iOS) · aisme-cli
                              │
 User space      aisme-agentd (hot path, ≤50 MB)  →  aisme-forensicd (cold path)
                              │                            └─ DuckDB · Merkle · OTLP
-Ring 0          Linux:   eBPF · BPF-LSM · seccomp_unotify · cgroup freezer
-                Windows: the same, inside WSL2
+Ring 0          Linux:   eBPF · Landlock · cgroup connect hooks · seccomp_unotify · cgroup freezer · BPF-LSM (tier L3)
+                Windows: the same, inside WSL2, at tier L2 by default
                 Mobile:  VpnService / NEPacketTunnelProvider · AI Sentinel SDK
 ```
 
@@ -69,6 +69,7 @@ tests/         Fixtures, labelled corpora, adversarial scenarios
 | [docs/01_phase5_implementation_plan.md](docs/01_phase5_implementation_plan.md) | The definitive plan. Start here |
 | [docs/02_challenge_ampliacion_sistema.md](docs/02_challenge_ampliacion_sistema.md) | Correctness review: 209 findings with their patches, all applied; the owner's ten decisions |
 | [docs/03_challenge_accionabilidad.md](docs/03_challenge_accionabilidad.md) | Executability review: 35 findings with their patches, all applied |
+| [docs/04_final_coherence_seal.md](docs/04_final_coherence_seal.md) | The seal: final coherence pass — 134 findings, host probe, unverified register |
 | [docs/CHANGELOG.md](docs/CHANGELOG.md) | Every change, by commit and task |
 | [LICENSE.md](LICENSE.md) · [CONTRIBUTING.md](CONTRIBUTING.md) · [SECURITY.md](SECURITY.md) | Licence map, contribution rules, vulnerability reporting |
 | [docs/security/01_threat-model.md](docs/security/01_threat-model.md) | Assets, ranked adversaries, trust boundaries, non-goals |

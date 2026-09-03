@@ -4,7 +4,7 @@ You are working on **AISME**, a Ring-0 security engine for AI agents. This file 
 
 ## Read order (every session, in this order)
 
-This list is canonical. `docs/ai/AGENTS.md` §1 and plan Part 0 rule 5 repeat it verbatim; a gate checks the three agree.
+This list is canonical. `docs/ai/AGENTS.md` §1 repeats it verbatim and plan Part 0 rule 5 points to it; a gate checks the two path lists agree.
 
 1. **This file** — rules and forbidden patterns.
 2. `docs/ai/AGENTS.md` — session protocol and the **definition of done**.
@@ -65,8 +65,8 @@ Five layers, **strictly downward dependencies**. This is what lets one engine se
 ```
 L4 EDGES     cli · otel · relay · ui · mobile shells
 L3 ENGINES   agentd (hot, 50 MB) · forensicd (cold)
-L2 ADAPTERS  aisme-linux · sentinel-core · aisme-sdkhost   ← all cfg(target_os) lives here
-L1 CORE      aisme-core — ontology, traits, policy IR, taint, correlation
+L2 ADAPTERS  aisme-linux · sentinel-core · aisme-sdkhost   ← platform cfg lives here (plus the L3 composition root)
+L1 CORE      aisme-core (ontology, traits, policy IR, taint) · aisme-correlate (causal graph)
 L0 WIRE      aisme-ebpf-common — no_std, zero deps, layout-stable
 ```
 
@@ -81,7 +81,7 @@ L0 WIRE      aisme-ebpf-common — no_std, zero deps, layout-stable
 
 **The system has three interfaces, not fifteen subsystems:** `Sensor`, `Enforcer`, `Adjudicator`. Five sensing mechanisms and five prompt-delivery mechanisms are *implementations*, not subsystems. If you find yourself writing a parallel code path for a platform, you are probably missing a trait implementation.
 
-**After GATE F1 the L1 traits are frozen.** Changing one requires an ADR — four tracks code against them in parallel.
+**After GATE F1 the L1 traits are frozen.** Changing one requires an ADR — five tracks code against them in parallel.
 
 **F2 is a walking skeleton.** Its out-of-scope list is as binding as its task list. Do not add features to it.
 

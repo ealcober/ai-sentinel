@@ -1,4 +1,4 @@
-# Pinned for reproducibility across developer machines and CI.
+# Pinned for reproducibility across developer machines and the local gate hosts.
 # The eBPF crate (crates/aisme-ebpf) requires nightly for build-std targeting
 # bpfel-unknown-none; it declares its own override. Everything else is stable.
 [toolchain]

@@ -2,7 +2,7 @@
 
 ## Sign your work — the DCO
 
-This project uses the [Developer Certificate of Origin](https://developercertificate.org/). Every commit carries:
+This project uses the [Developer Certificate of Origin](https://developercertificate.org/). Every contributed commit carries:
 
 ```
 Signed-off-by: Your Name <your.email@example.com>
@@ -26,7 +26,7 @@ Your contribution is licensed under the licence of the file you are changing —
 
 This repository is built to be worked on by both people and LLM sessions, and the same rules apply to both. They are in [`CLAUDE.md`](CLAUDE.md); the ones that most often surprise a new contributor:
 
-1. **Read the plan first.** `docs/01_phase5_implementation_plan.md` Part II contains nineteen findings `H-01`…`H-19`. Each records a design that was analysed and rejected, cut, corrected or deferred, with the reasoning. **If your change contradicts one, the finding wins** — argue it in an ADR rather than implementing around it.
+1. **Read the plan first.** `docs/01_phase5_implementation_plan.md` Part II contains nineteen findings `H-01`…`H-19`. Eighteen record a design that was analysed and rejected, cut, corrected or deferred, with the reasoning; `H-19` adds a requirement the research lacked. **If your change contradicts one, the finding wins** — argue it in an ADR rather than implementing around it.
 2. **One task ID per change.** Work is tracked by the plan's `F<phase>.<block>.<task>` identifiers. Your commit subject names one: `<area>(<task-id>): <what changed>`.
 3. **Edit surgically; never regenerate a file.** Keep existing comments and their reasoning. A rewrite silently loses what nobody is looking at. If a comment becomes false, rewrite it and say so in the commit.
 4. **Every gate runs locally.** There is no hosted CI and no workflow triggers on push (`I-27`). Run `cargo xtask gate --level commit` before you push and `--level pr` before you ask for a merge.

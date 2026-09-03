@@ -1,6 +1,6 @@
 # ADR-07 — Rule combining is strictest-verdict-wins, and exceptions narrow a rule rather than override one
 
-**Status**: **Accepted** 2026-08-17 · **Raised by**: project owner as open question `Q-11` · **Formalizes**: Annex B §B.10–B.13
+**Status**: **Accepted** 2026-09-03 · **Raised by**: project owner as open question `Q-11` · **Formalizes**: Annex B §B.10–B.13
 
 ## Context
 

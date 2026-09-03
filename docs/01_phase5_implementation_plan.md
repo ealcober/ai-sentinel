@@ -1,10 +1,10 @@
 # AI Sessions Manager & Security Engine — Definitive Implementation Plan (Phase 5 / MVP)
 
 > **Document**: `01_phase5_implementation_plan.md`
-> **Version**: 1.0.0 · **Date**: 2026-08-17 · **Status**: `APPROVED_FOR_EXECUTION`
+> **Version**: 1.1.0 · **Date**: 2026-09-03 · **Status**: `APPROVED_FOR_EXECUTION` — sealed by `docs/04_final_coherence_seal.md`
 > **Product codename**: `AISME` (*AI Sessions Manager & Security Engine*)
 > **Primary audience**: development LLMs (Claude Code / coding agents) and the supervising human engineer.
-> **Sources analyzed**: the four research documents in the project root (`Arquitectura Monitorización Sesiones IA.docx`, `Diseño AI Sessions Manager.docx`, `Diseño Motor Seguridad IA.docx`, `Plan MVP Seguridad IA y Gestión de Permisos.docx`).
+> **Sources analyzed**: the four research documents in `docs/research/` (`Arquitectura Monitorización Sesiones IA.docx`, `Diseño AI Sessions Manager.docx`, `Diseño Motor Seguridad IA.docx`, `Plan MVP Seguridad IA y Gestión de Permisos.docx`).
 
 ---
 
@@ -148,10 +148,10 @@ That said, **eighteen points of the design do not survive contact with engineeri
 | H-13 | Binary taint tracking without declassification | **CORRECTED** | Taint as a category bitmask + propagation rules + explicit declassification |
 | H-14 | "Rust core" including the Windows driver | **CORRECTED** | Minifilter in C/WDK, thin and logic-free. All intelligence in the Rust daemon |
 | H-15 | ELAM + PPL as an implementation detail | **`[POST]`** — deferred, not cut | EV cert + MVI make the kernel driver untenable. **Windows minifilter deferred to Annex F; WSL2 is the Windows strategy** (ADR-02) |
-| H-16 | "Zero friction" on Linux | **CORRECTED** | BPF-LSM requires `lsm=...,bpf` on the kernel cmdline → reboot. Becomes an explicit install decision with three service tiers |
+| H-16 | "Zero friction" on Linux | **CORRECTED** | BPF-LSM requires `lsm=...,bpf` on the kernel cmdline → reboot. Becomes an explicit install decision with four service tiers |
 | H-17 | Local Merkle log = "mathematically immutable" | **CORRECTED** | Tamper-**evident**, not immutable. Requires external root anchoring for real non-repudiation |
 | H-18 | NVML/ROCm GPU discovery heuristics | **`[POST]`** | Out of MVP scope (target = remote-inference clients) |
-| H-19 | *(not in the research)* Mobile requirement: Android + iOS | **SCOPED** | Mobile ships the **control plane** (monitoring + remote adjudication), never the Ring-0 engine. On-device mobile enforcement is impossible on iOS and enterprise-only on Android |
+| H-19 | *(not in the research)* Mobile requirement: Android + iOS | **SCOPED** | Both readings ship (`ADR-05`): the control plane on the phone (F11) **and** the on-device AI Sentinel engine (F10), which enforces at the network and tool-call layers. No Ring-0 on mobile |
 
 ---
 
@@ -186,7 +186,7 @@ TIER 2 (slow adjudication: human or Observer LLM)             ── exceptional
    Does NOT block inside the kernel. The process is FROZEN:
    cgroup v2 `cgroup.freeze = 1` on the session cgroup (or subtree).
    The user sees a modal; the Observer LLM produces a score.
-   Hard timeout (default 10 s) → session default policy.
+   Hard timeout (per channel, §2.20.5: 10 s focused / 20 s unfocused / 3 s remote) → session default policy.
    Thaw = `cgroup.freeze = 0`. Cancellable, observable, no kernel-hang risk.
 ```
 
@@ -227,7 +227,7 @@ All four documents use "sub-microsecond" for incompatible things: ring-buffer dr
 |---|---|---|---|---|
 | **T0** — in-kernel decision | Overhead added to an intercepted syscall decided purely from BPF maps | ≤ 2 µs | ≤ 15 µs | `bpftrace` histogram over hook entry/exit + differential benchmark |
 | **T1** — daemon round trip | `ESCALATE` resolved by `agentd` without the LLM | ≤ 150 µs | ≤ 1 ms | Timestamp in the event + ack, monotonic clock |
-| **T2** — cognitive adjudication | Frozen process + human/LLM verdict | ≤ 1.2 s | ≤ 2.5 s (hard timeout 10 s) | OTel metric `aisme.adjudication.duration` |
+| **T2** — cognitive adjudication | Frozen process + human/LLM verdict | ≤ 1.2 s | ≤ 2.5 s (hard timeout per channel, §2.20.5) | OTel metric `aisme.adjudication.duration` |
 | **T-tel** — pure telemetry | Event observed → available in `agentd` | ≤ 30 µs | ≤ 250 µs | `bpf_ktime_get_ns()` stamp vs. receipt |
 
 The only number communicated externally as "developer impact" is **T0**, because it is the only one that occurs in 99.9% of operations.
@@ -255,7 +255,7 @@ Embedded DuckDB starts at ~30–50 MB RSS **before ingesting anything**, and a P
                              ▼
 ┌──────────────────────────────────────────────────────────────────┐
 │ aisme-forensicd (COLD PATH)              RSS ≤ 150 MB (soft)     │
-│  · DuckDB + Parquet, Merkle, Ed25519 signing                     │
+│  · DuckDB + Parquet, Merkle, P-256 (hw) / Ed25519 (sw) signing    │
 │  · Semantic compression pipeline (F6)                            │
 │  · Observer LLM client                                           │
 │  · OTLP exporter                                                 │
@@ -535,6 +535,7 @@ Normative rules:
   - the secret file belongs to the workspace and is in `.gitignore` **and** the network destination is in the project allowlist;
   - the user marked the path as trusted in the UI;
   - the write targets a local file inside the workspace (not exfiltration).
+- **A permission grant is not a declassification.** Granting a read of a tainted file (Annex B, `docs/design/01_permission-model.md` §4) answers the file question only; the process keeps `SECRET_MATERIAL` and egress stays gated by the compound condition below. Owner decision, `docs/02_challenge_ampliacion_sistema.md` §Owner answers.
 - **Decay**: `UNTRUSTED_INPUT` expires after `N` seconds without related activity (default 300 s). `SECRET_MATERIAL` does **not** expire within the process lifetime.
 - **Network Slam fires on a compound condition, never on taint alone:**
   `(taint & (SECRET_MATERIAL|CREDENTIAL_ACCESS)) != 0` **AND** destination ∉ session allowlist (package registries, AI provider endpoints, project hosts, RFC1918 if permitted) **AND** no declassification is in effect.
@@ -562,13 +563,13 @@ The research treats PPL/ELAM as an implementation detail ("the daemon is instant
 - **Azure Trusted Signing does not substitute for an EV certificate on kernel drivers.** Microsoft requires that a Partner Center account have at least one EV certificate associated with it before any binary can be submitted for attestation signing. The modern cheap path (~$10/month, no hardware token) covers ordinary executables but **not** `aisme-flt.sys`.
 - Since 2023, hardware-token/HSM storage is mandated for **OV** certificates too, so there is no cheaper commercial tier to fall back to.
 
-No other target platform imposes anything comparable — Apple $99/yr, Android $25 once, Linux free with GPG. The entire burden is concentrated in one component, which is also the longest phase (F3, 4 weeks), the only one requiring C and the WDK, and the highest-blast-radius code in the project.
+No other target platform imposes anything comparable — Apple $99/yr, Android $25 once, Linux free with GPG. The entire burden is concentrated in one component, which is also the longest phase (the Windows phase, Annex F, 4 weeks), the only one requiring C and the WDK, and the highest-blast-radius code in the project.
 
 **The Windows kernel driver is `[POST]`; WSL2 is the Windows strategy** (`ADR-02`).
 
 | Item | Status |
 |---|---|
-| `aisme-flt.sys` minifilter (phase F3) | **`[POST]`** |
+| `aisme-flt.sys` minifilter (Annex F) | **`[POST]`** |
 | EV certificate procurement (`F0.WIN.01`) | **Cancelled for MVP** |
 | MVI application (`F0.WIN.02`) | **Cancelled for MVP** |
 | Windows Driver Verifier / HLK test rig (`§4.3`, `T4.3.*`) | **`[POST]`** |
@@ -577,7 +578,7 @@ No other target platform imposes anything comparable — Apple $99/yr, Android $
 
 #### 2.16.1 WSL2 as the Windows strategy
 
-Windows developers overwhelmingly run AI coding agents inside **WSL2, which is a real Linux kernel** (Microsoft's `WSL2-Linux-Kernel` fork) in a lightweight VM. The Linux engine built in F2 runs there **unmodified**. No driver, no C, no EV certificate, no MVI, no additional engineering.
+Windows developers overwhelmingly run AI coding agents inside **WSL2, which is a real Linux kernel** (Microsoft's `WSL2-Linux-Kernel` fork) in a lightweight VM. The Linux engine built in F3 runs there **unmodified**. No driver, no C, no EV certificate, no MVI, no additional engineering.
 
 **What works:**
 
@@ -608,7 +609,7 @@ Windows developers overwhelmingly run AI coding agents inside **WSL2, which is a
 
 This directly contradicts the "zero friction" product axis. It cannot be hidden: it must become an **informed installation decision**.
 
-**Correction — three service tiers, auto-detected and shown to the user:**
+**Correction — four service tiers, auto-detected and shown to the user:**
 
 | Tier | Requirements | What it provides |
 |---|---|---|
@@ -651,11 +652,11 @@ Deferred. Only the **extension point** is retained: a `SessionDiscovery` trait w
 
 ---
 
-### 2.20 H-19 — Mobile (Android/iOS): control plane yes, Ring-0 engine no
+### 2.20 H-19 — Multiplatform detection and the AI Sentinel mobile engine
 
-This requirement does not appear in the research; it was added after the architecture review. It must be scoped precisely, because "the app must also work on Android and iOS" has two possible readings and **only one of them is buildable**.
+This requirement does not appear in the research; it was added after the architecture review. It must be scoped precisely, because "the app must also work on Android and iOS" has two possible readings and **only one of them was obviously buildable**.
 
-**Reading A — the control plane runs on mobile.** The developer monitors AI sessions, inspects the causal graph, and **answers Circuit Breaker prompts from their phone** while the workstation engine keeps running. Viable, valuable, `[MVP]`. Delivered in **F9**.
+**Reading A — the control plane runs on mobile.** The developer monitors AI sessions, inspects the causal graph, and **answers Circuit Breaker prompts from their phone** while the workstation engine keeps running. Viable, valuable, `[MVP]`. Delivered in **F11**.
 
 **Reading B — AISME detects and contains AI agents running *on* the phone.** **This is also a requirement, and it is `[MVP]`.** It ships as a distinct product surface: **AI Sentinel**.
 
@@ -746,7 +747,7 @@ Being precise here prevents a future sprint from being burned rediscovering plat
 
 **Decision recorded as ADR-05.** The requirement is met: detection is multiplatform. The mechanisms are platform-appropriate, the ontology is unified, and the coverage gaps are explicit, bounded and documented rather than hidden.
 
-> **Declared scope statement (goes in `README.md` and `docs/ai/invariants.md`):**
+> **Declared scope statement (goes in `README.md`; `I-16` carries the invariant):**
 > AISME detects and contains AI agent activity on Linux, Windows, Android and iOS. On workstations it does so from Ring-0. On mobile it does so through the platform's supported network-extension, SDK-instrumentation and device-posture frameworks, with synchronous enforcement at the network and tool-call layers. Coverage differences between platforms are enumerated in the capability parity matrix and surfaced to the user in-app; AISME never claims a detection capability it does not have on the device it is running on.
 
 The last clause is a product invariant: **the app must show the user its own real coverage tier.** A security tool that implies protection it does not provide is worse than no tool.
@@ -775,7 +776,7 @@ Letting a phone authorize kernel-level operations on a workstation is the single
    - a **hardware P-256 key** (Secure Enclave / StrongBox, non-exportable, biometric-gated) whose public half is exchanged during pairing and which **signs every remote `ALLOW`**, attesting the *decision*.
 
    Noise's DH functions are X25519 and X448; the enclaves perform P-256 only, so a hardware-resident key cannot be the Noise static. Splitting the two is the better design: the workstation verifies the hardware signature on an `ALLOW` before honouring it, and a valid transport session alone is never sufficient. **No account, no cloud identity required for the local case.**
-2. **End-to-end encryption**: the relay (§F9) is a **blind transport**. It sees ciphertext and routing metadata only. It never holds plaintext telemetry or verdicts. Self-hostable.
+2. **End-to-end encryption**: the relay (`F11.RL.01`) is a **blind transport**. It sees ciphertext and routing metadata only. It never holds plaintext telemetry or verdicts. Self-hostable.
 3. **Asymmetric authorization** (invariant): a remote `DENY` requires only a paired device. A remote **`ALLOW` must carry a signature from the device's hardware key**, produced under biometric/passcode confirmation (`BiometricPrompt` / `LAContext` with `.biometryCurrentSet`) — a signature, not merely a gated send — **and** is capped by class: remote clients may never allow operations in the `CRITICAL` red-flag class (kernel driver load, credential store access, `/etc/shadow`-class writes). Those require physical presence.
 4. **Replay and freshness**: every verdict carries a nonce bound to the specific escalation ID and a 30 s validity window. Reused nonces are a security event.
 5. **Revocation**: any paired device can be revoked from the workstation without network access; revocation is local-first.
@@ -857,7 +858,7 @@ The native sensor shims contain **no detection logic whatsoever** — they marsh
 │                    └─────┤  aisme-forensicd ≤150 MB  │                        │
 │                          │  · SAC-lite (L2–L5)       │                        │
 │                          │  · DuckDB + Parquet       │                        │
-│                          │  · Merkle + Ed25519/TPM   │                        │
+│                          │  · Merkle + P-256/TPM     │                        │
 │                          │  · OTLP exporter          │──► Collector / SIEM     │
 │                          │  · nice19 / IDLE          │                        │
 │                          └───────────────────────────┘                        │
@@ -867,7 +868,7 @@ The native sensor shims contain **no detection logic whatsoever** — they marsh
 │  BPF ring buffers (RINGBUF)           │   Shared section (SPSC ring)          │
 │  ┌──────────────────────────────┐     │   ┌──────────────────────────────┐    │
 │  │ tracepoints: sched_process_* │     │   │ aisme-flt.sys (C, <3k LoC)   │    │
-│  │ kprobes: openat2, connect... │     │   │  · session PID table         │    │
+│  │ tracepoints: openat, connect │     │   │  · session PID table         │    │
 │  │ uprobes: SSL_read/SSL_write  │     │   │  · shared path trie          │    │
 │  │ BPF-LSM: file_open, bprm_*,  │     │   │  · PreCreate/Write/SetInfo   │    │
 │  │          socket_connect,     │     │   │  · ObRegisterCallbacks       │    │
@@ -888,7 +889,7 @@ Differences from the research's design: FUSE-RPC is absent, the Frida patching e
 
 **Single source of truth.** These values live in exactly two places: this table (human-readable, with rationale) and `budgets.toml` (machine-readable, read by `cargo xtask verify-budgets`). CI gate `F0.GATE.07` fails the build if they disagree. `docs/ai/invariants.md` references this table rather than restating it — a third copy would drift. **The research contradicted itself** (one document says <2% CPU, another <3%). A single number is fixed.
 
-| Metric | Target | Hard ceiling (fails CI) | Reference load |
+| Metric | Target | Hard ceiling (fails the gate) | Reference load |
 |---|---|---|---|
 | RSS `aisme-agentd` | ≤ 42 MB | **50 MB** | 72 h soak |
 | RSS `aisme-forensicd` | ≤ 110 MB | 150 MB | 72 h soak |
@@ -924,6 +925,11 @@ Differences from the research's design: FUSE-RPC is absent, the Frida patching e
 | Benign corpus blocks / escalations | 0 / 0 | **0 / 2** | `I-15`; a release blocker (§4.8.2) |
 | Prompts per developer-day | ≤ 1 | **3** | Prompt fatigue (`01_permission-model.md` §6) |
 | Warns per developer-day | ≤ 10 | 30 | A warn costs attention, not a decision (§4.1 of the same note) |
+| Hot-loop allocations, steady state | 0/s | **0/s** | `dhat`, 1 h run (`T4.4.03`) |
+| RSS growth slope | 0 MB/day | 0.5 MB/day | Last 48 h of the 72 h soak (`T4.4.02`) |
+| T0 latency p999 — L3 | ≤ 25 µs | 50 µs | 1M intercepted syscalls |
+| iOS extension OS terminations | 0 | **0** | 24 h run (`T4.4.08`) |
+| Compressor absolute precision | ≥ 0.90 | 0.90 | Annex C corpus (§4.7) |
 
 **Normative definition of the *reference workload*** (without it, "<3% CPU" means nothing and is not reproducible):
 
@@ -1041,7 +1047,7 @@ before it compiles.
 
 The system has, on the surface, five very different sensing mechanisms (BPF-LSM, uprobes, cooperative file tailing, a mobile packet tunnel, an in-app SDK) and five very different ways of asking a human a question. Treating them as five subsystems would multiply the engine by five.
 
-They are not ten subsystems. **They are twenty implementations of three traits, serving one engine.**
+They are not ten subsystems. **They are twenty-two implementations of three traits — twenty-one `[MVP]` — serving one engine.**
 
 ```rust
 // ─── L1: aisme-core::sensor ──────────────────────────────────────────────
@@ -1079,7 +1085,7 @@ pub trait Adjudicator: Send {
     fn budget(&self) -> Duration;
     /// Non-blocking notice for `Verdict::Warn`. Default: no-op.
     fn notify(&mut self, _w: &Warning) {}
-    /// MUST resolve within budget or yield Verdict::Timeout.
+    /// MUST resolve within budget or yield the channel's timeout default (§2.20.5; `deny` for the escalate class).
     fn ask(&mut self, req: &Escalation) -> BoxFuture<'_, Verdict>;
     /// Capability cap: a remote adjudicator may never allow CRITICAL (I-06).
     fn max_grant(&self) -> GrantCeiling;
@@ -1091,7 +1097,7 @@ pub trait EventSink:        Send { fn append(&mut self, batch: &EventBatch) -> R
 pub trait PolicySource:     Send { fn load(&mut self) -> Result<PolicyDocument>; }
 ```
 
-**The payoff — one engine, fifteen implementations:**
+**The payoff — one engine, twenty-two implementations:**
 
 | Trait | Implementations |
 |---|---|
@@ -1207,7 +1213,7 @@ This plan builds a **walking skeleton first**: one narrow path through every lay
 ```
 WEEK 4.5 — Walking skeleton (F2). One vertical slice, fully working:
 
-  one tracepoint (openat2)
+  one tracepoint (openat)
       → ringbuf → agentd hot loop → intern → correlate against one fake ToolCall
       → one hardcoded policy rule → ESCALATE
       → TerminalAdjudicator asks in the terminal → verdict
@@ -1224,7 +1230,7 @@ What this buys, concretely:
 | Benefit | Mechanism |
 |---|---|
 | **Integration risk moves from week 10 to week 4.5** | Every seam — kernel/user, sync/async, hot/cold, engine/adapter — is proven before anything is built on it |
-| **All later phases become parallel** | Once the skeleton stands and traits are frozen, F3, F4, F8a and F9→F10→F11 widen independent parts of a working system; F5→F6→F7 remains the core sequence |
+| **All later phases become parallel** | Once the skeleton stands and traits are frozen, F3, F4 and F8a widen independent parts of a working system after F2; F9→F10→F11 starts at GATE F1, in parallel with F2 (§8.2); F5→F6→F7 remains the core sequence |
 | **Every phase is demoable** | There is a running product from week 4.5. Progress is observable, not inferred from task lists |
 | **Rework collapses** | Interface defects surface while there is almost no code to change |
 | **The budget gates start measuring something real in week 4.5** | Rather than measuring stubs until week 10 |
@@ -1242,25 +1248,26 @@ What this buys, concretely:
 | The `RawEvent` layout | GATE F1 | the BPF programs |
 | **The control-plane protocol (Annex I)** | **GATE F8a** | F11, `aisme-uiagent`, the CLI |
 | **The SDK public API** | **GATE F9** | F10 and third parties |
+| **The compressed-context format** (§F6) | **GATE F6** | F10 (`F10.FO.04`) |
 
 #### 3.7.1 Phase contracts — Entry and Exit
 
-Parallelism needs contracts in both directions, not only a frozen middle. **Entry** is what a phase may assume exists; **Exit** is what it hands others beyond its gate passing. `verify-docs` asserts every Entry cites a task that exists and **every Exit artefact appears in at least one other phase's Entry** — an exit nobody consumes is dead work or a missing dependency, and both are worth a question.
+Parallelism needs contracts in both directions, not only a frozen middle. **Entry** is what a phase may assume exists; **Exit** is what it hands others beyond its gate passing. `verify-docs` asserts every Entry names a phase or task that exists, and every phase named in an Exit is named in at least one other phase's Entry; whether each Exit *artefact* is consumed is a review item, not a gate — an exit nobody consumes is dead work or a missing dependency, and both are worth a question.
 
 | Phase | Entry | Exit |
 |---|---|---|
-| F0 | — | Gates green; `layers.toml`; VM matrix with real tier values; the reference trace (`F0.ASSET.02`); the corpus skeleton |
+| F0 | — | Gates green; `layers.toml`; VM matrix with real tier values; the reference-trace manifest schema (`F0.ASSET.02`; the recording lands at GATE F2); the corpus skeleton |
 | F1 | F0 | **The frozen set** (five items above); `MockSensor`/`NullEnforcer`/`PolicyAdjudicator`; the WAL format; `agentsim` replay |
-| F2 | GATE F1 | A running product; seam evidence; a real budget baseline; `TerminalAdjudicator` |
+| F2 | GATE F1 | A running product; the GATE F2 output recorded in `STATE.md`; a real budget baseline; `TerminalAdjudicator` |
 | F3 | F2; `F0.VER.04` and `F0.VER.16` answered **[BLOCKING]** | BPF programs; Landlock and cgroup backends; `/mnt/*` canonicalization; measured tier behaviour |
 | F4 | F2; `F1.ON.06` (`ToolResult`) | The capture ladder; **measured** per-tier coverage (`F4.CO.05`) replacing H-07's estimates; the offset manifest format |
 | F5 | F3 or `MockSensor`; F4 or the cooperative tier alone | The causal graph; the detector runtime; the Merkle chain and `key_hw`; measured correlation precision |
 | F6 | F5's graph; F4's semantic events | **The compressed-context format, frozen for F10**; the Observer client; the IRR harness |
 | F7 | F1's compiler; F5's detectors; F3's backends | The shipped default policy; the permission surface; learning-mode reports |
-| F8a | F1's `aisme-proto` only | **The control-plane protocol, frozen for F11**; shell, timeline, graph, CLI |
+| F8a | `F1.IPC.01` (the UDS server), the `aisme-proto` stub from `F0.REPO.01` and Annex I | **The control-plane protocol, frozen for F11**; shell, timeline, graph, CLI |
 | F8b | F7; F8a | The four-option modal; `aisme-uiagent`; grant and suppression management |
 | F9 | GATE F1 | **The SDK API, frozen for F10**; the conformance suite; the published ontology spec |
-| F10 | F9's SDK; F1's mobile policy backend; F6's context format | `sentinel-core`; the flow corpus and its generator; measured classifier numbers |
+| F10 | F9's SDK; F1's `PolicyBackend` trait (`F1.PL.03`); F6's context format | `sentinel-core`; the flow corpus and its generator; measured classifier numbers |
 | F11 | F8a's protocol; F10's engine | Pairing; the blind relay; the mobile app |
 
 **A track may start against mocks** — that is what `MockSensor`, `NullEnforcer` and `PolicyAdjudicator` are for, and it is how five tracks run in parallel at all. It must then **declare in `STATE.md` which Entry condition is mocked**, and it may not close its gate on a mock unless the gate itself is defined to run on mocks (F1's and F2's are). Otherwise a phase can report done against something that was never there.
@@ -1304,7 +1311,7 @@ Parallelism needs contracts in both directions, not only a frozen middle. **Entr
 | F11 | Mobile control plane and remote adjudication | 2 | Mobile |
 | — | Windows minifilter | — | **`[POST]` — Annex F** |
 
-**Critical path: F0 → F1 → F2 → F5 → F6 → F7 → F8b = 1 + 2.5 + 1 + 2 + 2 + 2 + 1 = 11.5 weeks.** F3, F4, F8a and F9→F10→F11 run in parallel after F2. Total effort ≈ 27 person-weeks across 3 tracks.
+**Critical path: F0 → F1 → F2 → F5 → F6 → F7 → F8b = 1 + 2.5 + 1 + 2 + 2 + 2 + 1 = 11.5 weeks.** F3, F4 and F8a run in parallel after F2; F9→F10→F11 starts at GATE F1, in parallel with F2 (§8.2). Total effort ≈ 27 person-weeks across 5 tracks.
 
 *The figure is the sum of the table above, and `verify-docs` adds it up. F8 is split because its shell depends only on `aisme-proto` while its adjudication UI depends on F7.*
 
@@ -1320,16 +1327,17 @@ Parallelism needs contracts in both directions, not only a frozen middle. **Entr
 | `F0.REPO.01` | Cargo workspace with all crates stubbed, each in its §3.1 layer (Part VI layout) | `cargo check --workspace` passes |
 | `F0.REPO.05` | **Layer scaffolding**: `layers.toml` lists every crate with its layer, the excluded Windows crate and the composition root; crates created with the dependency direction already correct | `cargo xtask verify-layering` passes on stubs and fails on a planted upward edge |
 | `F0.REPO.02` | `rust-toolchain.toml` pinned at the root; `crates/aisme-ebpf/rust-toolchain.toml` pins the nightly for `build-std`, with the Aya version it was validated against recorded in its comment | Reproducible across machines; the root file's claim is true |
-| `F0.REPO.03` | `xtask` orchestrator: **the argument surface of every command in Annex H**, each unimplemented body exiting 3 with the task that owns it; plus working `build-ebpf`, `dist`, `vm up/run/probe`, `verify-layering`, `verify-budgets`, `verify-docs`, `verify-backlog` and `gate --level` | `cargo xtask --help` lists all 67; an unimplemented one exits 3 naming its phase |
+| `F0.REPO.03` | `xtask` orchestrator: **the argument surface of every command in Annex H**, each unimplemented body exiting 3 with the task that owns it; plus working `build-ebpf`, `dist`, `vm up/run/probe`, `verify-layering`, `verify-budgets`, `verify-docs`, `verify-backlog` and `gate --level` | `cargo xtask --help` lists all 71; an unimplemented one exits 3 naming its phase |
 | `F0.REPO.04` | `docs/adr/00_template.md`. `AGENTS.md`, `STATE.md`, `invariants.md` and `adr/01_*` are part of the repository skeleton, not of this task; `memory/` is seeded by `F0.DOC.01`. **No `glossary.md`** — Annex E is the single glossary | Part VII protocol executable |
+| `F0.REPO.06` | **Host prerequisites and `cargo xtask doctor`.** The developer host needs: the root `rust-toolchain.toml` stable and the eBPF crate's nightly with `rust-src`; `bpf-linker`; `bpftool` and `clang`/`llvm` for BTF inspection; `qemu-system-x86` and `virtme-ng` for `F0.VM.*`; membership of group `kvm` with `/dev/kvm` readable and writable (`F0.VER.21`); `tpm2-tools` for `F0.VER.12`. `doctor` checks each, prints found/missing with the install hint, and exits non-zero while any F0 prerequisite is missing. It never installs anything | `cargo xtask doctor` exits 0 on the owner's WSL2 host; `F0.VM.01` cannot start before it does |
 | `F0.GATE.01` | **Local gate runner**: `cargo xtask gate --level <commit\|pr\|nightly\|weekly>` runs the §4.12 cadence sets; a `pre-commit` hook runs `commit`; `nightly` and `weekly` are launched by a local scheduler. The WSL2 lane runs on the owner's Windows machine, where WSL2 is the real target. **No hosted CI** (`I-27`) | Each level runs green on an empty workspace |
 | `F0.GATE.02` | Lints as errors: `clippy::pedantic`, `unsafe_op_in_unsafe_fn`, `missing_docs` on public API | CI fails on warning |
 | `F0.GATE.03` | `cargo-deny`: advisories, duplicate deps, and a **licence allow-list matching `LICENSE.md`** — in particular it rejects an Apache-2.0-only dependency inside `aisme-ebpf-common`, which must stay dual-licensable | Advisory DB wired; a planted incompatible dependency fails |
 | `F0.GATE.04` | **Budget gate stub**: `cargo xtask verify-budgets` reads `budgets.toml`, fails on breach | Fails on a deliberately over-budget test binary |
-| `F0.GATE.05` | Forbidden-dependency gate (`serde_json` in `agentd`, `frida-*` anywhere, `bpf_probe_write_user` outside the research feature) | Fails on a planted violation |
+| `F0.GATE.05` | Forbidden-dependency gate (`serde_json` in `agentd`, `frida-*` anywhere, `bpf_probe_write_user` outside the research feature) — implemented inside `cargo xtask verify-layering` | Fails on a planted violation |
 | `F0.GATE.06` | **Dependency-direction gate**: §3.1 rules `A-01`…`A-06` checked over `cargo metadata` | Fails on a planted upward dependency |
-| `F0.GATE.07` | Budget-drift gate: plan §2.22 ↔ `budgets.toml` ↔ the headline figures in `CLAUDE.md` and `README.md` agree on every value **and direction** | Fails on a planted mismatch |
-| `F0.GATE.08` | **`verify-docs`**: every source file carries an SPDX header matching the `LICENSE.md` map (`ADR-06`); every `cargo xtask` string in the plan resolves to an Annex H row and every row names a task that exists; read-order lists identical across `CLAUDE.md`, `AGENTS.md` and Part 0; the DoD contains the ADR-review line; `STATE.md` has its §7.3 headings; ADR numbers contiguous with no gaps; Part I index matches the real headers; `NN_` naming under `docs/` (exempting `README.md`, `CHANGELOG.md` and `docs/ai/*`) with no `NN_-`; phase-table sums match the stated totals; `Cargo.lock` and `layers.toml` tracked; **no `.github/workflows/*.yml` triggering on push, pull request or schedule** (`I-27`) | Fails on each planted violation |
+| `F0.GATE.07` | Budget-drift gate: plan §2.22 ↔ `budgets.toml` ↔ the headline figures in `CLAUDE.md` and `README.md` agree on every value for every §2.22 row; `budgets.toml` may carry extra machine-only entries, each with a `direction`, and the table is the human subset — implemented inside `cargo xtask verify-budgets --drift` | Fails on a planted mismatch |
+| `F0.GATE.08` | **`verify-docs`**: every source file carries an SPDX header matching the `LICENSE.md` map (`ADR-06`); every `cargo xtask` string in the plan resolves to an Annex H row and every row names a task that exists; the ordered list of paths in the read order identical between `CLAUDE.md` and `AGENTS.md` §1, and Part 0 rule 5 pointing at `CLAUDE.md`; the DoD contains the ADR-review line; `STATE.md` has its §7.3 headings; ADR numbers contiguous with no gaps; Part I index matches the real headers; `NN_` naming under `docs/` (exempting `README.md`, `CHANGELOG.md` and `docs/ai/*`) with no `NN_-`; phase-table sums match the stated totals; `Cargo.lock` and `layers.toml` tracked; **no `.github/workflows/*.yml` triggering on push, pull request or schedule** (`I-27`); `STATE.md`'s last-`nightly`/`weekly` dates at most 7/14 days old (warn); the Part VI tree regenerated from `layers.toml` (`--tree`); every declared §B.9 verdict map monotone; every `budgets.toml` claim in prose resolving to a key; §-references matching title prefixes; every `[CUT]` marker and anti-goal present in the threat model's non-goals; every Annex H command reachable through the `xtask` argument parser; the §3.7.1 Entry/Exit phase check above. Additional `##` headings in `STATE.md` are permitted; the eight of §7.3 are required in that order | Fails on each planted violation |
 | `F0.VM.01` | Reproducible test VM images: Ubuntu 22.04/24.04, Debian 12, Fedora 40 | `cargo xtask vm up <name>` boots |
 | `F0.VM.02` | Kernel matrix via `virtme-ng`: 5.4 (expect L1), 5.10 (L2-), 5.15 (L2), 6.1 (L2), 6.8 (L2/L3), **and latest stable ≥ 6.15 for Landlock audit**. Each boots, runs a smoke BPF program, **and reports the expected tier** from the capability probe | Tier per kernel matches the table, or the difference is explained |
 | ~~`F0.WIN.01`~~ | ~~Start EV code-signing certificate procurement~~ | **`DEPRECATED`** — cancelled by ADR-02 |
@@ -1338,30 +1346,34 @@ Parallelism needs contracts in both directions, not only a frozen middle. **Entr
 | `F0.WSL.01` | **WSL2 capability probe**: `CONFIG_BPF_LSM`, **Landlock presence and ABI**, `BPF_CGROUP_INET*_CONNECT` attachability, cgroup v2, systemd, **and whether any TPM device exists** | Answered in `docs/ai/memory/wsl2-capabilities.md`; decides L2 vs L3 (§2.16.1), whether the L2 row reads as written (`F0.VER.04`), and confirms `F0.VER.18` (no TPM ⇒ software-signed forensics for Windows users) |
 | `F0.WSL.02` | WSL2 test images: Ubuntu 24.04 under WSL2, with and without systemd, cgroup v1 and v2 | `cargo xtask vm up wsl2-*` boots |
 | `F0.ASSET.01` | Corpus manifest format (§4.14), the `verify-docs` hash check, and the empty corpus directories with their licences | A gate can name the corpus version it certified |
-| `F0.ASSET.02` | **Record the reference trace**: a real Claude Code session on this repository — an actual working session, not a script — captured with `aisme run` in observe-only mode into `tests/fixtures/reference-trace/`, with a `manifest.toml` carrying its hash, the agent and model, the repository commit and the wall-clock duration | The CPU gate and the correlation gate get one fixed, hashed input. Recorded in F0, before enforcement exists, so recording it perturbs nothing |
+| `F0.ASSET.02` | **The reference-trace fixture.** In F0: the directory, the `manifest.toml` schema and its hash check. **The recording itself runs after `F2.WS.08` and before GATE F2**, because `aisme run` is an F2 deliverable and the trace format is `F1.SIM.02`. The recording: a real Claude Code session on this repository — an actual working session, not a script — captured with `aisme run` in observe-only mode into `tests/fixtures/reference-trace/`, with a `manifest.toml` carrying its hash, the agent and model, the repository commit and the wall-clock duration | The CPU gate and the correlation gate get one fixed, hashed input. Recorded in observe-only mode before any enforcement rule is loaded, so recording it perturbs nothing |
 | `F0.SEC.01` | Threat model (`docs/security/01_threat-model.md`): assets, **ranked adversaries A1–A5 with A4 and A5 explicitly out of scope for prevention**, trust boundaries, attack surface, collected non-goals, and the OWASP and sandbox mappings | Reviewed. `verify-docs` asserts every `[CUT]` marker and declared anti-goal appears in the non-goals section |
 | `F0.DOC.01` | Write the **eleven** seed memories of §7.4 into `docs/ai/memory/`, transcribing the fact, why it matters and the source from that table | Eleven files with the §7.4 frontmatter and a non-empty source |
-| `F0.VER.01`…`F0.VER.20` | The verification backlog — **see §F0.4**. Four are `[BLOCKING]` and run in week 1 | **The register is empty at GATE F0**: every row has a recorded outcome. An unverified claim becomes a measured fact or is withdrawn |
+| `F0.VER.01`…`F0.VER.21` | The verification backlog — **see §F0.4**. Four are `[BLOCKING]` and run in week 1 | **The register is empty at GATE F0**: every row has a recorded outcome. An unverified claim becomes a measured fact or is withdrawn |
 
 #### F0.4 Verification backlog
 
-Twenty claims are asserted in this plan and not measured. Each is a task with a command **and a prediction**: what it will mean if the claim holds, and what it will mean if it does not. Writing both before measuring is general rule 5 applied to the plan itself.
+Twenty-one rows are asserted in this plan and not measured; `F0.VER.15` is `DEPRECATED` (its claim, `R1-15`, was withdrawn under `I-27`), so twenty are measured. Each is a task with a command **and a prediction**: what it will mean if the claim holds, and what it will mean if it does not. Writing both before measuring is general rule 5 applied to the plan itself.
 
-**Four are `[BLOCKING]`** — they do not confirm a claim, they decide what a plan row says. They run in **week 1**, ahead of `F0.REPO.01`.
+**Four are `[BLOCKING]`** — they do not confirm a claim, they decide what a plan row says. Their WSL2 measurements (`F0.WSL.01`) run in **week 1**, by hand, on the owner's WSL2 host; the per-VM measurements run as soon as `F0.VM.02` boots. No BPF program is ever loaded on the host (`I-12`).
 
 | ID | Claim | Command | If it holds | If it does not |
 |---|---|---|---|---|
-| `F0.VER.04` **`[BLOCKING]`** | Landlock is active on the matrix kernels and in stock WSL2 | `cat /sys/kernel/security/lsm`; `landlock_create_ruleset(NULL,0,LANDLOCK_CREATE_RULESET_VERSION)` per VM | §2.2.1, H-16's L2 row and Annex D stand; `F3.EN.09` proceeds | That platform is **L2-**; the installer, Annex D and the CPU expectation say so; `F2.WS.11` leaves the skeleton and `F3.EN.09` becomes conditional |
+| `F0.VER.04` **`[BLOCKING]`** | Landlock is active on the matrix kernels and in stock WSL2 | `mount -t securityfs none /sys/kernel/security 2>/dev/null; cat /sys/kernel/security/lsm` (securityfs is not mounted on stock WSL2; fall back to `zcat /proc/config.gz \| grep CONFIG_LSM=`); `landlock_create_ruleset(NULL,0,LANDLOCK_CREATE_RULESET_VERSION)` per VM | §2.2.1, H-16's L2 row and Annex D stand; `F3.EN.09` proceeds | That platform is **L2-**; the installer, Annex D and the CPU expectation say so; `F2.WS.11` leaves the skeleton and `F3.EN.09` becomes conditional |
 | `F0.VER.16` **`[BLOCKING]`** | `BPF_CGROUP_INET4/6_CONNECT` attaches with `bpf` absent from the LSM list and denies only session flows | `bpftool cgroup attach` on such a VM; `connect` from inside and outside the session cgroup | `F3.EN.10` proceeds; Network Slam is T0 at L2 | Network Slam at L2 falls back to `seccomp_unotify` with its TOCTOU caveat stated; H-13 gains an L2 note; the L2 CPU budget is re-examined |
 | `F0.VER.18` **`[BLOCKING]`** | WSL2 exposes no TPM | `ls /dev/tpm* /dev/tpmrm*` inside the WSL2 image | Risk R-18 stands; software signing and default anchoring confirmed in README, ADR-02 and the UI | R-18 is downgraded; Annex D's WSL2 row gains a hardware-key line; the README sentence is removed |
-| `F0.VER.12` **`[BLOCKING]`** | Commodity TPM, Secure Enclave and StrongBox offer non-exportable P-256, not Ed25519 | `tpm2_getcap algorithms`; a key-generation attempt on each platform | H-17, `F5.FO.02`, `F10.FO.01` and `F11.CC.02` stand | An ADR revisits the curve; `key_hw` gains the value the hardware actually offers |
+| `F0.VER.12` **`[BLOCKING]`** | Commodity TPM, Secure Enclave and StrongBox offer non-exportable P-256, not Ed25519 | `tpm2_getcap algorithms`; a key-generation attempt on each platform | H-17, `F5.FO.02`, `F10.FO.01` and `F11.CC.02` stand | An ADR revisits the curve; `key_hw` gains the value the hardware actually offers. **If a platform cannot be measured** (no TPM under WSL2, no Apple or Android device at hand), that platform's `key_hw` value is recorded as `unverified` and the row stays open naming the missing hardware — exit 2, not 1 |
+| `F0.VER.21` | KVM is usable inside the owner's WSL2 host, so `virtme-ng` runs the kernel matrix accelerated. Observed 2026-09-03: `/dev/kvm` present, `vmx` on all 12 CPUs, the user **not** in group `kvm` | `cargo xtask doctor`; boot one matrix kernel with `vng` and read whether it reports KVM acceleration | `F0.VM.02` runs the full matrix on the owner's machine in minutes | `virtme-ng` falls back to TCG: the matrix still runs, roughly an order of magnitude slower, and `weekly` moves it to dedicated Linux hardware. `I-12` is unchanged either way |
 
-The remaining sixteen run any time before GATE F0, in the same four-column form: Aya's MSRV against Rust 1.82; `strip` versus `cargo-auditable`; what the `.docx` extraction omits; `seccomp_unotify`'s `ENOSYS` on listener close; kfunc stability; DuckDB's baseline RSS; `bpf_probe_write_user`'s taint flag; per-runtime key-log support; the OTel `gen_ai.*` conventions; the SAC paper's method; BLAKE3 versus SHA-256 on 320-byte leaves; Landlock's audit-record kernel version; iOS App Group team scoping; **`F0.VER.19`** (a BPF program range-checking `EventKind` in one comparison, verifier-accepted) and **`F0.VER.20`** (Landlock ABI 4 port rules).
+The remaining rows run any time before GATE F0, in the same four-column form, each with both outcomes written into `docs/reports/01_f0-verification.md` before it is measured: `F0.VER.01` Aya's MSRV against Rust 1.82; `F0.VER.02` `strip` versus `cargo-auditable`; `F0.VER.03` what the `.docx` extraction omits; `F0.VER.05` `seccomp_unotify`'s `ENOSYS` on listener close; `F0.VER.06` kfunc stability; `F0.VER.07` DuckDB's baseline RSS; `F0.VER.08` `bpf_probe_write_user`'s taint flag; `F0.VER.09` per-runtime key-log support; `F0.VER.10` the OTel `gen_ai.*` conventions; `F0.VER.11` the SAC paper's method; `F0.VER.13` BLAKE3 versus SHA-256 on 320-byte leaves; `F0.VER.14` Landlock's audit-record kernel version; `F0.VER.15` `DEPRECATED`; `F0.VER.17` iOS App Group team scoping; **`F0.VER.19`** a BPF program range-checking `EventKind` in one comparison, verifier-accepted; **`F0.VER.20`** Landlock ABI 4 port rules; **`F0.VER.21`** is in the table above.
 
-Outcomes are recorded in `docs/reports/f0-verification.md`. `cargo xtask verify-backlog` fails if any row is unrecorded — "the register is empty" becomes a machine check rather than a habit.
+**Numbering.** `F0.VER.01`…`F0.VER.18` are rows `R1-01`…`R1-18` of `docs/02_challenge_ampliacion_sistema.md` §R1, same number, same claim; `F0.VER.19` and `F0.VER.20` come from `docs/03_challenge_accionabilidad.md`; `F0.VER.21` from `docs/04_final_coherence_seal.md`. A row's ID is its claim's address in the review that raised it.
+
+Outcomes are recorded in `docs/reports/01_f0-verification.md`: one table row per `F0.VER.nn` with the command run, the observed value and an `Outcome` column holding `HOLDS`, `FAILS` or `WITHDRAWN`. `cargo xtask verify-backlog` reads that file and fails if any of the twenty live rows is absent or has an empty `Outcome` (`F0.VER.15` is recorded as `DEPRECATED`) — "the register is empty" becomes a machine check rather than a habit.
 
 **GATE F0** — all must pass:
 ```bash
+cargo xtask doctor                                      # F0.REPO.06: host prerequisites present
 git rev-parse --is-inside-work-tree                     # F0.REPO.00
 git ls-files --error-unmatch Cargo.lock layers.toml     # both tracked
 cargo check --workspace && cargo clippy --workspace -- -D warnings
@@ -1369,13 +1381,13 @@ cargo xtask verify-layering     # layering enforced from commit #1
 cargo xtask verify-docs         # cross-document consistency, incl. no push workflows
 cargo xtask gate --level commit # every member PASS or PENDING; none FAIL
 cargo xtask verify-backlog      # every §F0.4 row has a recorded outcome
-cargo xtask verify-budgets      # passes on stubs; refuses entries without a direction
+cargo xtask verify-budgets      # exit 0: every entry reports "skipped: no artefact"; refuses entries without a direction
 cargo xtask vm up ubuntu-24.04 && cargo xtask vm up wsl2-ubuntu-24.04
 cargo xtask vm probe --all      # reports the tier and Landlock ABI per kernel
-test -f docs/ai/AGENTS.md docs/ai/STATE.md docs/ai/invariants.md docs/adr/00_template.md
+for f in docs/ai/AGENTS.md docs/ai/STATE.md docs/ai/invariants.md docs/adr/00_template.md; do test -f "$f" || exit 1; done
 test -f docs/ai/memory/wsl2-capabilities.md
 test $(ls docs/ai/memory/*.md | wc -l) -ge 11           # F0.DOC.01
-grep -q "read-only" docs/ai/invariants.md               # H-06 anti-goal recorded
+grep -qi "read-only" docs/ai/invariants.md              # H-06 anti-goal recorded (I-01)
 ```
 
 ---
@@ -1384,7 +1396,7 @@ grep -q "read-only" docs/ai/invariants.md               # H-06 anti-goal recorde
 
 **Objective:** the platform-agnostic spine — ontology, traits, policy model, runtime. Every adapter (F3, F10, F9) plugs into these traits; every consumer (F5+) uses these types.
 
-**This phase ends with the INTERFACE FREEZE (§3.7).** After it, the L1 traits may only change via ADR, and four tracks can safely run in parallel. It is worth over-investing here: an interface defect found in F1 costs hours, the same defect found in F6 costs weeks.
+**This phase ends with the INTERFACE FREEZE (§3.7).** After it, the L1 traits may only change via ADR, and five tracks can safely run in parallel. It is worth over-investing here: an interface defect found in F1 costs hours, the same defect found in F6 costs weeks.
 
 #### F1.1 Event model (the single most important type in the system)
 
@@ -1404,7 +1416,7 @@ pub struct RawEvent {
     pub uid:        u32,
     pub taint:      u32,        // Taint bitflags (H-13)
     pub kind:       EventKind,  // u16, exhaustive enum
-    pub verdict:    Verdict,    // u8: Observed | Allowed | Warned | Denied | Escalated
+    pub outcome:    Outcome,    // u8: Observed | Allowed | Warned | Escalated | Denied — what happened, in §B.10 order; distinct from the policy `Verdict`
     pub flags:      u8,
     pub wire_version: u8,       // §3.6 reads this; without it the scheme has no field
     pub _reserved:  [u8; 15],   // pads to exactly 320 B; new fields consume it
@@ -1521,9 +1533,9 @@ Implements §3.2. **This is the interface freeze deliverable.**
 | `F1.PA.02` | `MockSensor` (recorded-trace replay), `NullEnforcer`, `PolicyAdjudicator` | Lets the entire test suite run with no kernel |
 | `F1.PA.03` | `AdjudicatorLadder`: preference-ordered, channel-aware budgets, grant ceilings (`I-06`) | This is the multiplatform prompt delivery mechanism |
 | `F1.PA.04` | `CapabilitySet` probe abstraction (§2.23) | Single definition; Annex D documents it |
-| `F1.PA.05` | Degradation state machine (`L3/L2/L1`, `DEGRADED`) with loud transitions | `I-16`, `I-19` |
+| `F1.PA.05` | Degradation state machine (`L3/L2/L2-/L1`, `DEGRADED`) with loud transitions | `I-16`, `I-19` |
 | `F1.PA.06` | Composition root `aisme-agentd::platform` — the only module that names a concrete adapter or uses `cfg(target_os)`; adapters export constructors | Rules `A-01`, `A-05` |
-| `F1.PA.07` | **Dependency-direction gate**: assert the §3.1 layering over `cargo metadata` and `layers.toml` | Rule `A-02`; mechanical, not aspirational |
+| `F1.PA.07` | **Dependency-direction gate re-run on real crates**: `F0.GATE.06` passes on the F1 crates with their real dependencies, and fails on a planted `aisme-core → aisme-linux` edge | Rule `A-02`; mechanical, not aspirational |
 
 #### F1.5 Detectors (Annex G)
 
@@ -1547,22 +1559,23 @@ Implements §3.2. **This is the interface freeze deliverable.**
 | `F1.SIM.01` | `aisme-agentsim` replays a recorded trace **preserving inter-arrival timing**, with `--speed` and `--seed`; emits the hidden correlation token per declared tool call (§4.6) | One artefact serves the CPU gate and the correlation gate |
 | `F1.SIM.02` | Trace format: an append-only log of `{ t_offset_us, action, args_hash, declared_intent, correlation_token }`, one line per agent action, plus a summary block carrying the §2.22 counts so a trace can be checked against the spec | Diffable, hashable, human-readable |
 | `F1.RT.08` | Crate lints: `#![forbid(unsafe_code)]` in `aisme-core`; `#![deny(clippy::unwrap_used, clippy::expect_used)]` in `aisme-agentd` | §3.4, §3.5 — a panic in a security daemon is a silent protection outage |
-| `F1.IPC.01` | Local IPC server (UDS with `SO_PEERCRED`; Named Pipe with SID check `[POST]` with native Windows) | JSON-RPC 2.0; auth by peer identity |
+| `F1.IPC.01` | Local IPC server (UDS with `SO_PEERCRED`; Named Pipe with SID check `[POST]` with native Windows) | JSON-RPC 2.0 framed in `aisme-proto`, served from `agentd`'s control thread with a codec that is **not** `serde_json` (`I-21`; the codec choice is `Q-12`, taken at this task); auth by peer identity |
 
 **GATE F1 — this gate is the INTERFACE FREEZE**
 ```bash
-cargo test -p aisme-core -p aisme-agentd
+cargo test --workspace
 cargo xtask verify-layering                  # §3.1 rules A-01..A-06 hold
+cargo xtask build-ebpf                       # F1.EV.01: RawEvent compiles for bpfel-unknown-none
 cargo xtask bench-hotloop --events 5000000   # 0 allocations steady-state, drop rate 0
 cargo xtask verify-budgets --profile idle    # agentd RSS < 25 MB with MockSensor
 cargo xtask test-policy-compiler             # determinism, static validation, I-05 + I-26
 cargo xtask test-taint --scenario rf-09 --mock  # the corrected algebra reaches the agent
 cargo xtask test-detect --determinism           # same input, same findings, every target
-cargo tree -p aisme-agentd | grep -q serde_json && exit 1   # must NOT be present
+! cargo tree -p aisme-agentd | grep -q serde_json   # must NOT be present (I-21)
 test $(grep -rl 'cfg(target_os' crates/aisme-core/ | wc -l) -eq 0   # rule A-01
 ```
 
-> **After this gate, the L1 traits in §3.2 may only change through an ADR.** Four tracks begin coding against them in parallel; a silent signature change would invalidate work in three of them. This is the single most valuable freeze point in the schedule.
+> **After this gate, the L1 traits in §3.2 may only change through an ADR.** Five tracks code against them in parallel; a silent signature change would invalidate work in four of them. This is the single most valuable freeze point in the schedule.
 
 ---
 
@@ -1576,11 +1589,11 @@ test $(grep -rl 'cfg(target_os' crates/aisme-core/ | wc -l) -eq 0   # rule A-01
 
 | Layer | In scope | Explicitly out of scope |
 |---|---|---|
-| Sensor | **One** tracepoint: `sys_enter_openat2` | All other probes, LSM, uprobes |
+| Sensor | **One** syscall: `openat` (`sys_enter_openat`, plus `sys_exit_openat` for `F2.WS.11` only). glibc's `open()` issues `openat`; `openat2` is never seen from `cat` or `sh` | All other probes, LSM, uprobes |
 | Transport | Ringbuf reserve/commit, one `RawEvent` kind | Aggregation maps, per-CPU tuning |
 | Hot loop | Drain → intern → canonicalize → correlate | Full taint algebra, graph spill |
 | Correlation | Match against **one** synthetic ToolCall from `agentsim` | Adaptive window, lineage depth |
-| Policy | **One** hardcoded rule compiled through the real AISME-PL pipeline | Rule sets, grants, learning mode |
+| Policy | **One** hardcoded policy compiled through the real AISME-PL pipeline: `deny /etc/shadow`, `escalate ~/.aws/**`, default allow, plus the `F2.WS.11` write scope | Rule sets, grants, learning mode |
 | Enforcement | `seccomp_unotify` for the escalate class **+ one Landlock ruleset** applied pre-`exec` | LSM, freezer, Network Slam, cgroup hooks |
 | Adjudication | `TerminalAdjudicator` only | Modal, notification, remote |
 | Persistence | WAL append + `forensicd` tail | DuckDB, Parquet, Merkle, OTLP |
@@ -1594,8 +1607,8 @@ test $(grep -rl 'cfg(target_os' crates/aisme-core/ | wc -l) -eq 0   # rule A-01
 | `F2.WS.02` | Hot loop wired: `poll` → intern → canonicalize → correlate → WAL | Zero allocations in steady state, verified by `dhat` |
 | `F2.WS.03` | `agentsim` emits one synthetic ToolCall with a hidden correlation token | Ground-truth scoring possible from day one |
 | `F2.WS.04` | One AISME-PL rule compiled by the real F1 compiler and published to a real BPF map | Policy generation counter increments; no torn read |
-| `F2.WS.05` | `SeccompEnforcer` implementing `Enforcer`: suspend, ask, respond | A denied `openat2` returns `-EACCES` to the caller |
-| `F2.WS.06` | `TerminalAdjudicator` implementing `Adjudicator`, with the terminal prompt specified in `docs/design/01_permission-model.md` §7.3 | A human answers in the terminal and the syscall obeys |
+| `F2.WS.05` | `SeccompEnforcer` implementing `Enforcer`: suspend, ask, respond | A denied `openat` returns `-EACCES` to the caller |
+| `F2.WS.06` | `TerminalAdjudicator` implementing `Adjudicator`, with the terminal prompt specified in `docs/design/01_permission-model.md` §7.3 | A human answers in the terminal and the syscall obeys; `AISME_TERMINAL_ANSWER=<d\|1\|s\|a>` is accepted for unattended gates and recorded as such in the WAL |
 | `F2.WS.07` | `forensicd` tails the WAL by offset and prints the event | Kill `forensicd` mid-stream; it resumes with zero loss |
 | `F2.WS.08` | `aisme run -- <cmd>` establishes session identity and scope | The session's own process tree is correctly attributed |
 | `F2.WS.09` | End-to-end latency instrumentation across the tiers present at this shape: T1, T2, T-tel, and the Landlock deny cost | Measurable, even if unoptimized |
@@ -1618,7 +1631,7 @@ test $(grep -rl 'cfg(target_os' crates/aisme-core/ | wc -l) -eq 0   # rule A-01
 cargo xtask test-skeleton              # full slice against MockSensor, no kernel
 cargo xtask vm run -- aisme run -- sh -c 'cat /etc/hostname'   # real kernel, allowed
 cargo xtask vm run -- aisme run -- sh -c 'cat /etc/shadow'     # real kernel, denied -EACCES
-cargo xtask vm run -- aisme run -- sh -c 'cat ~/.aws/credentials'  # ESCALATE -> terminal prompt -> answer obeyed
+AISME_TERMINAL_ANSWER=d cargo xtask vm run -- aisme run -- sh -c 'cat ~/.aws/credentials'  # ESCALATE -> terminal prompt -> answer obeyed
 cargo xtask vm run -- aisme run -- sh -c 'touch /tmp/outside'  # Landlock deny, zero notifications (if F0.VER.04)
 cargo xtask verify-budgets --profile skeleton                  # measuring real code now
 cargo xtask bench-t0 --syscalls 100000                         # baseline recorded
@@ -1639,7 +1652,7 @@ cargo xtask bench-t0 --syscalls 100000                         # baseline record
 |---|---|---|---|
 | `F3.OB.01` | `sched_process_exec` | tracepoint | argv, envp (redacted by `F4.UP.03`, **after** `DT-01` provenance matching), binary hash ref, ppid |
 | `F3.OB.02` | `sched_process_exit` | tracepoint | exit code, rusage |
-| `F3.OB.03` | `sys_enter_openat2` / `sys_exit_openat2` | tracepoint | flags, mode, resolved fd → path |
+| `F3.OB.03` | `sys_enter_openat` / `sys_exit_openat`, and the `openat2` pair — glibc's `open()` issues `openat`; hooking `openat2` alone sees nothing from `cat` | tracepoint | flags, mode, resolved fd → path |
 | `F3.OB.04` | `security_file_open` | LSM (observe mode) | **kernel-resolved `struct file`** — the TOCTOU-safe path source (H-01) |
 | `F3.OB.05` | `sys_enter_connect`, `sys_enter_sendto` | tracepoint | sockaddr, family, port |
 | `F3.OB.06` | `sys_enter_unlinkat`, `renameat2` | tracepoint | destructive ops |
@@ -1652,7 +1665,7 @@ cargo xtask bench-t0 --syscalls 100000                         # baseline record
 
 | ID | Task | Notes |
 |---|---|---|
-| `F3.RB.01` | `BPF_MAP_TYPE_RINGBUF` (8 MB), reserve/commit pattern, no copy | Never `bpf_perf_event_output` |
+| `F3.RB.01` | `BPF_MAP_TYPE_RINGBUF` (8 MB), reserve/commit pattern, no copy | `bpf_perf_event_output` only as the L1 fallback below 5.8 (Annex D); never on a ringbuf kernel |
 | `F3.RB.02` | Async drain with `epoll`, adaptive batching (32–512 events) | Latency vs. syscall count |
 | `F3.RB.03` | Drop accounting: `ringbuf_query(BPF_RB_AVAIL_DATA)` + discard counter | Feeds drop-rate invariant |
 | `F3.RB.04` | Per-CPU aggregation maps for high-frequency, low-value events (reads/stats) | Prevents ring saturation (H-09) |
@@ -1711,6 +1724,7 @@ cargo xtask test-slam --tier l2                           # RF-01 denied by the 
                                                           # with zero seccomp notifications
 cargo xtask verify-budgets --profile linux-reference --tier l3
 cargo xtask verify-budgets --profile linux-reference --tier l2   # the tier most users run
+cargo xtask verify-budgets --profile linux-reference --tier l2-  # seccomp-only shape, on the matrix kernel without Landlock (R-15)
 ```
 
 ---
@@ -1749,11 +1763,12 @@ cargo xtask verify-budgets --profile linux-reference --tier l2   # the tier most
 cargo xtask test-keylog-socket      # tier-A capture with zero uprobes attached;
                                     # no CLIENT_RANDOM anywhere on disk afterwards
 cargo xtask test-detect --scenario rf-18 --order  # DT-01 before redaction; reversed order fails
-cargo xtask test-tls --fixtures node,bun-stripped,python-dynamic,electron
+cargo xtask test-tls --fixtures fx-dynamic-openssl,fx-static-boringssl,fx-static-stripped-pgo,fx-electron-like
 # fixtures include a purpose-built statically-linked stripped BoringSSL client (§4.5)
 cargo xtask test-tls-selftest       # a deliberately wrong offset MUST be rejected
 cargo xtask test-redaction          # no secret material in WAL for the secret-bearing fixture
 cargo xtask test-degrade-no-uprobe  # kernel layer at 100% with semantic layer off
+cargo xtask test-tls --integrity    # T4.5.06: target pages byte-identical before and after attach (I-01)
 ```
 
 ---
@@ -1791,11 +1806,16 @@ The detector functions are L1 (`F1.DT.*`); their *execution* and per-detector st
 | `F5.DT.05` | `DT-08` secret-to-VCS and `DT-13` write-then-exec joins | Cross-plane joins over the causal window |
 | `F5.DT.06` | `DT-09` session risk: deterministic accumulator with decay; exposes `aisme.session.risk` and the policy-severity value the prompt displays | Weights via `F1.DT.03` |
 | `F5.DT.07` | `DT-14` self-permission edits and `DT-15` unattributed provider flows | `.aisme/**` is `SELF_PROTECTION` |
-| `F5.DT.08` | **Benign-twin authoring**: one twin per detector, written *with* the detector | `I-15` weights a false positive and a miss equally, so the twin is not optional |
+| `F5.DT.09` | `DT-03` manifest-integrity join over `ToolManifest` events: hash at session start, post-approval change, cross-server shadowing | Source: `F9.SDK.10`, `.mcp.json`, handshake logs |
+| `F5.DT.10` | `DT-04(a)` declared-targets closure and `DT-04(c)` destructive action without a covering `ToolCall` | Joins `F1.ON.06` and the causal window |
+| `F5.DT.11` | `DT-06` diff-aware `PERSISTENCE_CONFIG` write classifier — an *executing* key escalates, any other key warns | Path class from `F1.PL.06` |
+| `F5.DT.12` | `DT-07` self-observation targets, with the AISME lineage whitelist | `I-05`, `I-26` |
+| `F5.DT.13` | `DT-10` signed agent baseline profiles and deviation scoring | Feeds `F3.OB.07`, `F7.PS.07` |
+| `F5.DT.08` | **Benign-twin authoring**: one twin per detector, written *with* the detector; `DT-09` and `DT-15` ship their Annex C scenario here as well | `I-15` weights a false positive and a miss equally, so the twin is not optional |
 
 **GATE F5**
 ```bash
-cargo xtask test-correlation --harness ground-truth   # precision ≥0.98, recall ≥0.95
+cargo xtask test-correlation --harness ground-truth   # hard: precision ≥0.95, recall ≥0.90 (target 0.98 / 0.95)
 cargo xtask test-taint --scenarios rf-09,rf-18..24 --mock  # the corrected algebra reaches the agent
 cargo xtask test-taint --corpus benign                # zero false positives on the benign corpus
 cargo xtask test-detect --corpus annex-g --benign-twins    # every DT fires on its scenario,
@@ -1803,7 +1823,8 @@ cargo xtask test-detect --corpus annex-g --benign-twins    # every DT fires on i
 cargo xtask test-detect --determinism
 cargo xtask test-merkle-tamper                        # mutate a Parquet row → verification fails;
                                                       # a block's key_hw claim must match its signer
-cargo xtask verify-budgets --profile reference
+cargo xtask verify-budgets --profile reference --tier l3
+cargo xtask verify-budgets --profile reference --tier l2
 ```
 
 ---
@@ -1856,6 +1877,7 @@ cargo xtask test-observer-proposals             # an allow or grant proposal nev
 | `F7.CB.03` | Network Slam: L3 via `lsm/socket_connect`; **L2 via `CgroupConnectEnforcer` (`F3.EN.10`)**; mobile via the tunnel (F10). One compound condition (H-13), three backends |
 | `F7.CB.04` | Learning mode (`WOULD_BLOCK`) with 7-day default and a promotion report | H-13; adoption-critical |
 | `F7.CB.05` | Kill-switch: `aisme disable --duration 30m` with a forensic record of who, when and why; human principal only (`F7.PS.08`) | Operators need an escape hatch that is auditable rather than a `kill -9` |
+| `F7.CB.07` | **Budget certification harness** (§4.4): the 72 h soak, the §4.4.2 A/B CPU protocol at L2 and L3, a signed report under `docs/reports/` | `bench-soak`; the input of `DEP.SUP.08` and of M7 |
 | `F7.CB.06` | Fail-safe matrix: `agentd` crash **and its restart window**, probe or link detach, **Landlock absent**, **cgroup hook unavailable**, `aisme-uiagent` death, relay loss — each with documented, tested behaviour (§3.5) | Explicit for every component |
 
 #### F7.2 Permission surface
@@ -1865,7 +1887,7 @@ This is where the product's four verbs — forensic, act, warn, suppress — bec
 | ID | Task | Notes |
 |---|---|---|
 | `F7.PS.01` | Permission groups (§4 of the note) with default verdicts including **`warn`** (§4.1); the three `I-05` groups compiled `promptable = false, suppressible = false` | `I-05`, `I-26` |
-| `F7.PS.02` | Grant lifecycle: Deny / Allow once / Allow this session / Always; `grant_ttl_days` decay; **per-machine, never synced**; one-click revoke | Owner decision Q-03 |
+| `F7.PS.02` | Grant lifecycle: Deny / Allow once / Allow this session / Always; `grant_ttl_days` decay; **per-machine, never synced**; at L2 a write grant outside the declared scope binds processes started after the grant — a running process's Landlock domain cannot be widened, and the prompt says so; one-click revoke | Owner decision Q-03 |
 | `F7.PS.03` | **Suppression engine**: `SuppressionRule` evaluated on the notification path only; hit counts; decay; learned-rule generation from the learning-mode report | `I-26` at runtime, backed by the compile-time constraint in `F1.PL.07` |
 | `F7.PS.04` | **Intent coalescing**: one prompt or warn per intent — a directory, a host, a tool — never per syscall | 150 reads under `~/.cargo` is one prompt |
 | `F7.PS.05` | Budgets as telemetry: `aisme.permission.prompts_per_day` and `warns_per_day`; over budget is a product bug, surfaced in the learning report | `budgets.toml [ux]` |
@@ -1895,7 +1917,7 @@ cargo xtask test-failsafe                  # kill -9 agentd mid-verdict → defi
 
 | ID | Track | Task |
 |---|---|---|
-| `F8.API.01` | F8a | Control-plane protocol **per Annex I** (JSON-RPC over UDS; Named Pipe `[POST]`): `subscribe`, `getSession`, `getGraph`, `respondEscalation`, `setPolicy`, `pairDevice` — **this is the same protocol F11 consumes remotely**, defined once |
+| `F8.API.01` | F8a | Control-plane protocol **per Annex I** (JSON-RPC over UDS; Named Pipe `[POST]`): the twelve methods of Annex I.1 — **this is the same protocol F11 consumes remotely**, defined once |
 | `F8.API.02` | F8a | Protocol schema in one place (`aisme-proto`), codegen for TS types |
 | `F8.API.03` | F8a | **Authorization classes enforced server-side on every method** (Annex I.1), including the human-principal test by session-cgroup membership | `F7.PS.08` gains its expression in the protocol that carries every policy change |
 | `F8.UI.01` | F8a | Tauri v2 desktop shell + React/TS UI |
@@ -1913,7 +1935,13 @@ cargo xtask test-failsafe                  # kill -9 agentd mid-verdict → defi
 | `F8.CLI.02` | F8a | `top`-like TUI mode for headless use |
 | `F8.A11Y.01` | F8b | Accessibility pass: keyboard-only adjudication, screen-reader labels, contrast — the modal is a security control and must be operable by everyone |
 
-**GATE F8**
+**GATE F8a** — the protocol freeze
+```bash
+cargo xtask test-protocol-contract  # TS types and Rust types provably in sync; Annex I frozen
+cargo xtask test-ui-e2e --shell     # timeline and graph render from a recorded session
+```
+
+**GATE F8b**
 ```bash
 cargo xtask test-ui-e2e             # escalation → four-option modal → deny → syscall denied
 cargo xtask test-ui-e2e --warn      # warn → coalesced notice, zero modals
@@ -1949,7 +1977,7 @@ cargo xtask test-a11y               # axe-core on all views, 0 critical violatio
 **GATE F9**
 ```bash
 cargo xtask sdk test-conformance          # reference implementations pass the suite
-cargo xtask sdk test-overhead             # ≤50 µs per tool call, p99 ≤200 µs
+cargo xtask sdk test-overhead             # p99 ≤200 µs per tool call (target 50 µs)
 cargo xtask sdk test-forgery              # events signed with another install's key rejected
 cargo xtask sdk test-consistency          # hostile fixture: declared silence + observed
                                           # provider flow → aisme.sdk.inconsistent
@@ -1985,7 +2013,7 @@ cargo xtask sdk test-veto-e2e             # DENY verdict actually prevents the t
 | `F10.CORE.11` | **JA4 / JA4H client fingerprints** as features; a signed catalogue of known AI-SDK fingerprints shipped with `F10.CORE.03` | `DT-11` |
 | `F10.CORE.13` | **Flow-corpus generator** driving real client SDKs against local endpoints, emitting the §4.14.1 metadata-only schema | The corpus is regenerable; a captured one silently expires as QUIC and TLS stacks change |
 | `F10.CORE.12` | Classifier **confidence and degradation reason** surfaced to the UI: ECH means no SNI, DoH means no DNS name, QUIC means shape-only | `I-16` — never silent false confidence |
-| `F10.T.05` | **Test**: the tunnel never reads a payload byte. Instrumented packet path asserts zero payload accesses over the §4.11 corpus | The privacy invariant, as code. It was referenced by the plan and never defined |
+| `F10.T.05` | **Test**: the tunnel never reads a payload byte. Instrumented packet path asserts zero payload accesses over the §4.11 corpus | The privacy invariant, as code |
 
 **Privacy invariant for the classifier (non-negotiable, stated in the store listing):** the tunnel inspects **flow metadata only** — destination, SNI, DNS name, sizes and timings. It never decrypts, never inspects payload bytes, and never forwards traffic to any AISME-operated server. The classifier operates entirely on side-channel shape. This must remain true in code, and there is a test that asserts no payload byte is ever read (`F10.T.05`).
 
@@ -2124,13 +2152,13 @@ Guiding principle: **a security tool that has not been tested under adversarial 
 | L6 Adversarial | Red team scenarios + benign corpus | Isolated VM network | Nightly |
 | L7 Soak | 72 h continuous, budget certification | Dedicated hardware | Weekly + pre-release |
 
-**Hard rule: no kernel-touching test ever runs on a developer's or CI runner's host OS.** Every L2+ test runs inside a disposable VM restored from snapshot. This is stated as an invariant because the failure mode (a bad LSM program or a driver bug bricking a machine) is expensive and demoralizing.
+**Hard rule: no kernel-touching test ever runs on a developer's or gate host's OS.** Every L2+ test runs inside a disposable VM restored from snapshot. This is stated as an invariant because the failure mode (a bad LSM program or a driver bug bricking a machine) is expensive and demoralizing.
 
 ---
 
 ### 4.2 Safe Ring-0 injection — Linux
 
-**Environment.** `virtme-ng` (or `vmtest`) booting the CI kernel matrix (5.4, 5.10, 5.15, 6.1, 6.8) with the host root filesystem mounted read-only. Boot flags on all debug kernels:
+**Environment.** `virtme-ng` (or `vmtest`) booting the kernel matrix (5.4, 5.10, 5.15, 6.1, 6.8, and latest stable ≥ 6.15 — the `F0.VM.02` list) with the host root filesystem mounted read-only. Boot flags on all debug kernels:
 
 ```
 panic_on_warn=1 oops=panic lockdep.prove_locking=1 slub_debug=FZP page_poison=1
@@ -2152,7 +2180,7 @@ kasan.fault=panic lsm=lockdown,capability,landlock,yama,apparmor,bpf
 | `T4.2.09` | cgroup freeze/thaw safety | Freeze a process holding locks, `SIGKILL` it while frozen, thaw a dead cgroup | No leaked frozen processes; watchdog thaws on timeout |
 | `T4.2.10` | Ring buffer saturation | 500k events/s burst | Drops counted and reported; no kernel memory growth; no OOM |
 | `T4.2.11` | `RLIMIT_MEMLOCK` exhaustion | Set a low limit | Clear actionable error, graceful degradation, no partial-attach state |
-| `T4.2.12` | Fuzzing the user-space parser | `cargo-fuzz` on the ring-buffer decode path with malformed/hostile event bytes | No panic, no OOB, no unbounded allocation over 24 h |
+| `T4.2.12` | Fuzzing the user-space parser | `cargo-fuzz` on the ring-buffer decode path with malformed/hostile event bytes | No panic, no OOB, no unbounded allocation over the nightly 8 h run; 24 h before a release |
 | `T4.2.13` | Concurrent policy publication | Publish 10k policies/s while enforcement runs | No torn reads; generation counter monotonic; no decision made from a half-published policy |
 | `T4.2.14` | **Landlock semantics** | Ruleset applied pre-`exec`, inherited across `execve`, child attempts to relax it; ABI-gated features on an older kernel | Monotonic — a child can only narrow. Unavailable features skipped with a reported reason, never silently |
 | `T4.2.15` | **cgroup connect hook without BPF-LSM** | Attach on a kernel with `bpf` absent from the LSM list; `connect` to a non-allowlisted host from the session cgroup, and from a process outside it | `EPERM` for the session, untouched outside it (`I-14`), **zero seccomp notifications** (`F0.VER.16`) |
@@ -2236,6 +2264,7 @@ Protocol, executed exactly as written (this is what makes "<3%" a reproducible c
 | `T4.4.14` | Non-session process overhead | ≤ 0.5% — processes outside the AI session must be effectively free (validates the in-kernel PID filter) |
 | `T4.4.15` | Sentinel network throughput | ≥ 300 Mbps sustained through the tunnel; added latency ≤ 2 ms |
 | `T4.4.16` | Mobile battery | ≤ 6%/24 h with tunnel active; measured on-device over 3 × 24 h |
+| `T4.4.18` | Metric cardinality | ≤ 200 distinct time series per host on the reference workload (`telemetry.series_per_host`) |
 
 `T4.4.14` is the single most important CPU test: it proves the architecture's central performance claim — that the rest of the system pays nothing.
 
@@ -2325,7 +2354,7 @@ Turns H-10's claim into a gate.
 
 #### 4.8.1 Malicious scenarios (must be detected and contained)
 
-**The catalogue is Annex C** — sixteen classes `RF-01`…`RF-16`, each a TOML scenario file in `tests/corpus/redteam/` declaring its expected verdict, tier and latency. It is not repeated here.
+**The catalogue is Annex C** — twenty-four classes `RF-01`…`RF-24`, each a TOML scenario file in `tests/corpus/redteam/` declaring its expected verdict, tier and latency. It is not repeated here.
 
 Methodology notes that belong to testing rather than to the catalogue:
 
@@ -2356,6 +2385,8 @@ Methodology notes that belong to testing rather than to the catalogue:
 | `BN-14` | **Twin of RF-21**: a developer adds a `test` script to `package.json` | `warn` at most; only an *executing* key escalates |
 | `BN-15` | **Twin of RF-23**: a long agent turn with no covering ToolCall because the tool call is still open | No finding — the window has not closed |
 | `BN-16` | **Twin of RF-24**: the user edits `.aisme/scope.toml` themselves through the CLI | No finding — a human principal, not a session lineage |
+| `BN-17` | **Twin of RF-17**: a suppression rule that matches a benign pattern with nothing hidden behind it | No finding; zero notifications; the event is still in the WAL (`I-26`) |
+| `BN-18` | **Twin of RF-22**: committing `.env.example`, and a `.gitignore` edit that *adds* a secret pattern | No finding — no `SECRET_MATERIAL` label, and the pattern set grew |
 
 **Gate: 0 blocks, ≤ 2 escalations, ≤ 3 prompts and ≤ 30 warns per reference-workload day across the entire benign corpus.** Escalations above that threshold indicate a policy that will generate alert fatigue; so does a warn budget quietly blown.
 
@@ -2412,7 +2443,7 @@ Methodology notes that belong to testing rather than to the catalogue:
 
 The detection quality of the mobile engine is only as good as its corpus. This is built once and reused as a regression asset.
 
-**Flow corpus.** 10,000 labelled network flows captured from real devices:
+**Flow corpus.** 10,000 labelled network flows, generated per §4.14.1 (tier 1) with opt-in self-recorded supplements:
 - Positive: Claude/ChatGPT/Gemini/Perplexity mobile apps, self-hosted Ollama over LAN, custom agent apps, streaming and non-streaming inference, IPv4/IPv6, HTTP/2 and HTTP/3.
 - Negative: video streaming (the hardest negative — also long-lived with sustained downstream), messaging, VoIP, cloud sync, gaming, ad networks, software updates.
 - Adversarial: inference deliberately shaped to look like video, inference over a non-standard port, inference tunnelled through a CDN, ECH-enabled connections where SNI is unavailable.
@@ -2440,7 +2471,7 @@ The detection quality of the mobile engine is only as good as its corpus. This i
 
 ---
 
-### 4.12 CI gates and platform matrix
+### 4.12 Gates, cadences and platform matrix (all local — I-27)
 
 **Levels, all run locally** (`I-27`; there is no hosted CI and no workflow triggers on push):
 
@@ -2457,7 +2488,7 @@ The detection quality of the mobile engine is only as good as its corpus. This i
 **Release blockers — non-negotiable, any one fails the release:**
 
 ```
-✗ agentd RSS ≥ 50 MB, or 72 h memory slope > 0.5 MB/day
+✗ agentd RSS > 50 MB, or 72 h memory slope > 0.5 MB/day
 ✗ Aggregate CPU overhead > 3.0%
 ✗ T0 p99 > 15 µs
 ✗ Any benign-corpus block (0 tolerated)
@@ -2485,7 +2516,7 @@ The detection quality of the mobile engine is only as good as its corpus. This i
 | OS | Versions | Arch | Tier |
 |---|---|---|---|
 | Ubuntu | 22.04, 24.04 | x86_64, aarch64 | Full L3 |
-| Debian | 12 | x86_64 | L2 (no BPF-LSM by default) |
+| Debian | 12 | x86_64 | L2 or L2- per `F0.VER.04` (no BPF-LSM by default) |
 | Fedora | 40 | x86_64 | Full L3 |
 | RHEL/Alma | 9 | x86_64 | L2/L3 depending on kernel |
 | **WSL2** (Ubuntu 24.04) | on Win 11 23H2+ | x86_64 | **L2, or L3 if `CONFIG_BPF_LSM=y` — see `F0.WSL.01`** |
@@ -2509,7 +2540,7 @@ The detection quality of the mobile engine is only as good as its corpus. This i
 | `T4.13.05` | `DT-03` rug pull | A description changed after approval escalates; a version bump the server declares warns |
 | `T4.13.06` | `DT-06` diff-awareness | Adding a non-executing key to `package.json` warns at most; adding `postinstall` escalates |
 | `T4.13.07` | **`RF-17` suppression does not blind** | A suppression rule matching a benign-looking pattern, with an exfiltration hidden inside it: the event is in the WAL with `suppressed_by`, its Merkle inclusion proof is valid, the verdict is identical to the un-suppressed run, and **zero** notifications are emitted. Plus the compile-time negative: a suppression targeting an `I-05` group or a `CRITICAL` verdict **fails to compile** |
-| `T4.13.08` | Twin silence | Every `BN-11`…`BN-16` twin produces no finding above `warn`, and none produces a block |
+| `T4.13.08` | Twin silence | Every `BN-11`…`BN-18` twin produces no finding above `warn`, and none produces a block |
 | `T4.13.09` | Signed weights | A detector weight file with a broken signature is refused; the detector runs on the last-good weights and the refusal is a security event |
 
 ### 4.14 Test assets: fixtures and corpora (normative)
@@ -2523,12 +2554,13 @@ Three release blockers — the classifier gate (`T4.11.01`), the IRR gate (`T4.7
 | `redteam` | Annex C TOML, one file per scenario | 24 classes × ≥ 3 instances | Written with the detector (`F5.DT.*`) | Synthetic |
 | `benign` | Same TOML with `expect.verdict = "allow"\|"warn"` and `max_prompts` | 16 workflows + one twin per detector | Recorded from real workflows on the team's own machines | Synthetic or self-recorded |
 | `annex-g` | A **view**, not a corpus: `redteam ∪ benign` filtered by `detector` | — | Generated | — |
+| `annex-c` | A **view**: `redteam ∪ benign` unfiltered — the §4.7 IRR corpus and the `test-enforce` scenario set | — | Generated | — |
 | `flows` | Parquet, **metadata only** — schema below | ≥ 10 000 | `F10.CORE.13` generator | Generated (see below) |
 | `mobile-apps` | A `flows` subset labelled by app category | ≥ 2 000 | Same | Same |
 
 #### 4.14.1 The flow corpus is synthetic-first
 
-The earlier text asked for 10 000 flows "captured from real devices". Even metadata-only, that is personal data in an EU-targeted product whose own invariants forbid a relay from seeing plaintext (`I-07`). Three tiers, in this order, and **a gate may only require tier 1**:
+Flows "captured from real devices", even metadata-only, are personal data in an EU-targeted product whose own invariants forbid a relay from seeing plaintext (`I-07`). Three tiers, in this order, and **a gate may only require tier 1**:
 
 1. **Generated — primary.** A traffic generator drives real client SDKs (Anthropic, OpenAI, Google, Mistral, Ollama) and real negatives (a video player, a messaging client, a package manager) against **local or first-party endpoints**, recording only what the classifier consumes. No third party's traffic, no consent question, and — the engineering argument, which is the stronger one — **reproducible and regenerable**. A captured corpus silently expires as QUIC adoption and provider TLS stacks change; a generated one is rebuilt.
 2. **Self-recorded — supplementary.** Team members' own devices, opt-in, metadata only, documented retention.
@@ -2546,7 +2578,7 @@ Each fixture ships a `fixture.toml` declaring `provides` (what a test may assume
 
 Scope note: the native Windows driver is deferred by `ADR-02` and its specification lives in **Annex F**. Windows is served by **WSL2** running the Linux engine.
 
-**Task IDs in this part use the `DEP.<block>.<n>` namespace**, not `F<n>.*`: these are cross-phase deployment tasks and the earlier `F5.*` prefix pointed readers at phase F5, which is correlation. Each table names the phase that owns the work.
+**Task IDs in this part use the `DEP.<block>.<n>` namespace**, not `F<n>.*`: these are cross-phase deployment tasks because they are cross-phase and `F5.*` would point readers at phase F5, which is correlation. Owning phase per block: `DEP.BLD.*` F0 (`F0.REPO.03`); `DEP.SUP.*` F0 (`F0.GATE.03`), except `DEP.SUP.08` at M7 (`F7.CB.07`); `DEP.INS.*` F3 (`F3.WSL.01`); `DEP.MOB.*` F11 (`F11.ST.01`); `DEP.OTEL.*` F5 (`F5.FO.03`).
 
 ### 5.1 Cross-platform builds
 
@@ -2555,7 +2587,7 @@ Scope note: the native Windows driver is deferred by `ADR-02` and its specificat
 | Target | Triple | Artifact | Notes |
 |---|---|---|---|
 | Linux x86_64 | `x86_64-unknown-linux-gnu` | `aisme-agentd`, `aisme-forensicd`, `aisme-loaderd`, `aisme-cli` | Primary |
-| Linux aarch64 | `aarch64-unknown-linux-gnu` | same | ARM workstations, Graviton CI |
+| Linux aarch64 | `aarch64-unknown-linux-gnu` | same | ARM workstations and build hosts |
 | **WSL2** | `x86_64-unknown-linux-gnu` | same binaries, WSL-aware installer | No separate build — same artifact |
 | eBPF objects | `bpfel-unknown-none` | `aisme.bpf.o` embedded into the daemon | Nightly toolchain, `build-std` |
 | Android | `aarch64-linux-android`, `x86_64-linux-android` | `libsentinelcore.so` via `uniffi` | NDK r27+, `cargo-ndk` |
@@ -2787,6 +2819,8 @@ This layout exists in the repository; `verify-docs --tree` regenerates it from `
 AI-SYSTEM-MONITOR/
 ├── README.md                     Product overview, scope, honesty statement
 ├── CLAUDE.md                     Entry contract for development LLMs
+├── CONTRIBUTING.md · SECURITY.md · CITATION.cff · NOTICE
+├── LICENSE.md · LICENSE-APACHE · LICENSE-GPL · LICENSE-BSD   The licence map (ADR-06)
 ├── Cargo.toml                    Workspace (members added as crates are implemented)
 ├── layers.toml                   Crate → layer map; the verify-layering input
 ├── budgets.toml                  Resource invariants — the gate reads this
@@ -2803,7 +2837,7 @@ AI-SYSTEM-MONITOR/
 │   ├── aisme-forensicd/     [L3] Cold path: DuckDB, Parquet, Merkle, export
 │   ├── aisme-loaderd/       [L3] Minimal privileged loader (CAP_BPF, CAP_NET_ADMIN)
 │   ├── aisme-tls/           [L2] Capture ladder, offset resolution, SSE reassembly
-│   ├── aisme-correlate/     [L1] Causal graph, taint, Lamport ordering
+│   ├── aisme-correlate/     [L1] Causal graph, Lamport ordering (the taint algebra is in aisme-core)
 │   ├── aisme-compress/      [L1] SAC-lite pipeline (stages L2–L5)
 │   ├── aisme-observer/      [L1] Observer schema + scoring (client lives in forensicd)
 │   ├── aisme-otel/          [L4] OTLP export, semantic conventions
@@ -2825,6 +2859,9 @@ AI-SYSTEM-MONITOR/
 ├── docs/
 │   ├── 01_phase5_implementation_plan.md   This document
 │   ├── 02_challenge_ampliacion_sistema.md Challenge review: findings and patches
+│   ├── 03_challenge_accionabilidad.md     Challenge review: executability
+│   ├── 04_final_coherence_seal.md         The seal: final coherence pass before F0
+│   ├── CHANGELOG.md                       One line per closed task
 │   ├── ai/                       LLM working docs — see Part VII
 │   │   ├── AGENTS.md             Session protocol, definition of done
 │   │   ├── STATE.md              Live status — updated every session
@@ -2861,7 +2898,7 @@ AI-SYSTEM-MONITOR/
 
 This project is built largely by LLM agents across sessions with no shared memory. The dominant failure modes in that setting are not bad code — they are **re-litigating settled decisions**, **re-implementing rejected designs**, and **losing hard-won context**. This part is the countermeasure. It is implemented in `docs/ai/` and is normative.
 
-### 7.1 The four document types, and what belongs in each
+### 7.1 The document types, and what belongs in each
 
 Putting the right fact in the wrong file is how these systems rot. The rule is: **each file answers exactly one question.**
 
@@ -2884,13 +2921,13 @@ Putting the right fact in the wrong file is how these systems rot. The rule is: 
 
 **The operational protocol lives in `docs/ai/AGENTS.md` and is not restated here.** A working contract that exists in two places drifts, and the copy a contributor actually reads is the one in the repository, not the one in a planning document.
 
-What belongs here is the *reasoning*: the protocol requires a read phase (rules → state → invariants → task → ADRs), a work phase (one task ID at a time, announced), and a **mandatory** write phase (state → memory → ADR → plan). The write phase is the part that decays first and the part that matters most: a session that finishes work but leaves no trace has converted durable progress into private context that dies with the session.
+What belongs here is the *reasoning*: the protocol requires a read phase (rules → state → invariants → task → ADRs), a work phase (one task ID at a time, announced), and a **mandatory** write phase (state → changelog → memory → ADR → plan → handoff). The write phase is the part that decays first and the part that matters most: a session that finishes work but leaves no trace has converted durable progress into private context that dies with the session.
 
 ### 7.3 `STATE.md` structure (normative)
 
 ```markdown
 # STATE — live project status
-> Last updated: YYYY-MM-DD · Phase: F<n> · Code written: <summary>
+> Last updated: YYYY-MM-DD · Last nightly: YYYY-MM-DD · Last weekly: YYYY-MM-DD · Phase: F<n> · Code written: <summary>
 
 ## 🔴 Open decisions blocking work        ← if any; top of file, impossible to miss
 ## Where we are                            ← one paragraph, honest
@@ -2933,21 +2970,21 @@ Related: [[other-memory-slug]]
 
 **Seed memories this project should already have** (write these in F0):
 
-Each row below is written so an F0 session **transcribes** rather than reconstructs: the fact, why it matters, and where its reasoning lives. Eleven, not ten — the WSL2 seed carried two facts with two different verification tasks, and a reader looking for one should not have to find the other.
+Each row below is written so an F0 session **transcribes** rather than reconstructs: the fact, why it matters, and where its reasoning lives. Eleven — the WSL2 capabilities fact and the WSL2 TPM fact are separate seeds because they have different verification tasks, and a reader looking for one should not have to find the other.
 
-| Slug | Fact | Why it matters | Source |
-|---|---|---|---|
-| `ev-cert-windows-only` | Azure Trusted Signing cannot substitute for an EV certificate on kernel drivers; Partner Center requires one before any attestation signing, and hardware-token storage is mandatory for OV too | It is the whole reason Windows is served by WSL2 rather than a driver | `ADR-02` |
-| `wsl2-capabilities` | Stock WSL2 ships BTF; BPF-LSM needs `kernelCommandLine` in `.wslconfig`; `/mnt/*` is 9p/virtiofs with different inode and rename semantics; systemd is opt-in | It decides the tier of the platform most Windows developers use | §2.16.1, `F0.VER.04` |
-| `wsl2-has-no-tpm` | No TPM device under WSL2 | The forensic chain is software-signed for Windows users, and anchoring is what carries non-repudiation there | R-18, `F0.VER.18` |
-| `landlock-l2-file-deny` | Landlock gives in-kernel, inherited, monotonic path deny with no reboot and no BPF-LSM | It is what makes L2 a real tier instead of a seccomp trap storm under `npm ci` | §2.2.1 |
-| `cgroup-connect-l2-net-deny` | `BPF_CGROUP_INET4/6_CONNECT` denies egress in kernel with cgroup v2 and no `lsm=` change, and sees the address in kernel | Network Slam at L2 is T0 and TOCTOU-free; seccomp would be neither | §2.2.1, `F3.EN.10` |
-| `hardware-keys-are-p256` | Commodity TPM 2.0, Secure Enclave and StrongBox offer non-exportable **P-256**, not Ed25519; Noise DH is X25519 | A hardware key cannot be a Noise static. The hardware key signs the *verdict*; a software key protects the *channel* | H-17, §2.20.6 |
-| `ios-app-groups-same-team` | App Groups are scoped to one developer team | A third-party app can never join ours, so cross-vendor IPC on iOS is loopback or nothing | `F9.SDK.05` |
-| `ios-extension-memory-ceiling` | `NEPacketTunnelProvider` is OS-killed near 50 MB | The flow table is the main consumer, and the forensic store must never live in the extension | §2.20.7, `budgets.toml` |
-| `android-full-screen-intent-restricted` | Android 14 restricts `USE_FULL_SCREEN_INTENT` to calling and alarm apps | Mobile prompts are heads-up notifications with action buttons; asking for the entitlement invites review rejection | `01_permission-model.md` §7.4 |
-| `seccomp-unotify-toctou` | Never decide from user memory read in a notification. At L3 the LSM-resolved `struct file` is the path of record; at L2 the supervisor resolves the path and hands the target the fd with `ADDFD` | It is the difference between an enforcement point and a race | H-01, `F3.EN.12` |
-| `bpf-probe-write-user-is-experimental` | Documented as experimental; warns in the kernel log | Using it to hide from a monitored process is what would make the product a rootkit and end the compliance story | H-05 |
+| Slug | Type | Fact | Why it matters | Source |
+|---|---|---|---|---|
+| `ev-cert-windows-only` | process | Azure Trusted Signing cannot substitute for an EV certificate on kernel drivers; Partner Center requires one before any attestation signing, and hardware-token storage is mandatory for OV too | It is the whole reason Windows is served by WSL2 rather than a driver | `ADR-02` |
+| `wsl2-capabilities` | platform-limit | *(replaced by `F0.WSL.01`'s measurement)* Stock WSL2 ships BTF; BPF-LSM needs `kernelCommandLine` in `.wslconfig`; `/mnt/*` is 9p/virtiofs with different inode and rename semantics; systemd is opt-in | It decides the tier of the platform most Windows developers use | §2.16.1, `F0.VER.04` |
+| `wsl2-has-no-tpm` | platform-limit | No TPM device under WSL2 | The forensic chain is software-signed for Windows users, and anchoring is what carries non-repudiation there | R-18, `F0.VER.18` |
+| `landlock-l2-file-deny` | domain | Landlock gives in-kernel, inherited, monotonic path deny with no reboot and no BPF-LSM | It is what makes L2 a real tier instead of a seccomp trap storm under `npm ci` | §2.2.1 |
+| `cgroup-connect-l2-net-deny` | domain | `BPF_CGROUP_INET4/6_CONNECT` denies egress in kernel with cgroup v2 and no `lsm=` change, and sees the address in kernel | Network Slam at L2 is T0 and TOCTOU-free; seccomp would be neither | §2.2.1, `F3.EN.10` |
+| `hardware-keys-are-p256` | platform-limit | Commodity TPM 2.0, Secure Enclave and StrongBox offer non-exportable **P-256**, not Ed25519; Noise DH is X25519 | A hardware key cannot be a Noise static. The hardware key signs the *verdict*; a software key protects the *channel* | H-17, §2.20.6 |
+| `ios-app-groups-same-team` | platform-limit | App Groups are scoped to one developer team | A third-party app can never join ours, so cross-vendor IPC on iOS is loopback or nothing | `F9.SDK.05` |
+| `ios-extension-memory-ceiling` | platform-limit | `NEPacketTunnelProvider` is OS-killed near 50 MB | The flow table is the main consumer, and the forensic store must never live in the extension | §2.20.7, `budgets.toml` |
+| `android-full-screen-intent-restricted` | platform-limit | Android 14 restricts `USE_FULL_SCREEN_INTENT` to calling and alarm apps | Mobile prompts are heads-up notifications with action buttons; asking for the entitlement invites review rejection | `01_permission-model.md` §7.4 |
+| `seccomp-unotify-toctou` | domain | Never decide from user memory read in a notification. At L3 the LSM-resolved `struct file` is the path of record; at L2 the supervisor resolves the path and hands the target the fd with `ADDFD` | It is the difference between an enforcement point and a race | H-01, `F3.EN.12` |
+| `bpf-probe-write-user-is-experimental` | platform-limit | Documented as experimental; warns in the kernel log | Using it to hide from a monitored process is what would make the product a rootkit and end the compliance story | H-05 |
 
 ### 7.5 ADR discipline
 
@@ -2982,11 +3019,11 @@ When sources disagree, this is the order. **Memorize it.**
 
 **Both live in `docs/ai/AGENTS.md` §2 and §3 and are not restated here** — the same reason §7.2 delegates the session protocol. What belongs here is why they are shaped as they are.
 
-The definition of done is a conjunction, not a majority: six items, all of which must hold. The two that decay first are the gate output (which must be *shown*, because a summary of a gate is not evidence that it ran) and the ADR-review item (which is the only thing standing between a settled decision and its silent reversal).
+The definition of done is a conjunction, not a majority: eight items, all of which must hold. The two that decay first are the gate output (which must be *shown*, because a summary of a gate is not evidence that it ran) and the ADR-review item (which is the only thing standing between a settled decision and its silent reversal).
 
 The reporting rules exist because the cheapest way to look productive is to report a summary. **A phase is done when its `GATE F<n>` block passes in full**, and a budget number comes from `cargo xtask verify-budgets`, never from estimation.
 
-### 7.9 Anti-patterns to watch for in LLM contributions
+### 7.8 Anti-patterns to watch for in LLM contributions
 
 Collected because they are the specific ways this project would degrade:
 
@@ -3074,10 +3111,10 @@ Two properties of this shape are deliberate and worth protecting:
 |---|---|---|---|
 | **M1** | 3.5 | **Interface freeze** | §3.2 traits complete; `verify-layering` passes; policy compiler deterministic; `agentd` under 25 MB on `MockSensor` |
 | **M2** | 4.5 | **Walking skeleton — the product runs** | `aisme run -- bash` → terminal prompt → verdict → syscall obeys, on a real kernel. Every architectural seam exercised; one Landlock ruleset denies in-kernel with zero notifications (if `F0.VER.04`) |
-| **M3** | 7 | Kernel + semantic layers widened | Full probe set on the kernel matrix incl. WSL2; **T0 p99 < 15 µs at L3 and < 20 µs at L2**; capture from cooperative and symbol tiers; `T4.5.06` proves zero process modification |
-| **M4** | 8 | Correlation meets gate | Precision ≥ 0.98, recall ≥ 0.95 on the ground-truth harness |
-| **M5** | 10 | **Enforcement + permission model** | Every red-team scenario (RF-01…24) contained at the expected tier; **zero blocks on the benign corpus and every benign twin silent**; ≤3 prompts/day and ≤30 warns/day; `RF-17` passes |
-| **M6** | 10 | Mobile detection | Sentinel classifier ≥ 0.95 precision, ≤ 1% video FP; Network Slam works on Android and iOS |
+| **M3** | 7.5 | Kernel + semantic layers widened | Full probe set on the kernel matrix incl. WSL2; **T0 p99 < 15 µs at L3 and < 20 µs at L2**; capture from cooperative and symbol tiers; `T4.5.06` proves zero process modification |
+| **M4** | 6.5 | Correlation meets gate | Precision ≥ 0.98, recall ≥ 0.95 on the ground-truth harness |
+| **M5** | 10.5 | **Enforcement + permission model** | Every red-team scenario (RF-01…24) contained at the expected tier; **zero blocks on the benign corpus and every benign twin silent**; ≤3 prompts/day and ≤30 warns/day; `RF-17` passes |
+| **M6** | 9.5 | Mobile detection | Sentinel classifier ≥ 0.95 precision, ≤ 1% video FP; Network Slam works on Android and iOS |
 | **M7** | 11.5 | **MVP release candidate** | 72 h soak passed at both tiers; signed budget certification report; `verify-docs` clean; `key_hw` shown in every UI; all release blockers clear |
 
 **M2 and M5 are the two real go/no-go points.** M2 answers *"is the architecture sound?"* while there is still almost nothing to throw away. M5 answers *"is this shippable to a human being?"* — and a system that blocks legitimate work is not, regardless of how good its detection is.
@@ -3152,10 +3189,11 @@ One language, **five** compiled backends: the BPF trie (L3), a **Landlock rulese
 TOML is the surface syntax: no new parser, diffable, and familiar to the people who will write policy. The language is **deliberately not Turing-complete** — no negation, no nesting, no arithmetic — because it compiles into a BPF program with a verifier loop budget.
 
 ```ebnf
-policy        = { session_defaults | rule | suppression | profile } ;
+policy        = { session_defaults | rule | suppression | assert | profile } ;
+assert        = "[[assert]]" , "never" , "=" , "{" , group , "," , "verdict" , "=" , "[" , verdict_name , { "," , verdict_name } , "]" , "}" ;
 rule          = "[[rule]]" , id , group , match , verdict ,
                 { except | taint | severity_floor | promptable | suppressible
-                | audit | event | escalate_if } ;
+                | audit | event | escalate_if | degrade_open } ;
 except        = "except" , "=" , "{" , match_key , { "," , match_key } , "}" ;
 suppression   = "[[suppression]]" , match , scope , ttl_days , origin , [ report ] ;
 
@@ -3182,7 +3220,6 @@ Keys inside one `match` are **AND**; a list value is **OR** within that key.
 
 ```toml
 [session.defaults]
-tier = "L2"
 learning_mode_days = 7
 grant_ttl_days     = 30      # Always-grants and suppression rules decay together
 profile            = "default"   # "strict" makes every group non-promptable
@@ -3206,7 +3243,7 @@ suppressible = false           # invariant I-26 — a prompt and a silence are b
 [[rule]]
 id      = "user-scope-install"
 group   = "PACKAGE_INSTALL"
-match   = { exec_class = "package-manager", scope = "user" }
+match   = { exec_class = "package-manager", scope_rel = "user" }
 verdict = "warn"               # recorded, surfaced, non-blocking (§4.1 of the note)
 
 [[rule]]
@@ -3246,18 +3283,18 @@ event   = "aisme.exfiltration.blocked"
 
 | ID | Requirement |
 |---|---|
-| `B.1` | Static validation: no unreachable rules, no allow/deny conflicts on the same match, no unbounded globs that would blow the verifier's loop budget |
-| `B.2` | Path patterns compile to **pre-canonicalized prefixes** in user space; the kernel does prefix matching only (`F3.PT.03`) |
-| `B.3` | Compilation is deterministic — same source, same bytes, so policy generations are comparable |
-| `B.4` | Atomic publication with a generation counter; readers never lock, never see a torn policy (`F3.PT.02`) |
-| `B.5` | `promptable = false` **and `suppressible = false`** are enforced at compile time for the three groups in `I-05`; a policy that tries to make them promptable or suppressible fails to compile |
-| `B.6` | Grants (`Always`/`Session`) **and suppression rules** compile into the same rule space with TTL, so runtime has one evaluation path. A suppression targeting an `I-05` group or a `CRITICAL` verdict fails to compile (`I-26`) |
-| `B.7` | `verdict = "warn"` compiles to *allow + notify* on every backend. It never compiles to a kernel deny |
-| `B.8` | A backend that cannot express a rule's verdict — Landlock cannot escalate, cgroup hooks cannot prompt — **rejects the rule at compile time with a tier-specific message**, checked against the §B.9 matrix. It never drops it silently (general rule 9) |
+| `PL-01` | Static validation: no unreachable rules, no allow/deny conflicts on the same match, no unbounded globs that would blow the verifier's loop budget |
+| `PL-02` | Path patterns compile to **pre-canonicalized prefixes** in user space; the kernel does prefix matching only (`F3.PT.03`) |
+| `PL-03` | Compilation is deterministic — same source, same bytes, so policy generations are comparable |
+| `PL-04` | Atomic publication with a generation counter; readers never lock, never see a torn policy (`F3.PT.02`) |
+| `PL-05` | `promptable = false` **and `suppressible = false`** are enforced at compile time for the three groups in `I-05`; a policy that tries to make them promptable or suppressible fails to compile |
+| `PL-06` | Grants (`Always`/`Session`) **and suppression rules** compile into the same rule space with TTL, so runtime has one evaluation path. A suppression targeting an `I-05` group or a `CRITICAL` verdict fails to compile (`I-26`) |
+| `PL-07` | `verdict = "warn"` compiles to *allow + notify* on every backend. It never compiles to a kernel deny |
+| `PL-08` | A backend that cannot express a rule's verdict — Landlock cannot escalate, cgroup hooks cannot prompt — **rejects the rule at compile time with a tier-specific message**, checked against the §B.9 matrix. It never drops it silently (general rule 9) |
 
 ### B.9 Backend capability matrix
 
-`B.8` needs a basis to check against. This is it: which match keys and which verdicts each backend can express.
+`PL-08` needs a basis to check against. This is it: which match keys and which verdicts each backend can express.
 
 | | BPF trie (L3) | Landlock (L2 file) | cgroup connect (L2 net) | Sentinel (mobile) | Windows `[POST]` |
 |---|---|---|---|---|---|
@@ -3318,7 +3355,7 @@ Three properties follow, and the compiler and the datapath both use them:
 2. **Sound indexing.** The LPM trie is a *slice* of the rule set, and slicing is sound only because the operator is associative, commutative and idempotent. Each trie node stores `max` over every rule whose match set contains it, precomputed at compile time: one O(1) datapath lookup.
 3. **Mergeability.** The union of two policy files is the pointwise `max`. A shipped baseline, an organisation's policy and a local policy compose with no merge conflict and no rule whose meaning depends on what else is loaded.
 
-`B.1`'s "no allow/deny conflicts" is restated precisely: **a rule that can never be the strictest for any input is unreachable and fails to compile.** This includes an `allow` rule wholly shadowed by a broader `deny` — the case that went undiagnosed in AppArmor for fifteen years and produced its longest-standing usability complaint. Refusing ambiguity at build time rather than resolving it at runtime is the same move as SELinux's `neverallow`, OPA's `eval_conflict_error` and OpenFGA's refusal to build a model it cannot resolve.
+`PL-01`'s "no allow/deny conflicts" is restated precisely: **a rule that can never be the strictest for any input is unreachable and fails to compile.** This includes an `allow` rule wholly shadowed by a broader `deny` — the case that went undiagnosed in AppArmor for fifteen years and produced its longest-standing usability complaint. Refusing ambiguity at build time rather than resolving it at runtime is the same move as SELinux's `neverallow`, OPA's `eval_conflict_error` and OpenFGA's refusal to build a model it cannot resolve.
 
 **The honest counter-evidence**, recorded because it is real. A 54-participant study (Reeder et al., CMU-CyLab-09-006) found specificity-precedence gave substantial accuracy gains over deny-precedence, up to 78 %, and stated that deny-precedence "makes certain policy configurations impossible". Two things keep it from applying here, and both are in that paper. Its resource space is *"a strict hierarchy, so folders cannot have overlapping memberships"* and its groups do not nest — a single-axis match space, which AISME's is not. And it names the two cases where specificity fails outright: peer groups, where "specificity precedence cannot resolve the conflict", and *"a two-dimensional conflict, in which one rule is more specific in its principal and another rule is more specific in its resource"*. Its winning method is also not specificity alone but a hybrid, "first specificity and then deny precedence". The usability cost it measures is real, and `decided_by` is the mitigation.
 
@@ -3368,7 +3405,7 @@ The cost of the alternative is on the record: Windows Filtering Platform impleme
 
 ## Annex C — Red Flag catalogue
 
-**Twenty-four classes.** Each becomes an executable scenario in `tests/corpus/redteam/` **and a benign twin** in `tests/corpus/benign/`, and the same corpus is the IRR corpus for §4.7. A detection without its scenario, or a scenario without its twin, is incomplete work.
+**Twenty-four classes.** Each becomes an executable scenario in `tests/corpus/redteam/` **and, where a detector fires, a benign twin** in `tests/corpus/benign/`, and the same corpus is the IRR corpus for §4.7. A detection without its scenario, or a scenario without its twin, is incomplete work.
 
 **Scenario file format** (one TOML per scenario):
 
@@ -3399,7 +3436,7 @@ must_appear_in_compressed_context = true   # anchor guarantee, T4.7.04
 | RF-03 | Fileless execution: `memfd_create` + `execveat`, reflective loading, `LD_PRELOAD` in an exec env | `DT-13`. Deny, never promptable |
 | RF-04 | Write-then-exec and fetch-then-exec: base64 script run within N s, `bash -c "$(curl …)"`, `python -c` + decode | `DT-13` escalate; toolchain output paths exempt |
 | RF-05 | System mutation: `/etc`, boot config, systemd units | Deny at T0, never promptable |
-| RF-06 | Workspace escape | Escalate → prompt |
+| RF-06 | Workspace escape | Read: escalate → prompt. Write: escalate at L3; Landlock deny at L2 with the notice delivered (§B.9) |
 | RF-07 | Anti-analysis and **self-observation**: `/proc/self/maps`, `bpf()`, ptrace self-check, **and reading AISME's own binaries, config, WAL or process** | `DT-07` warn + severity; never suppressible |
 | RF-08 | Self-defence attack: kill daemon, detach probes | Deny + alert + DEGRADED if partial |
 | RF-09 | Instruction-bearing input followed by a first-of-kind action class | `DT-02` escalate. *Reachable only because a fetch labels the tree and `File.taint` carries it to the reader* (H-13 as corrected) |
@@ -3474,7 +3511,7 @@ Deployment modes: **U** unmanaged · **M** managed (Device Owner / Supervised) �
 | **AISME-PL** | The policy language (Annex B) |
 | **Anchor** | An event selected for full-fidelity inclusion in compressed Observer context |
 | **Attestation (SDK)** | A per-install signature proving which SDK instance sent an event. It prevents cross-app spoofing; **it does not make a hostile host honest** — that is caught by cross-checking declared intent against observed flows |
-| **Benign twin** | The legitimate case that resembles a red-flag scenario and must stay silent. Every `RF-xx` has one |
+| **Benign twin** | The legitimate case that resembles a red-flag scenario and must stay silent. Every detector-bearing class has one (§4.8.2) |
 | **Composition root** | `aisme-agentd::platform` — the single module allowed to name a concrete adapter or use `cfg(target_os)` |
 | **Detector** | A pure function over the causal graph that emits a `Finding` (Annex G). No platform variants, no learned weights in a verdict path |
 | **AOCP** | Agent-OS Communication Protocol — the research's proposed standard, shipped in practice as the AI Sentinel SDK |
@@ -3505,7 +3542,7 @@ Deployment modes: **U** unmanaged · **M** managed (Device Owner / Supervised) �
 
 ## Annex F — Windows minifilter specification `[POST]`
 
-> **Do not implement.** The Windows kernel driver is out of the MVP: an EV certificate plus Partner Center attestation signing is mandatory for driver distribution and cannot be substituted by Azure Trusted Signing (§2.16). Windows coverage in the MVP comes from **WSL2** running the F2 Linux engine (§2.16.1).
+> **Do not implement.** The Windows kernel driver is out of the MVP: an EV certificate plus Partner Center attestation signing is mandatory for driver distribution and cannot be substituted by Azure Trusted Signing (§2.16). Windows coverage in the MVP comes from **WSL2** running the F3 Linux engine (§2.16.1).
 >
 > The content below is the specification for if and when native Windows is revived. Task IDs use the `WIN.*` namespace; `F3` is the Linux kernel phase. The specification is sound; the blocker is commercial, not technical. Anything referencing `aisme-flt.sys`, `FltSendMessage`, ETW or Driver Verifier is inactive for the MVP, including invariants `I-11` and `I-13` and tests `T4.3.*`.
 
@@ -3583,7 +3620,7 @@ Detectors are pure functions `fn observe(&GraphDelta, &SessionState) -> Option<F
 
 ### G.2 New red-flag classes
 
-`RF-17`…`RF-24` are defined in Annex C. `RF-09` is rewritten to the `DT-02` predicate, `RF-07` gains `DT-07`'s targets, and `RF-03`/`RF-04` gain `DT-13`'s forms. **Every new class ships with a benign twin** in `tests/corpus/benign/` (`BN-11`…`BN-16`): a detection without its twin is an untested false-positive risk.
+`RF-17`…`RF-24` are defined in Annex C. `RF-09` is rewritten to the `DT-02` predicate, `RF-07` gains `DT-07`'s targets, and `RF-03`/`RF-04` gain `DT-13`'s forms. **Every new class ships with a benign twin** in `tests/corpus/benign/` (`BN-11`…`BN-18`): a detection without its twin is an untested false-positive risk.
 
 ### G.3 Mapping to OWASP Top 10 for Agentic Applications
 
@@ -3623,7 +3660,7 @@ A gate that cannot run is indistinguishable from a gate that passes, and the pla
 
 ```
 error: `cargo xtask test-taint` is not implemented yet.
-       Implemented by F5.DT.01 (phase F5 — Correlation, taint and forensics).
+       Implemented by F1.ON.05 (phase F1 — Core).
        Annex H lists every command and the task that implements it.
 ```
 
@@ -3653,8 +3690,9 @@ The consequence is worth stating: **the command surface becomes the plan's own p
 
 | Command | Owning task | Phase | Level |
 |---|---|---|---|
-| `cargo xtask bench-hotloop` | `F0.REPO.03` | F0 | `nightly` |
-| `cargo xtask bench-t0` | `F3.EN.08` | F3 | `nightly` |
+| `cargo xtask bench-hotloop` | `F1.RT.03` | F1 | `nightly` |
+| `cargo xtask bench-t0` | `F2.WS.09` | F2 | `nightly` |
+| `cargo xtask bench-soak` | `F7.CB.07` | F7 | `weekly` |
 
 **`build-*`**
 
@@ -3662,6 +3700,7 @@ The consequence is worth stating: **the command surface becomes the plan's own p
 |---|---|---|---|
 | `cargo xtask build-ebpf` | `F0.REPO.03` | F0 | — |
 | `cargo xtask dist` | `F0.REPO.03` | F0 | — |
+| `cargo xtask doctor` | `F0.REPO.06` | F0 | `commit` |
 
 **`gate-*`**
 
@@ -3686,20 +3725,21 @@ The consequence is worth stating: **the command surface becomes the plan's own p
 | `cargo xtask sentinel test-no-payload-read` | `F10.CORE.09` | F10 | `pr` |
 | `cargo xtask sentinel test-sdk-loopback` | `F10.CORE.09` | F10 | `pr` |
 | `cargo xtask sentinel test-slam` | `F10.CORE.09` | F10 | `pr` |
-| `cargo xtask sentinel verify-budgets` | `F10.CORE.09` | F10 | `pr` |
-| `cargo xtask test-a11y` | `F8.API.02` | F8 | `pr` |
-| `cargo xtask test-battery` | `F11.CC.01` | F11 | `pr` |
+| `cargo xtask sentinel verify-budgets` | `F10.CORE.02` | F10 | `pr` |
+| `cargo xtask test-a11y` | `F8.A11Y.01` | F8 | `pr` |
+| `cargo xtask test-battery` | `F11.CC.01` | F11 | `weekly` |
 | `cargo xtask test-benign` | `F7.CB.02` | F7 | `pr` |
 | `cargo xtask test-compression` | `F6.IRR.01` | F6 | `pr` |
-| `cargo xtask test-correlation` | `F5.DT.01` | F5 | `pr` |
+| `cargo xtask test-correlation` | `F5.CO.01` | F5 | `pr` |
 | `cargo xtask test-degrade-no-uprobe` | `F4.VAL.01` | F4 | `pr` |
-| `cargo xtask test-detect` | `F4.VAL.01` | F4 | `pr` |
+| `cargo xtask test-detect` | `F1.DT.01` | F1 | `pr` |
 | `cargo xtask test-enforce` | `F3.EN.08` | F3 | `pr` |
 | `cargo xtask test-failsafe` | `F7.CB.02` | F7 | `pr` |
 | `cargo xtask test-grant-lifecycle` | `F7.CB.02` | F7 | `pr` |
-| `cargo xtask test-kernels` | `F3.EN.08` | F3 | `pr` |
+| `cargo xtask test-fuzz` | `F3.RB.01` | F3 | `nightly` |
+| `cargo xtask test-kernels` | `F3.EN.08` | F3 | `commit` |
 | `cargo xtask test-keylog-socket` | `F4.VAL.01` | F4 | `pr` |
-| `cargo xtask test-merkle-tamper` | `F5.DT.01` | F5 | `pr` |
+| `cargo xtask test-merkle-tamper` | `F5.FO.04` | F5 | `pr` |
 | `cargo xtask test-mobile-e2e` | `F11.CC.01` | F11 | `pr` |
 | `cargo xtask test-no-hardware-key` | `F11.CC.01` | F11 | `pr` |
 | `cargo xtask test-observer-injection` | `F6.IRR.01` | F6 | `pr` |
@@ -3708,7 +3748,7 @@ The consequence is worth stating: **the command surface becomes the plan's own p
 | `cargo xtask test-observer-score-never-lower` | `F8.API.02` | F8 | `pr` |
 | `cargo xtask test-pairing` | `F11.CC.01` | F11 | `pr` |
 | `cargo xtask test-paths` | `F3.EN.08` | F3 | `pr` |
-| `cargo xtask test-policy-compiler` | `F0.REPO.03` | F0 | `pr` |
+| `cargo xtask test-policy-compiler` | `F1.PL.05` | F1 | `pr` |
 | `cargo xtask test-prompt-budget` | `F7.CB.02` | F7 | `pr` |
 | `cargo xtask test-protocol-contract` | `F8.API.02` | F8 | `pr` |
 | `cargo xtask test-redaction` | `F4.VAL.01` | F4 | `pr` |
@@ -3716,25 +3756,25 @@ The consequence is worth stating: **the command surface becomes the plan's own p
 | `cargo xtask test-relay-blindness` | `F11.CC.01` | F11 | `pr` |
 | `cargo xtask test-remote-authz` | `F11.CC.01` | F11 | `pr` |
 | `cargo xtask test-scope-narrow` | `F7.CB.02` | F7 | `pr` |
-| `cargo xtask test-skeleton` | `F0.REPO.03` | F0 | `pr` |
+| `cargo xtask test-skeleton` | `F2.WS.10` | F2 | `pr` |
 | `cargo xtask test-slam` | `F3.EN.08` | F3 | `pr` |
 | `cargo xtask test-suppression` | `F7.CB.02` | F7 | `pr` |
-| `cargo xtask test-taint` | `F5.DT.01` | F5 | `pr` |
+| `cargo xtask test-taint` | `F1.ON.05` | F1 | `pr` |
 | `cargo xtask test-tls` | `F4.VAL.01` | F4 | `pr` |
 | `cargo xtask test-tls-selftest` | `F4.VAL.01` | F4 | `pr` |
 | `cargo xtask test-ui-e2e` | `F8.API.02` | F8 | `pr` |
 | `cargo xtask test-uiagent-chaos` | `F8.API.02` | F8 | `pr` |
 | `cargo xtask test-warn-semantics` | `F7.CB.02` | F7 | `pr` |
-| `cargo xtask win test-deadlock` | `WIN.US.06` | WIN | `pr` |
-| `cargo xtask win test-irp-storm` | `WIN.US.06` | WIN | `pr` |
-| `cargo xtask win test-unload` | `WIN.US.06` | WIN | `pr` |
-| `cargo xtask win verify-driver` | `WIN.US.06` | WIN | `pr` |
+| `cargo xtask win test-deadlock` | `WIN.US.06` | WIN | — |
+| `cargo xtask win test-irp-storm` | `WIN.US.06` | WIN | — |
+| `cargo xtask win test-unload` | `WIN.US.06` | WIN | — |
+| `cargo xtask win verify-driver` | `WIN.US.06` | WIN | — |
 
 **`verify-*`**
 
 | Command | Owning task | Phase | Level |
 |---|---|---|---|
-| `cargo xtask verify-budgets` | `F3.EN.08` | F3 | `commit` |
+| `cargo xtask verify-budgets` | `F0.GATE.04` | F0 | `commit` |
 | `cargo xtask verify-backlog` | `F0.REPO.03` | F0 | `commit` |
 | `cargo xtask verify-docs` | `F0.REPO.03` | F0 | `commit` |
 | `cargo xtask verify-layering` | `F0.REPO.03` | F0 | `commit` |
@@ -3747,7 +3787,7 @@ The consequence is worth stating: **the command surface becomes the plan's own p
 | `cargo xtask vm run` | `F0.REPO.03` | F0 | `pr` |
 | `cargo xtask vm up` | `F0.REPO.03` | F0 | `pr` |
 
-**Levels.** `commit` (≤ 10 min, the pre-commit hook) · `pr` (≤ 60 min, before merging a branch) · `nightly` and `weekly` (local scheduler, §4.12). A command marked `—` is invoked directly, not as part of a level.
+**Levels.** `commit` (≤ 10 min, the pre-commit hook) · `pr` (≤ 60 min, before merging a branch) · `nightly` and `weekly` (local scheduler, §4.12). Levels are cumulative — `pr` ⊇ `commit`, `nightly` ⊇ `pr`, `weekly` ⊇ `nightly`; the column names the lowest level that runs the command, and §4.12 names the argument set per level. A command marked `—` is invoked directly, not as part of a level.
 
 **Adding a command.** Add the row here first, then the task that implements it. `verify-docs` fails a gate command with no row, and fails a row whose task does not exist — in that order, so the error names the actual mistake.
 
@@ -3768,18 +3808,19 @@ One protocol, spoken by the desktop UI, the CLI, `aisme-uiagent`, the mobile app
 | `getSession` | `{ session_id }` | detail, risk, taint, tier | any | yes |
 | `getGraph` | `{ session_id, since_seq, limit }` | graph delta, `next_seq` | any | yes |
 | `subscribe` | `{ session_id?, kinds[], min_severity }` | event stream, coalesced | any | n/a |
-| `respondEscalation` | `{ escalation_id, verdict, nonce, sig? }` | `accepted` \| `expired` \| `superseded` | **local peer; or remote with a hardware signature** (`I-06`) | **yes** — first valid verdict wins |
+| `respondEscalation` | `{ escalation_id, verdict, nonce, sig? }` | `accepted` \| `expired` \| `superseded` | local peer; remote peer for `deny`; remote peer **with a hardware signature** for `allow` (`I-06`) | **yes** — first valid verdict wins |
 | `setPolicy` | `{ source, generation_expected }` | new generation \| `conflict` | **human principal only** (`F7.PS.08`) | no — compare-and-swap |
 | `manageGrant` | `{ op: create\|revoke, … }` | grant state | **human principal only** | yes |
 | `manageSuppression` | `{ op: create\|revoke, … }` | rule state | **human principal only** | yes |
-| `pairDevice` | `{ qr_payload, device_pubkey, hw_pubkey }` | `paired` \| `rejected` | **local peer only** | no |
+| `pairDevice` | `{ qr_payload, device_pubkey, hw_pubkey? }` | `paired` \| `rejected` | **local peer only** | no |
 | `revokeDevice` | `{ device_id }` | `revoked` | local peer, or the device revoking itself | yes |
 | `verifySession` | `{ session_id }` | inclusion proofs, `key_hw`, anchor status | any | yes |
 
-**Three authorization classes**, checked by the server on every call and never by the client:
+**Four authorization classes**, checked by the server on every call and never by the client:
 
 - **any authenticated peer** — read-only methods.
 - **local peer** — `SO_PEERCRED`, UID matches the installing user.
+- **remote peer** — a paired device over a valid Noise session (`F11.PA.02`); its `allow` additionally carries the hardware signature, its `deny` does not (`I-06`).
 - **human principal** — a local peer whose process is **not inside any session cgroup**. This is the mechanical distinction between the user and the agent, and it is what `F7.PS.08` needs in order to be enforceable rather than aspirational.
 
 ### I.2 Errors
@@ -3789,6 +3830,8 @@ Protocol failures are JSON-RPC errors; **domain outcomes are results**. `expired
 | Condition | Shape | Note |
 |---|---|---|
 | Malformed / unknown method | `-32600` / `-32601` | |
+| Remote `allow` without a valid hardware signature, or on a `CRITICAL` class | **result** `rejected`, carrying the reason class | `I-06`; a valid Noise session is never sufficient |
+| Unknown `session_id` / `escalation_id` / `device_id` | `-32602` | Invalid params; for pairing, never distinguishes "never existed" from "expired" |
 | Unauthorized | `-32001`, naming the class required | Never says *why* the caller failed |
 | Version incompatible | `-32002`, both versions | §3.6 |
 | Escalation expired or already answered | **result** | |

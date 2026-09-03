@@ -29,7 +29,7 @@ Deliberately narrow: one probe, one rule, one adjudicator. No UI, no LLM, no com
 
 Plan §3.1–3.6 add what was missing: layering with enforced dependency direction (rules `A-01`…`A-06`), the full trait catalogue, the end-to-end event lifecycle, the concurrency and ownership model, the error and degradation model, and the versioning contracts between the five independently deployable artifacts.
 
-The central insight recorded there: the system does not have five sensing subsystems and five prompt mechanisms. It has **`Sensor`, `Enforcer` and `Adjudicator`, with fifteen implementations between them.**
+The central insight recorded there: the system does not have five sensing subsystems and five prompt mechanisms. It has **`Sensor`, `Enforcer` and `Adjudicator`, with twenty-two implementations between them (twenty-one `[MVP]`).**
 
 ### 4. Make the interface freeze a milestone
 
@@ -45,11 +45,11 @@ Permitted because no code exists. **Task IDs freeze at F0 start** (`I-23`).
 
 **Good.**
 - Integration risk moves from week 10 to week 4.5, when there is almost nothing to throw away.
-- Four tracks run genuinely in parallel after F2, because each codes against frozen traits on top of a working system and can test with `MockSensor`/`NullEnforcer` without the other tracks existing.
+- Five tracks run genuinely in parallel (F9→F10→F11 from GATE F1, the rest after F2), because each codes against frozen traits on top of a working system and can test with `MockSensor`/`NullEnforcer` without the other tracks existing.
 - The circular dependency is gone: F3 compiles real policy from day one.
 - Every phase after F2 is demoable. Progress becomes observable rather than inferred from task lists.
 - Budget gates start measuring real code in week 4.5 instead of stubs until week 10.
-- Critical path: 11 weeks, down from 11–12, with far lower variance — the variance reduction matters more than the week.
+- Critical path: 11.5 weeks with F8b on it (§3.7), down from 11–12, with far lower variance — the variance reduction matters more than the week.
 
 **Costs.**
 - F1 grows from 2 to 2.5 weeks, and F2 adds a week that produces almost no features. This is the price of the risk transfer and it is worth paying: an interface defect found in F1 costs hours; the same defect found in F6 invalidates three tracks.
@@ -69,4 +69,4 @@ Permitted because no code exists. **Task IDs freeze at F0 start** (`I-23`).
 - [x] Deduplication: red flags → Annex C only; budgets → §2.22 + `budgets.toml` only; capability matrix → Annex D only; session protocol → `docs/ai/AGENTS.md` only.
 - [ ] `F0.GATE.06` — implement the dependency-direction gate.
 - [ ] `F0.GATE.07` — implement the doc-drift gate between §2.22 and `budgets.toml`.
-- [ ] Write ADR-04 (Tauri v2 + uniffi fallback) and ADR-05 (multiplatform detection scope).
+- [x] Write ADR-04 (Tauri v2 + uniffi fallback) and ADR-05 (multiplatform detection scope).

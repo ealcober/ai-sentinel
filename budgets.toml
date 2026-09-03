@@ -5,7 +5,8 @@
 #
 # `target` is what we aim for and track as a trend; `hard` is the release blocker.
 # `direction` is MANDATORY on every metric: "min" = lower is better, "max" = higher
-# is better. verify-budgets refuses to run on an entry that lacks it — inferring the
+# is better. A "min" metric fails when value > hard; a "max" metric fails when
+# value < hard; equality passes. verify-budgets refuses to run on an entry that lacks it — inferring the
 # direction from target-vs-hard is undefined when they are equal (the 0/0 entries)
 # and inverted for throughput.
 #
@@ -32,7 +33,7 @@ rss_mb           = { direction = "min", target = 110, hard = 150 }
 bpf_map_locked_mb = { direction = "min", target = 8, hard = 12 }
 
 # [kernel.windows] nonpaged_pool_mb — deferred by ADR-02; budget retained in plan
-# Annex F. Re-add when the driver returns. verify-budgets reports "skipped: no
+# §2.22 (the `[POST — Annex F]` row). Re-add when the driver returns. verify-budgets reports "skipped: no
 # artefact" for an absent component, never "pass".
 
 [mobile.ios_extension]
@@ -55,7 +56,7 @@ idle_battery_pct_per_day = { direction = "min", target = 1.0,  hard = 3.0 }
 per_flow_latency_us = { direction = "min", target = 40, hard = 150 }
 
 [sdk]
-per_call_overhead_us = { direction = "min", target = 50, hard = 200 }
+per_call_overhead_us = { direction = "min", target = 50, hard = 200 }   # p99 per check_tool_call
 
 [cpu]
 # Measured against the reference workload defined in the implementation plan §2.22.
@@ -83,6 +84,7 @@ correlation_precision   = { direction = "max", target = 0.98, hard = 0.95 }
 correlation_recall      = { direction = "max", target = 0.95, hard = 0.90 }
 compressor_irr          = { direction = "max", target = 0.90, hard = 0.85 }
 compressor_reduction    = { direction = "max", target = 0.85, hard = 0.60 }
+compressor_precision    = { direction = "max", target = 0.90, hard = 0.90 }
 sentinel_precision      = { direction = "max", target = 0.97, hard = 0.95 }
 sentinel_recall         = { direction = "max", target = 0.95, hard = 0.90 }
 sentinel_video_fp_pct   = { direction = "min", target = 0.2,  hard = 1.0 }

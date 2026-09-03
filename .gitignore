@@ -1,6 +1,6 @@
 /target
 **/*.rs.bk
-# Cargo.lock IS committed: this workspace ships binaries, and reproducible release
+# Cargo.lock is committed from F0.REPO.01 onward: this workspace ships binaries, and reproducible release
 # builds (plan DEP.BLD.05, DEP.SUP.07) and cargo-auditable manifests are meaningless
 # without a fixed resolved dependency set.
 

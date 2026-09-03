@@ -30,4 +30,4 @@ ADRs are numbered **strictly in order of creation**: `NN_slug.md`, two digits, f
 
 An ADR that formalizes a Part II finding says `Formalizes H-xx` in its header. **The H number and the ADR number are unrelated.**
 
-`ADR-04` (Tauri v2 for the mobile client, with a `uniffi` fallback) and `ADR-05` (multiplatform detection scope and the AI Sentinel sensor architecture) are referenced by the plan and should be written next.
+`ADR-04` (Tauri v2 for the mobile client, with a `uniffi` fallback) and `ADR-05` (multiplatform detection scope and the AI Sentinel sensor architecture) are referenced by the plan and exist.

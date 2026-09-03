@@ -113,6 +113,8 @@ Annexes   A. Causal graph ontology (normative schema)
           E. Glossary
           F. Windows minifilter specification            [POST — ADR-02]
           G. Detection catalogue (normative)
+          H. The xtask command surface (normative)
+          I. Control-plane protocol (normative)
 ```
 
 ---
@@ -1291,7 +1293,7 @@ What this buys, concretely:
 | `F0.REPO.01` | Cargo workspace with all crates stubbed, each in its §3.1 layer (Part VI layout) | `cargo check --workspace` passes |
 | `F0.REPO.05` | **Layer scaffolding**: `layers.toml` lists every crate with its layer, the excluded Windows crate and the composition root; crates created with the dependency direction already correct | `cargo xtask verify-layering` passes on stubs and fails on a planted upward edge |
 | `F0.REPO.02` | `rust-toolchain.toml` pinned at the root; `crates/aisme-ebpf/rust-toolchain.toml` pins the nightly for `build-std`, with the Aya version it was validated against recorded in its comment | Reproducible across machines; the root file's claim is true |
-| `F0.REPO.03` | `xtask` build orchestrator (`cargo xtask build-ebpf`, `dist`, `verify-budgets`) | `cargo xtask --help` works |
+| `F0.REPO.03` | `xtask` orchestrator: **the argument surface of every command in Annex H**, each unimplemented body exiting 3 with the task that owns it; plus working `build-ebpf`, `dist`, `vm up/run/probe`, `verify-layering`, `verify-budgets`, `verify-docs`, `verify-backlog` and `gate --level` | `cargo xtask --help` lists all 67; an unimplemented one exits 3 naming its phase |
 | `F0.REPO.04` | `docs/adr/00_template.md`. The rest of `docs/ai/` (`AGENTS.md`, `STATE.md`, `invariants.md`, `adr/01_*`) **exists pre-F0**; `memory/` is seeded by `F0.DOC.01`. **No `glossary.md`** — Annex E is the single glossary | Part VII protocol executable |
 | `F0.GATE.01` | **Local gate runner**: `cargo xtask gate --level <commit\|pr\|nightly\|weekly>` runs the §4.12 cadence sets; a `pre-commit` hook runs `commit`; `nightly` and `weekly` are launched by a local scheduler. The WSL2 lane runs on the owner's Windows machine, where WSL2 is the real target. **No hosted CI** (`I-27`) | Each level runs green on an empty workspace |
 | `F0.GATE.02` | Lints as errors: `clippy::pedantic`, `unsafe_op_in_unsafe_fn`, `missing_docs` on public API | CI fails on warning |
@@ -1300,7 +1302,7 @@ What this buys, concretely:
 | `F0.GATE.05` | Forbidden-dependency gate (`serde_json` in `agentd`, `frida-*` anywhere, `bpf_probe_write_user` outside the research feature) | Fails on a planted violation |
 | `F0.GATE.06` | **Dependency-direction gate**: §3.1 rules `A-01`…`A-06` checked over `cargo metadata` | Fails on a planted upward dependency |
 | `F0.GATE.07` | Budget-drift gate: plan §2.22 ↔ `budgets.toml` ↔ the headline figures in `CLAUDE.md` and `README.md` agree on every value **and direction** | Fails on a planted mismatch |
-| `F0.GATE.08` | **`verify-docs`**: read-order lists identical across `CLAUDE.md`, `AGENTS.md` and Part 0; the DoD contains the ADR-review line; `STATE.md` has its §7.3 headings; ADR numbers contiguous with no gaps; Part I index matches the real headers; `NN_` naming under `docs/` (exempting `README.md` and `docs/ai/*`) with no `NN_-`; phase-table sums match the stated totals; `Cargo.lock` and `layers.toml` tracked; **no `.github/workflows/*.yml` triggering on push, pull request or schedule** (`I-27`) | Fails on each planted violation |
+| `F0.GATE.08` | **`verify-docs`**: every `cargo xtask` string in the plan resolves to an Annex H row and every row names a task that exists; read-order lists identical across `CLAUDE.md`, `AGENTS.md` and Part 0; the DoD contains the ADR-review line; `STATE.md` has its §7.3 headings; ADR numbers contiguous with no gaps; Part I index matches the real headers; `NN_` naming under `docs/` (exempting `README.md` and `docs/ai/*`) with no `NN_-`; phase-table sums match the stated totals; `Cargo.lock` and `layers.toml` tracked; **no `.github/workflows/*.yml` triggering on push, pull request or schedule** (`I-27`) | Fails on each planted violation |
 | `F0.VM.01` | Reproducible test VM images: Ubuntu 22.04/24.04, Debian 12, Fedora 40 | `cargo xtask vm up <name>` boots |
 | `F0.VM.02` | Kernel matrix via `virtme-ng`: 5.4 (expect L1), 5.10 (L2-), 5.15 (L2), 6.1 (L2), 6.8 (L2/L3), **and latest stable ≥ 6.15 for Landlock audit**. Each boots, runs a smoke BPF program, **and reports the expected tier** from the capability probe | Tier per kernel matches the table, or the difference is explained |
 | ~~`F0.WIN.01`~~ | ~~Start EV code-signing certificate procurement~~ | **`DEPRECATED`** — cancelled by ADR-02 |
@@ -1319,6 +1321,7 @@ git ls-files --error-unmatch Cargo.lock layers.toml     # both tracked
 cargo check --workspace && cargo clippy --workspace -- -D warnings
 cargo xtask verify-layering     # layering enforced from commit #1
 cargo xtask verify-docs         # cross-document consistency, incl. no push workflows
+cargo xtask gate --level commit # every member PASS or PENDING; none FAIL
 cargo xtask verify-budgets      # passes on stubs; refuses entries without a direction
 cargo xtask vm up ubuntu-24.04 && cargo xtask vm up wsl2-ubuntu-24.04
 cargo xtask vm probe --all      # reports the tier and Landlock ABI per kernel
@@ -1366,10 +1369,70 @@ Rules: fixed 320-byte total — `24 + 20 + 2 + 1 + 1 + 1 + 15 + 256`, asserted a
 
 | ID | Task | Notes |
 |---|---|---|
-| `F1.EV.01` | `RawEvent`, `EventKind`, `EventPayload`, `Verdict` in `aisme-ebpf-common` (`no_std`) | Must compile for `bpfel-unknown-none` |
+| `F1.EV.01` | `RawEvent`, `EventKind`, `EventPayload`, `Verdict` in `aisme-ebpf-common` (`no_std`), **with the §F1.1.1 taxonomy in full** | Must compile for `bpfel-unknown-none` |
 | `F1.EV.02` | Wire-version negotiation + `WireVersionMismatch` error | Test: old driver + new daemon refuses cleanly |
-| `F1.EV.03` | Property tests: `static_assert!(size_of::<RawEvent>() == 320)`, field offsets (a moved field is a wire break), endianness | `static_assertions` |
+| `F1.EV.03` | Property tests: `static_assert!(size_of::<RawEvent>() == 320)`, field offsets (a moved field is a wire break), endianness, **every variant inside its declared range, the range→payload map total, and every variant produced by at least one producer in the suite** | `static_assertions`; an unproduced variant is dead weight or a missing producer |
 | `F1.EV.04` | String interner (`StrId`, arena, 16k LRU for paths) | Bounded memory, no unbounded growth |
+
+##### F1.1.1 Event taxonomy (normative)
+
+`EventKind` is `u16` and **append-only**. Append-only only means something if additions never force a renumbering, so **ranges are reserved per category** and never reordered: a new variant takes the next free value *inside its range*, and a category that fills its range gets a second range.
+
+The ranges are also the kernel's grouping primitive. A BPF program asking "is this an execution hazard?" is `kind >= 0x4000 && kind < 0x5000` — one comparison, no map lookup.
+
+```rust
+#[repr(u16)]
+#[non_exhaustive]
+pub enum EventKind {
+    // 0x0000–0x0FFF  META — lifecycle and self-observability
+    SessionStart = 0x0001, SessionEnd = 0x0002, CapabilityChange = 0x0003,
+    CoverageGap  = 0x0004,       // I-17: observation lapsed, recorded as a gap
+    DropNotice   = 0x0005,       // ring overflow, carrying the count
+    PolicyGeneration = 0x0006,
+    DegradedEnter = 0x0007, DegradedLeave = 0x0008,
+
+    // 0x1000–0x1FFF  PROCESS
+    ProcFork = 0x1001, ProcExec = 0x1002, ProcExit = 0x1003,
+    ProcSetuid = 0x1004, ProcCgroupMove = 0x1005,
+
+    // 0x2000–0x2FFF  FILE
+    FileOpen = 0x2001, FileWrite = 0x2002, FileUnlink = 0x2003,
+    FileRename = 0x2004, FileTruncate = 0x2005, FileChmod = 0x2006,
+    FileLink = 0x2007, FileMount = 0x2008,
+
+    // 0x3000–0x3FFF  NETWORK
+    SockConnect = 0x3001, SockAccept = 0x3002, SockSend = 0x3003,
+    SockClose = 0x3004, DnsQuery = 0x3005,
+    FlowOpen = 0x3006, FlowClose = 0x3007,        // mobile tunnel (F10)
+
+    // 0x4000–0x4FFF  EXECUTION HAZARD — the never-promptable classes
+    MemfdCreate = 0x4001, ExecveAt = 0x4002, PreloadEnv = 0x4003,
+
+    // 0x5000–0x5FFF  INTROSPECTION — anti-analysis signals (H-05)
+    PtraceAttach = 0x5001, ProcessVmRw = 0x5002, MapsRead = 0x5003,
+    BpfCall = 0x5004, PerfEventOpen = 0x5005, SelfObservation = 0x5006,
+
+    // 0x6000–0x6FFF  SEMANTIC — the intent plane (F4, F9)
+    Prompt = 0x6001, ChainOfThought = 0x6002, ToolCall = 0x6003,
+    ToolResult = 0x6004, ToolManifest = 0x6005, InferenceTurn = 0x6006,
+
+    // 0x7000–0x7FFF  DECISION — enforcement and the permission model
+    VerdictIssued = 0x7001, EscalationRaised = 0x7002, EscalationResolved = 0x7003,
+    GrantCreated = 0x7004, GrantExpired = 0x7005, GrantRevoked = 0x7006,
+    SuppressionHit = 0x7007, ScopeWidenAttempt = 0x7008,
+
+    // 0x8000–0x8FFF  DETECTION — Annex G
+    FindingRaised = 0x8001, SessionRiskChanged = 0x8002,
+
+    // 0x9000–0x9FFF  FORENSIC
+    MerkleBlockClosed = 0x9001, RootAnchored = 0x9002,
+}
+```
+
+Two rules travel with the enumeration:
+
+- **`EventPayload`'s variant is determined by `kind`'s range**, one payload struct per range, each ≤ 256 B: `MetaPayload`, `ProcPayload`, `FilePayload`, `NetPayload`, `HazardPayload`, `IntrospectPayload`, `SemanticPayload`, `DecisionPayload`, `DetectionPayload`, `ForensicPayload`. A compile-time table maps range → payload, and `F1.EV.03` asserts it is total. A union whose discriminant lives in another field is exactly the shape that misreads under skew; this closes it.
+- **`#[non_exhaustive]`**, so a consumer built against an older wire version cannot match exhaustively and silently miss a new kind. It must carry a `_ =>` arm, which is the honest "unknown kind — recorded, not interpreted" path (`I-17`).
 
 #### F1.2 Causal graph ontology *(moved here from F5 in review)*
 
@@ -3314,6 +3377,151 @@ For compliance conversations, not for design. The design comes from the threat m
 Coding agents increasingly ship their own sandbox and allow/deny rules. Those are **inside the agent's trust domain**: configured by files the agent can read and write (`DT-14`), usually scoped to one tool, and escapable — a published case had an agent reach a denied binary through `/proc/self/root`, which its own sandbox caught but its denylist did not.
 
 AISME sits **outside**, at the operating system. It sees that escape as `DT-05`, and it is not configurable by the agent. The two are complementary and the product must say so: **AISME is not a replacement for an agent's sandbox, and an agent's sandbox is not a replacement for AISME.** Neither claim survives contact with a determined agent alone.
+
+---
+
+---
+
+## Annex H — The `xtask` command surface (normative)
+
+Every gate in this plan is a `cargo xtask` invocation, and every gate runs locally (`I-27`). This annex is the inventory: **every command, the task that implements it, the phase that owns it, and the `gate --level` sets it belongs to.**
+
+### H.1 Why this annex exists
+
+The plan cited these commands across its gates long before any of them were assigned to a task. A gate that cannot run is indistinguishable from a gate that passes, and the plan's entire quality argument rests on gates. This annex closes that: `verify-docs` asserts three ways — every `cargo xtask` string in the plan resolves to a row here, every row names a task that exists, and every command is reachable through the binary's argument parser.
+
+### H.2 The mechanism: exit code 3
+
+`F0.REPO.03` creates **the argument surface of every command below**, from the first week. A command whose phase has not arrived yet parses its arguments normally and then exits **3**:
+
+```
+error: `cargo xtask test-taint` is not implemented yet.
+       Implemented by F5.DT.01 (phase F5 — Correlation, taint and forensics).
+       Annex H lists every command and the task that implements it.
+```
+
+| Exit | Meaning | `gate --level` reports it as |
+|---|---|---|
+| 0 | The property holds | `PASS` |
+| 1 | The property does **not** hold | `FAIL` — the gate fails |
+| 2 | Could not run: missing VM, fixture, corpus or hardware | `SKIP` with the reason — never silent |
+| 3 | Not implemented in any phase yet | `PENDING <phase>` — the gate does **not** fail |
+
+The consequence is worth stating: **the command surface becomes the plan's own progress report.** Running `cargo xtask gate --level pr` in week 5 prints, line by line, what is done and which phase owes the rest — instead of a shell error that looks like a broken toolchain.
+
+### H.3 Family rules
+
+| Family | Rule |
+|---|---|
+| `verify-*` | Hermetic: no VM, no network, no fixture beyond the repository. Runs in seconds. Always in `commit` |
+| `test-*` | May need fixtures, corpora or a VM. Declares its needs and exits 2 with the reason when they are absent |
+| `bench-*` | Produces a number, writes it under `docs/reports/`, compares against `budgets.toml`. **Never in `commit`** — a benchmark on a busy laptop is noise |
+| `vm *` | Provisioning and execution inside disposable VMs (`I-12`). Never touches the host kernel |
+| `gate --level` | The composite. Runs one level's members and reports **each member's result**, never a summary (`AGENTS.md` §3) |
+| `sdk *` · `sentinel *` · `win *` | Sub-namespaces owned by F9, F10 and Annex F |
+
+### H.4 The inventory
+
+**`bench-*`**
+
+| Command | Owning task | Phase | Level |
+|---|---|---|---|
+| `cargo xtask bench-hotloop` | `F0.REPO.03` | F0 | `nightly` |
+| `cargo xtask bench-t0` | `F3.EN.08` | F3 | `nightly` |
+
+**`build-*`**
+
+| Command | Owning task | Phase | Level |
+|---|---|---|---|
+| `cargo xtask build-ebpf` | `F0.REPO.03` | F0 | — |
+| `cargo xtask dist` | `F0.REPO.03` | F0 | — |
+
+**`gate-*`**
+
+| Command | Owning task | Phase | Level |
+|---|---|---|---|
+| `cargo xtask gate` | `F0.REPO.03` | F0 | — |
+
+**`test-*`**
+
+| Command | Owning task | Phase | Level |
+|---|---|---|---|
+| `cargo xtask sdk test-absent-sentinel` | `F9.DOC.01` | F9 | `pr` |
+| `cargo xtask sdk test-conformance` | `F9.DOC.01` | F9 | `pr` |
+| `cargo xtask sdk test-consistency` | `F9.DOC.01` | F9 | `pr` |
+| `cargo xtask sdk test-forgery` | `F9.DOC.01` | F9 | `pr` |
+| `cargo xtask sdk test-overhead` | `F9.DOC.01` | F9 | `pr` |
+| `cargo xtask sdk test-veto-e2e` | `F9.DOC.01` | F9 | `pr` |
+| `cargo xtask sdk test-warn` | `F9.DOC.01` | F9 | `pr` |
+| `cargo xtask sentinel test-attribution` | `F10.CORE.09` | F10 | `pr` |
+| `cargo xtask sentinel test-benign` | `F10.CORE.09` | F10 | `pr` |
+| `cargo xtask sentinel test-classifier` | `F10.CORE.09` | F10 | `pr` |
+| `cargo xtask sentinel test-no-payload-read` | `F10.CORE.09` | F10 | `pr` |
+| `cargo xtask sentinel test-sdk-loopback` | `F10.CORE.09` | F10 | `pr` |
+| `cargo xtask sentinel test-slam` | `F10.CORE.09` | F10 | `pr` |
+| `cargo xtask sentinel verify-budgets` | `F10.CORE.09` | F10 | `pr` |
+| `cargo xtask test-a11y` | `F8.API.02` | F8 | `pr` |
+| `cargo xtask test-battery` | `F11.CC.01` | F11 | `pr` |
+| `cargo xtask test-benign` | `F7.CB.02` | F7 | `pr` |
+| `cargo xtask test-compression` | `F6.IRR.01` | F6 | `pr` |
+| `cargo xtask test-correlation` | `F5.DT.01` | F5 | `pr` |
+| `cargo xtask test-degrade-no-uprobe` | `F4.VAL.01` | F4 | `pr` |
+| `cargo xtask test-detect` | `F4.VAL.01` | F4 | `pr` |
+| `cargo xtask test-enforce` | `F3.EN.08` | F3 | `pr` |
+| `cargo xtask test-failsafe` | `F7.CB.02` | F7 | `pr` |
+| `cargo xtask test-grant-lifecycle` | `F7.CB.02` | F7 | `pr` |
+| `cargo xtask test-kernels` | `F3.EN.08` | F3 | `pr` |
+| `cargo xtask test-keylog-socket` | `F4.VAL.01` | F4 | `pr` |
+| `cargo xtask test-merkle-tamper` | `F5.DT.01` | F5 | `pr` |
+| `cargo xtask test-mobile-e2e` | `F11.CC.01` | F11 | `pr` |
+| `cargo xtask test-no-hardware-key` | `F11.CC.01` | F11 | `pr` |
+| `cargo xtask test-observer-injection` | `F6.IRR.01` | F6 | `pr` |
+| `cargo xtask test-observer-proposals` | `F6.IRR.01` | F6 | `pr` |
+| `cargo xtask test-observer-schema` | `F6.IRR.01` | F6 | `pr` |
+| `cargo xtask test-observer-score-never-lower` | `F8.API.02` | F8 | `pr` |
+| `cargo xtask test-pairing` | `F11.CC.01` | F11 | `pr` |
+| `cargo xtask test-paths` | `F3.EN.08` | F3 | `pr` |
+| `cargo xtask test-policy-compiler` | `F0.REPO.03` | F0 | `pr` |
+| `cargo xtask test-prompt-budget` | `F7.CB.02` | F7 | `pr` |
+| `cargo xtask test-protocol-contract` | `F8.API.02` | F8 | `pr` |
+| `cargo xtask test-redaction` | `F4.VAL.01` | F4 | `pr` |
+| `cargo xtask test-redteam` | `F7.CB.02` | F7 | `pr` |
+| `cargo xtask test-relay-blindness` | `F11.CC.01` | F11 | `pr` |
+| `cargo xtask test-remote-authz` | `F11.CC.01` | F11 | `pr` |
+| `cargo xtask test-scope-narrow` | `F7.CB.02` | F7 | `pr` |
+| `cargo xtask test-skeleton` | `F0.REPO.03` | F0 | `pr` |
+| `cargo xtask test-slam` | `F3.EN.08` | F3 | `pr` |
+| `cargo xtask test-suppression` | `F7.CB.02` | F7 | `pr` |
+| `cargo xtask test-taint` | `F5.DT.01` | F5 | `pr` |
+| `cargo xtask test-tls` | `F4.VAL.01` | F4 | `pr` |
+| `cargo xtask test-tls-selftest` | `F4.VAL.01` | F4 | `pr` |
+| `cargo xtask test-ui-e2e` | `F8.API.02` | F8 | `pr` |
+| `cargo xtask test-uiagent-chaos` | `F8.API.02` | F8 | `pr` |
+| `cargo xtask test-warn-semantics` | `F7.CB.02` | F7 | `pr` |
+| `cargo xtask win test-deadlock` | `WIN.US.06` | WIN | `pr` |
+| `cargo xtask win test-irp-storm` | `WIN.US.06` | WIN | `pr` |
+| `cargo xtask win test-unload` | `WIN.US.06` | WIN | `pr` |
+| `cargo xtask win verify-driver` | `WIN.US.06` | WIN | `pr` |
+
+**`verify-*`**
+
+| Command | Owning task | Phase | Level |
+|---|---|---|---|
+| `cargo xtask verify-budgets` | `F3.EN.08` | F3 | `commit` |
+| `cargo xtask verify-docs` | `F0.REPO.03` | F0 | `commit` |
+| `cargo xtask verify-layering` | `F0.REPO.03` | F0 | `commit` |
+
+**`vm-*`**
+
+| Command | Owning task | Phase | Level |
+|---|---|---|---|
+| `cargo xtask vm probe` | `F0.REPO.03` | F0 | `pr` |
+| `cargo xtask vm run` | `F0.REPO.03` | F0 | `pr` |
+| `cargo xtask vm up` | `F0.REPO.03` | F0 | `pr` |
+
+**Levels.** `commit` (≤ 10 min, the pre-commit hook) · `pr` (≤ 60 min, before merging a branch) · `nightly` and `weekly` (local scheduler, §4.12). A command marked `—` is invoked directly, not as part of a level.
+
+**Adding a command.** Add the row here first, then the task that implements it. `verify-docs` fails a gate command with no row, and fails a row whose task does not exist — in that order, so the error names the actual mistake.
 
 ---
 

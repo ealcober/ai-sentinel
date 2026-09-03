@@ -3653,6 +3653,7 @@ The consequence is worth stating: **the command surface becomes the plan's own p
 | Command | Owning task | Phase | Level |
 |---|---|---|---|
 | `cargo xtask verify-budgets` | `F3.EN.08` | F3 | `commit` |
+| `cargo xtask verify-backlog` | `F0.REPO.03` | F0 | `commit` |
 | `cargo xtask verify-docs` | `F0.REPO.03` | F0 | `commit` |
 | `cargo xtask verify-layering` | `F0.REPO.03` | F0 | `commit` |
 

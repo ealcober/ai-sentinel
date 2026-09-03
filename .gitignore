@@ -1,0 +1,39 @@
+/target
+**/*.rs.bk
+Cargo.lock
+
+# Build artefacts
+/dist
+*.pdb
+*.sys
+*.obj
+*.o
+
+# Local state — never commit forensic data or keys
+*.wal
+*.parquet
+*.duckdb
+/local
+.aisme/
+*.pem
+*.key
+*.pfx
+*.cer
+
+# Mobile
+/mobile/android/build
+/mobile/android/.gradle
+/mobile/ios/build
+*.xcuserstate
+DerivedData/
+
+# UI
+/ui/node_modules
+/ui/dist
+
+# Editors / OS
+.DS_Store
+*.swp
+.idea/
+.vscode/
+*:Zone.Identifier

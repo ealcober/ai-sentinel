@@ -1,0 +1,7 @@
+# Pinned for reproducibility across developer machines and CI.
+# The eBPF crate (crates/aisme-ebpf) requires nightly for build-std targeting
+# bpfel-unknown-none; it declares its own override. Everything else is stable.
+[toolchain]
+channel = "1.82.0"
+components = ["rustfmt", "clippy", "rust-src"]
+targets = ["x86_64-unknown-linux-gnu"]

@@ -1,0 +1,98 @@
+Arquitectura de Observabilidad de Sesiones de IA: Intercepción eBPF en Binarios Opacos y Correlación Causal de Eventos de Sistema
+La proliferación de clientes de Inteligencia Artificial locales y de línea de comandos, ejemplificados por arquitecturas como Claude Desktop y Claude Code, introduce desafíos técnicos críticos para la auditoría, la seguridad y la observabilidad de sistemas1. Estas herramientas operan frecuentemente empaquetadas sobre motores de ejecución modernos como Bun, Node.js o Electron, los cuales integran de forma estática librerías criptográficas de alto rendimiento (particularmente variantes de BoringSSL) dentro de binarios monolíticos despojados de símbolos de depuración (stripped binaries)1.
+La ausencia de tablas de símbolos dinámicos (.dynsym) imposibilita la intercepción convencional basada en LD_PRELOAD o la resolución de nombres sobre librerías compartidas (libssl.so)1. Simultáneamente, la implementación de esquemas estrictos de fijación de certificados (SSL Pinning) neutraliza los proxies de inspección de red intermedios (MITM)1.
+Para superar estas barreras, el submódulo para el subsistema de monitorización de sesiones (AI Sessions Manager) articula una solución de telemetría no invasiva dividida en tres componentes esenciales: escaneo heurístico de memoria para inyección dinámica de sondas eBPF (uprobes), neutralización en memoria de validaciones criptográficas sin disrupción de canal, y un motor de correlación causal multicapa que vincula las directivas sintácticas del modelo con las mutaciones físicas en el sistema operativo anfitrión1.
+1. Patrones de Reconocimiento y Hooking eBPF en Binarios Stripped
+1.1. Anatomía de Runtimes Monolíticos y Limitaciones de Símbolos
+En entornos como Bun o Electron compilados en modo Release, los símbolos de las funciones criptográficas no se exportan en las tablas ELF convencionales1. Las llamadas a funciones críticas como SSL_read, SSL_write y SSL_read_ex se resuelven internamente como saltos directos o desplazamientos relativos dentro de la sección de texto ejecutable (.text)2.
+Para interceptar el flujo de datos en texto plano antes del cifrado y después del descifrado sin degradar el rendimiento del hilo de ejecución, el componente de observación debe operar directamente sobre los puntos de entrada (entrypoints) y retorno de estas rutinas en la memoria virtual del proceso1.
+El flujo de control se establece desde el espacio de usuario hacia el núcleo: el proceso objetivo ejecuta el binario opaco, el demonio de monitorización identifica los desplazamientos relativos de las rutinas de cifrado, y el subsistema eBPF inserta sondas directas que derivan los búferes de texto plano hacia un búfer de anillo (ring buffer) compartido para su procesamiento analítico1.
+1.2. Escáner de Memoria Heurístico en Rust
+El demonio de monitorización desarrollado en Rust implementa un analizador que mapea la estructura ELF del binario ejecutable accesible desde /proc/<pid>/exe o su imagen en disco, examinando los segmentos de memoria activa a través de /proc/<pid>/maps y llamadas controladas de lectura1. En lugar de depender de cadenas de texto de símbolos ausentes, el motor rastrea secuencias de código máquina (byte signatures) y referencias cruzadas constantes en la sección de datos de sólo lectura (.rodata / .rdata)7.
+El rastreo se fundamenta en tres técnicas convergentes:
+La identificación de prólogos de funciones evalúa las secuencias deterministas de instrucciones de inicialización de marco de pila en arquitecturas x86_64 (tales como combinaciones de push rbp, mov rbp, rsp, push r15, push r14, seguidas de la verificación del estado de inicialización del puntero SSL mediante la macro interna OPENSSL_PUT_ERROR)7.
+El anclaje por cadenas internas de diagnóstico aprovecha que BoringSSL retiene literales de aserción y nombres de archivos de depuración como ssl_lib.cc o identificadores de error constantes, como SSL_R_UNINITIALIZED correspondiente al valor entero 0xE27. El escáner localiza la dirección de la cadena ssl_lib.cc en .rodata, rastrea todas las instrucciones que cargan dicha dirección relativa al puntero de instrucciones (rip-relative addressing) y desensambla linealmente hacia el prólogo superior para hallar el encabezado exacto de la función contenedora7.
+El análisis de tablas de despacho y constantes HKDF se emplea en variantes con optimizaciones agresivas de compilador (inlining parcial), permitiendo al escáner identificar las constantes criptográficas asociadas a las máquinas de estado de TLS 1.3 y los bloques de expansión de claves1.
+1.3. Cálculo de Desplazamientos Relativos y Enlace con Aya
+Una vez que el escáner identifica la dirección virtual de memoria () donde comienza la función requerida, el demonio calcula el desplazamiento relativo en archivo (file offset) necesario para la inyección de la sonda1:
+
+En esta formulación,  representa la dirección virtual base del segmento LOAD ejecutable en el encabezado ELF y  es el desplazamiento físico de dicho segmento en el archivo binario2.
+Utilizando la librería de eBPF en Rust Aya, el demonio registra dinámicamente dos sondas principales9:
+La sonda uprobe en SSL_write (Entrada) se fija en el offset calculado de la función de transmisión8. Bajo el estándar ABI x86_64 de System V, el segundo argumento (registro RSI) contiene el puntero al búfer de datos en claro y el tercer argumento (registro RDX) la longitud en bytes8. El programa eBPF extrae este búfer mediante bpf_probe_read_user() y lo emite a un mapa BPF_MAP_TYPE_RINGBUF8.
+El par de sondas uprobe y uretprobe en SSL_read (Entrada y Retorno) resuelve la captura de datos entrantes9. La sonda de entrada intercepta el contexto, extrayendo el puntero de destino del búfer (almacenado en RSI) y guardándolo en un mapa BPF_MAP_TYPE_HASH indexado por la tupla de identificación de hilo (pid, tgid, tid)9. Cuando la función concluye su ejecución y retorna el número real de bytes descifrados (almacenado en el registro RAX), la sonda de retorno (uretprobe) recupera el puntero original del mapa y transfiere el contenido descifrado al espacio de usuario9.
+2. Derrota de SSL Pinning Avanzado e Instrumentación en Memoria
+2.1. Arquitectura del Motor de Parcheo en Tiempo Real
+Las aplicaciones basadas en Electron o interfaces CLI avanzadas a menudo integran validaciones criptográficas adicionales a nivel de aplicación que abortan la sesión si el certificado del servidor no coincide con las claves públicas o huellas pre-empaquetadas en el código1. Si bien la intercepción mediante eBPF a nivel de API interna (SSL_read/SSL_write) evita la necesidad de actuar como proxy de red tradicional, en escenarios donde se requiera desviar el tráfico hacia pasarelas analíticas secundarias el sistema integra un motor de instrumentación dinámica en memoria basado en Rust con interfaz hacia librerías de parcheo binario nativo (equivalente a Frida Core)1.
+El mecanismo neutraliza las comprobaciones locales de confianza sin alterar los certificados del sistema operativo anfitrión ni levantar sospechas en los mecanismos de detección de anomalías del servidor remoto1. El flujo de red entre el cliente y el agente cloud permanece ininterrumpido mientras que las rutinas internas de validación son reconfiguradas en caliente para aceptar la cadena criptográfica presentada1.
+2.2. Inactivación de Verificación en BoringSSL
+En la arquitectura interna de BoringSSL, la verificación personalizada se gestiona mediante la función SSL_set_custom_verify o llamadas directas al verificador de cadenas X.50913. El motor de instrumentación aplica dos métodos de neutralización no invasiva:
+Por un lado, la sobreescritura de callbacks localiza el puntero de la función de validación pasada a SSL_set_custom_verify(SSL *ssl, int mode, enum ssl_verify_result_t (*callback)(SSL *ssl, uint8_t *out_alert))13. El motor reemplaza dicho puntero en tiempo de ejecución por una rutina nativa sintetizada (trampoline) que retorna invariablemente ssl_verify_ok (equivalente funcional a SSL_VERIFY_NONE), evitando que se despachen alertas TLS de cancelación hacia el servidor13.
+Por otro lado, el parcheo atómico de instrucciones (hot-patching) interviene en los puntos de decisión condicional que evalúan el resultado de X509_verify_cert13. El motor sustituye los saltos condicionales (JZ/JNZ) por instrucciones NOP o saltos incondicionales forzados, garantizando que el estado del protocolo permanezca en modo operativo sin alterar la estructura matemática del handshake TLS 1.3 subyacente1.
+2.3. Coexistencia Multiplataforma: Windows SSPI frente a Linux Native
+Para garantizar un soporte homogéneo entre plataformas operativas, el submódulo implementa rutas de intercepción específicas adaptadas a los subsistemas criptográficos dominantes en cada entorno de escritorio y servidor1:
+
+Este esquema multiplataforma permite extraer la secuencia de razonamiento (Chain-of-Thought), los mensajes del sistema y las llamadas estructuradas a herramientas (Tool Calls) de forma pasiva, sin romper el canal seguro ni alertar a las defensas del agente en la nube1.
+3. Correlación Causal Multicapa entre Inferencia Cloud y Eventos Locales
+3.1. Fundamentación Causal y Desfase Semántico-Sistémico
+La inferencia generada por los agentes LLM se materializa en respuestas JSON complejas que contienen directivas explícitas de modificación del entorno (tales como edición de archivos, creación de subprocesos o comandos de terminal)1.
+Existe un desfase temporal y estructural inevitable entre la recepción de la directiva en el flujo TLS descifrado y la emisión efectiva de las llamadas al sistema (syscalls) por parte del proceso ejecutable1. Para establecer una trazabilidad forense robusta, el submódulo implementa un motor de correlación causal fundamentado en la relación de orden parcial de Lamport () extendida a flujos de eventos heterogéneos5.
+La correlación causal se estructura en un pipeline continuo: el flujo de red aporta la intención semántica en , el motor de eventos del núcleo registra la mutación técnica en , y el evaluador sintáctico verifica la correspondencia léxica dentro de una ventana temporal estricta para consolidar el grafo de procedencia1.
+3.2. Ventana Temporal Dinámica y Captura en el Núcleo
+El motor de correlación implementa una cola temporal de eventos en vuelo que opera bajo una ventana de tolerancia dinámica 1.
+La ingesta del evento causal de red () se activa cuando el colector eBPF captura un fragmento de respuesta JSON correspondiente a una finalización de mensaje o invocación de herramienta (tool_use), generando una tupla estructurada:
+
+Simultáneamente, la captura del evento del núcleo () se ejecuta mediante sondas complementarias en Linux o a través de un Minifiltro de Sistema de Archivos en Windows1:
+En plataformas Linux, se monitorizan los tracepoints sys_enter_openat2, sys_enter_unlink, sys_enter_execve y sys_enter_write1.
+En plataformas Windows, se interceptan los Paquetes de Solicitud de E/S (IRPs) mediante rutinas de pre y post-operación del Minifiltro (IRP_MJ_CREATE, IRP_MJ_WRITE, IRP_MJ_SET_INFORMATION)1.
+El evento del sistema resultante consolida el estado físico de la operación:
+
+3.3. Criterios de Vinculación y Cotejo Léxico
+La validez del enlace causal  se determina mediante la evaluación concurrente de tres reglas formales1:
+La identidad del árbol de procesos comprueba que el evento del sistema provenga del mismo hilo o de un subproceso derivado de la sesión de IA:
+
+Esto garantiza la trazabilidad cuando el cliente de IA delega la ejecución de comandos a una shell secundaria mediante fork y execve6.
+La restricción de proximidad temporal delimita el intervalo máximo de ejecución admitido para atribuir causalidad:
+
+[cite: 1, 6]
+El cotejo de argumentos (Content & Path Matching) normaliza las cadenas de texto del parámetro JSON (ej. "path": "src/index.ts") y de los argumentos pasados en los registros del procesador en el kernel (ej. el puntero a ruta en openat2 o el campo FileName en el objeto FILE_OBJECT del IRP de Windows)1. Se aplica un algoritmo de resolución canónica de rutas (canonicalize_path) para resolver enlaces simbólicos y directorios relativos antes de validar la coincidencia6.
+4. Matriz de Integración de Telemetría Multicapa
+La interacción continua entre la capa de red segura, el motor de ejecución de la IA y el subsistema de archivos del sistema operativo se sintetiza en la siguiente matriz de observabilidad:
+
+5. Rendimiento, Tolerancia a Fallos y Concurrencia de la Telemetría
+La implementación de este esquema requiere balancear la exhaustividad de la captura frente a la sobrecarga impuesta sobre el hilo principal de cómputo del cliente de IA12.
+El empleo de mapas de tipo BPF_MAP_TYPE_RINGBUF reduce sustancialmente el coste de contención respecto a las arquitecturas clásicas basadas en perf buffers, gracias a su diseño de productor múltiple y consumidor único libre de bloqueos (lockless)6. El demonio en Rust drena estos canales mediante bucles de sondeo asíncrono con epoll, sosteniendo latencias sub-microsegundo que previenen la pérdida silenciosa de eventos (backpressure) ante ráfagas de E/S intensivas11.
+Para mitigar la variabilidad derivada de las actualizaciones continuas de los entornos de ejecución (ej. nuevas versiones de Bun o Claude Code), el escáner heurístico de prólogos se ejecuta como una fase de autocalibración en el arranque del proceso objetivo1. Los desplazamientos resueltos y validados se almacenan en una base de datos local en caché indexada por el hash SHA-256 del binario ejecutable, eliminando la sobrecarga computacional de escaneo en ejecuciones subsiguientes y garantizando un tiempo de enganche inmediato1.
+6. Conclusiones del Diseño Arquitectónico
+La convergencia de escaneo heurístico de memoria y la instrumentación dinámica mediante eBPF resuelve de manera integral la opacidad impuesta por los binarios monolíticos despojados de símbolos1. La combinación de sondas uprobe calculadas por desplazamiento físico y la neutralización en memoria del anclaje de certificados confiere una visibilidad completa del flujo de datos semántico de los modelos de lenguaje sin perturbar el canal de transporte seguro1.
+Finalmente, el motor de correlación causal garantiza que ninguna mutación física sobre el sistema de archivos o la tabla de procesos quede aislada de contexto, vinculando de forma unívoca, determinista y auditable el razonamiento emitido en la nube con su impacto técnico directo en el sistema anfitrión1.
+Obras citadas
+https://drive.google.com/open?id=1b41BLMdjSjD7q3pUtK-6gd-YUsKPhUJS3GRUiRH9CTY
+heron/docs/design/02-capture.md at main - GitHub, https://github.com/Netis/heron/blob/main/docs/design/02-capture.md
+r/WebDataDiggers - Reddit, https://www.reddit.com/r/WebDataDiggers/
+MASTG-KNOW-0015: Certificate Pinning - OWASP Mobile Application Security, https://mas.owasp.org/MASTG-KNOW-0015/
+Explaining Attacks using Causal Logs - RESSI 2025, https://ressi2025.sciencesconf.org/608538/document
+AgentSight: Keeping Your AI Agents Under Control with eBPF-Powered System Observability | eunomia, https://eunomia.dev/blog/2025/08/26/agentsight-keeping-your-ai-agents-under-control-with-ebpf-powered-system-observability/
+GitHub - TopSoftdeveloper/Hook-Chrome-Chromium-SSL, https://github.com/TopSoftdeveloper/Hook-Chrome-Chromium-SSL
+eBPF Practical Tutorial: Capturing SSL/TLS Plain Text Using uprobe - Medium, https://medium.com/@yunwei356/ebpf-practical-tutorial-capturing-ssl-tls-plain-text-using-uprobe-fccb010cfd64
+Intercepting Zoom's encrypted data with BPF - confused.ai, https://confused.ai/posts/intercepting-zoom-tls-encryption-bpf-uprobes/
+GitHub - fkie-cad/friTap: Simplifying encrypted traffic analysis for researchers by making protocol decryption effortless., https://github.com/fkie-cad/friTap
+eBPF-based TLS interception without certificate management or proxies - technical deep dive : r/devops - Reddit, https://www.reddit.com/r/devops/comments/1lfgi03/ebpfbased_tls_interception_without_certificate/
+Aquila: Efficient In-Kernel System Call Telemetry for Cloud-Native Environments - MDPI, https://www.mdpi.com/1424-8220/25/21/6511
+Mobile RE with r2frida Overview | PDF | Objective C - Scribd, https://www.scribd.com/document/915462269/R2frida-2022-Workshop-Brest
+Diff - refs/heads/androidx-mediarouter-release^1..refs/heads/androidx-mediarouter-release - kernel/prebuilts/build-tools - Git at Google - Android GoogleSource, https://android.googlesource.com/kernel/prebuilts/build-tools/+/refs/heads/androidx-mediarouter-release%5E1..refs/heads/androidx-mediarouter-release/
+eBPF-Based Instrumentation for Generalisable Diagnosis of Performance Degradation, https://arxiv.org/html/2505.13160v1
+
+=== TABLES ===
+Estrategia de Localización | Complejidad de Búsqueda | Resiliencia a Optimizaciones (-O2 / -O3) | Precisión de Identificación
+Búsqueda por Prólogo Rígido |  lineal sobre .text | Baja (sensible a variaciones de registros) | Media (posibles falsos positivos)
+Anclaje Xref (ssl_lib.cc) |  referencias .rodata | Alta (conserva constantes de depuración) | Muy Alta ()
+Firmas Máquinas de Estado TLS |  patrones complejos | Muy Alta (independiente de cadenas) | Alta
+Plataforma | Subsistema Criptográfico | Función Interceptada | Mecanismo de Extracción de Texto Plano
+Linux (CLI / Node / Bun) | BoringSSL embebido | SSL_read / SSL_write | Sondas uprobe/uretprobe eBPF en registros RSI / RAX1.
+Windows (Desktop) | SSPI / Schannel (secur32.dll, ncrypt.dll) | DecryptMessage | Intercepción del retorno (SEC_E_OK); extracción del búfer SECBUFFER_DATA dentro de la estructura SecBufferDesc1.
+Windows (Desktop) | SSPI / Schannel (secur32.dll, ncrypt.dll) | EncryptMessage | Intercepción a la entrada; copia del búfer antes de la fragmentación y cálculo del MAC1.
+Nivel de Observación | Capa del Sistema | Origen de Telemetría | Datos Extraídos | Utilidad en el Sessions Manager
+Semántico (Cloud) | Aplicación / TLS | eBPF Uprobes (SSL_read) / SSPI DecryptMessage | Peticiones JSON, Prompts de sistema, Pensamiento (CoT), Tool Calls1. | Decodificación de la intención y trazabilidad del razonamiento de la IA1.
+Traducción Runtime | Espacio de Usuario | Instrumentación Dynamic Patching | Descriptores de archivo, PIDs de tareas secundarias, Búferes temporales1. | Mapeo entre las órdenes abstractas del LLM y los punteros del sistema1.
+Operacional (Kernel) | VFS / E/S Núcleo | eBPF Tracepoints (openat2, unlink) / Minifiltro IRP | Inodos, Rutas absolutas canónicas, Flags de apertura, Hashes de escritura1. | Verificación de impacto real en almacenamiento no volátil1.
+Ejecución de Procesos | Planificador / Núcleo | eBPF Tracepoint (sched_process_exec) | Argumentos CLI (argv), Variables de entorno (envp), UID/GID6. | Detección de ejecución de comandos no autorizados o escapes de contexto6.

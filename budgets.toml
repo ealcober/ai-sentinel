@@ -1,0 +1,69 @@
+# Resource budgets — enforced by `cargo xtask verify-budgets`.
+#
+# These are BUILD INVARIANTS, not targets. Exceeding a `hard` value fails CI.
+# Changing any `hard` value requires an ADR. See docs/ai/invariants.md §3.
+#
+# `target` is what we aim for and track as a trend; `hard` is the release blocker.
+
+[process.agentd]
+rss_mb           = { target = 42,  hard = 50 }
+alloc_hot_loop   = { target = 0,   hard = 0 }     # allocations/sec, steady state
+growth_mb_per_day= { target = 0.0, hard = 0.5 }   # 72 h soak regression slope
+
+[process.forensicd]
+rss_mb           = { target = 110, hard = 150 }
+
+[kernel.linux]
+bpf_map_locked_mb = { target = 8, hard = 12 }
+
+[kernel.windows]
+nonpaged_pool_mb  = { target = 4, hard = 8 }
+
+[mobile.ios_extension]
+# NEPacketTunnelProvider is hard-killed by the OS near 50 MB. Not negotiable.
+rss_mb           = { target = 30, hard = 45 }
+os_terminations  = { target = 0,  hard = 0 }      # over a 24 h run
+
+[mobile.android_vpnservice]
+rss_mb           = { target = 40, hard = 60 }
+
+[cpu]
+# Measured against the reference workload defined in the implementation plan §2.22.
+# Protocol in §4.4.2 — three runs with and without, median comparison.
+aggregate_pct       = { target = 1.5, hard = 3.0 }
+idle_pct            = { target = 0.1, hard = 0.3 }
+build_wallclock_pct = { target = 2.0, hard = 4.0 }
+non_session_pct     = { target = 0.1, hard = 0.5 } # the central architectural claim
+
+[latency]
+t0_p99_us  = { target = 8,    hard = 15 }
+t0_p999_us = { target = 25,   hard = 50 }
+t1_p99_us  = { target = 400,  hard = 1000 }
+t2_p95_ms  = { target = 1200, hard = 2500 }
+
+[telemetry]
+drop_rate_pct = { target = 0.0, hard = 0.01 }
+
+[quality]
+# Detection quality gates — see plan §4.6, §4.7, §4.11.
+correlation_precision   = { target = 0.98, hard = 0.95 }
+correlation_recall      = { target = 0.95, hard = 0.90 }
+compressor_irr          = { target = 0.90, hard = 0.85 }
+compressor_reduction    = { target = 0.85, hard = 0.60 }
+sentinel_precision      = { target = 0.97, hard = 0.95 }
+sentinel_recall         = { target = 0.95, hard = 0.90 }
+sentinel_video_fp_pct   = { target = 0.2,  hard = 1.0 }
+
+[quality.benign_corpus]
+# A false positive is as serious as a missed detection (invariant I-15).
+blocks      = { target = 0, hard = 0 }
+escalations = { target = 0, hard = 2 }
+
+[ux]
+# Prompt fatigue is the permission model's primary failure mode.
+prompts_per_day = { target = 1, hard = 3 }
+
+[sentinel.network]
+throughput_mbps    = { target = 500, hard = 300 }
+added_latency_ms   = { target = 0.5, hard = 2.0 }
+battery_pct_per_day= { target = 3.0, hard = 6.0 }

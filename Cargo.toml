@@ -1,0 +1,57 @@
+[workspace]
+resolver = "2"
+
+# Members are added as crates are implemented in phase F0 (task F0.REPO.01).
+# The directory skeleton under crates/ already reflects the planned layout;
+# a crate is added here only once it has a real Cargo.toml and compiles.
+#
+# Planned members, grouped by phase:
+#   F1  crates/aisme-core            shared types, ontology, traits, policy IR
+#       crates/aisme-ebpf-common     no_std event structs shared with BPF programs
+#       crates/aisme-agentd          hot-path daemon        (RSS budget: 50 MB)
+#       crates/aisme-loaderd         minimal privileged loader
+#       crates/aisme-proto           control-plane protocol + TS codegen
+#   F2  crates/aisme-ebpf            BPF programs (bpfel-unknown-none)
+#       crates/aisme-linux           Aya loader, seccomp_unotify, cgroup freezer
+#   F3  crates/aisme-windows         FltPort client, shared section, ETW
+#   F4  crates/aisme-tls             capture ladder, offset resolution, SSE reassembly
+#   F5  crates/aisme-correlate       causal graph, taint, Merkle
+#       crates/aisme-forensicd       cold-path daemon: DuckDB, Parquet, export
+#   F6  crates/aisme-compress        SAC-lite pipeline
+#       crates/aisme-observer        Observer LLM client (schema-constrained)
+#       crates/aisme-otel            OTLP export
+#   F8  crates/aisme-cli
+#   F9  crates/aisme-clientcore      shared mobile/desktop client core (uniffi)
+#       crates/aisme-relay           blind store-and-forward relay
+#   F10 crates/sentinel-core         mobile detection engine: flows, classifier
+#   --  crates/aisme-agentsim        agent simulator for the reference workload
+#       xtask                        build/test/certification orchestration
+members = []
+
+[workspace.package]
+edition = "2021"
+license = "TBD"
+repository = ""
+rust-version = "1.82"
+
+[workspace.lints.rust]
+unsafe_op_in_unsafe_fn = "deny"
+missing_docs = "warn"
+
+[workspace.lints.clippy]
+pedantic = { level = "warn", priority = -1 }
+undocumented_unsafe_blocks = "deny"
+
+[profile.release]
+opt-level = 3
+lto = "fat"
+codegen-units = 1
+panic = "abort"
+strip = "symbols"
+
+# Used by the 72 h soak and budget certification runs: release codegen with
+# symbols retained so heaptrack/dhat profiles are readable.
+[profile.bench-budget]
+inherits = "release"
+strip = "none"
+debug = 1

@@ -1,0 +1,27 @@
+AISME — AI Sessions Manager & Security Engine
+Copyright 2026 Eduardo Alcober
+
+This product includes software developed by Eduardo Alcober
+(https://github.com/ealcober/AI-SYSTEM-MONITOR).
+
+Portions of this work are licensed as follows:
+
+  * The eBPF programs in crates/aisme-ebpf are licensed GPL-2.0-only.
+    This is required by the Linux kernel: a BPF program that calls a
+    helper marked gpl_only must declare a GPL-compatible license, and
+    the kernel verifier enforces this at load time.
+
+  * The shared wire types in crates/aisme-ebpf-common are dual-licensed
+    GPL-2.0-only OR BSD-2-Clause, so that both the GPL-licensed kernel
+    side and the Apache-licensed user-space side may use them.
+
+  * Everything else is licensed Apache-2.0.
+
+  * The research documents in docs/research/ and the planning documents
+    in docs/ are licensed CC-BY-4.0.
+
+See LICENSE.md for the full map and the reasoning.
+
+Attribution notice, per Apache License 2.0 section 4(d): this NOTICE file,
+or the attribution it contains, must be reproduced in any Derivative Works
+you distribute.

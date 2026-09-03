@@ -22,8 +22,12 @@ members = []
 
 [workspace.package]
 edition = "2021"
-license = "TBD"
-repository = ""
+# Apache-2.0 workspace-wide. Two crates override it because the kernel requires it:
+#   crates/aisme-ebpf         GPL-2.0-only        (gpl_only helpers; verifier-enforced)
+#   crates/aisme-ebpf-common GPL-2.0-only OR BSD-2-Clause  (shared with the kernel side)
+# Map and reasoning: LICENSE.md, ADR-06.
+license = "Apache-2.0"
+repository = "https://github.com/ealcober/AI-SYSTEM-MONITOR"
 rust-version = "1.82"
 
 [workspace.lints.rust]

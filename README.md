@@ -58,6 +58,7 @@ sdk/           AI Sentinel SDK bindings for third-party AI applications
 ui/            React/TypeScript control-plane UI (Tauri v2 shell)
 xtask/         Build, test and certification orchestration
 docs/          Plan, reviews, ADRs, design notes, threat model, research, LLM working docs, changelog
+LICENSE*       Apache-2.0, GPL-2.0 (eBPF only), BSD-2-Clause; map in LICENSE.md
 tests/         Fixtures, labelled corpora, adversarial scenarios
 ```
 
@@ -69,6 +70,7 @@ tests/         Fixtures, labelled corpora, adversarial scenarios
 | [docs/02_challenge_ampliacion_sistema.md](docs/02_challenge_ampliacion_sistema.md) | Correctness review: 209 findings with their patches, all applied; the owner's ten decisions |
 | [docs/03_challenge_accionabilidad.md](docs/03_challenge_accionabilidad.md) | Executability review: 35 findings with their patches, all applied |
 | [docs/CHANGELOG.md](docs/CHANGELOG.md) | Every change, by commit and task |
+| [LICENSE.md](LICENSE.md) · [CONTRIBUTING.md](CONTRIBUTING.md) · [SECURITY.md](SECURITY.md) | Licence map, contribution rules, vulnerability reporting |
 | [docs/security/01_threat-model.md](docs/security/01_threat-model.md) | Assets, ranked adversaries, trust boundaries, non-goals |
 | [docs/ai/AGENTS.md](docs/ai/AGENTS.md) | Working contract for development LLMs |
 | [docs/ai/STATE.md](docs/ai/STATE.md) | Live project state — what is done, what is next |
@@ -97,4 +99,10 @@ What AISME does **not** defend against is stated as plainly as what it does: see
 
 ## Licence
 
-TBD.
+**Apache-2.0**, except where the kernel requires otherwise: the eBPF programs are **GPL-2.0-only**, because a BPF program that calls a `gpl_only` helper must declare a GPL licence and the kernel verifier enforces it at load time. User-space code is not a derivative work of a BPF program, so the engine, the SDK and everything else are Apache-2.0. Documentation is CC-BY-4.0.
+
+The full map and the reasoning are in [LICENSE.md](LICENSE.md); the decision is [ADR-06](docs/adr/06_open-source-licensing.md). Attribution obligations are in [NOTICE](NOTICE). The names *AISME* and *AI Sentinel* are not licensed (Apache-2.0 §6).
+
+Contributions are welcome under the [DCO](CONTRIBUTING.md) — no CLA, contributors keep their copyright. To report a vulnerability, read [SECURITY.md](SECURITY.md) first; two adversary classes are documented non-goals.
+
+If this work is useful in research, [CITATION.cff](CITATION.cff) has the citation.

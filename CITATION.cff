@@ -1,0 +1,25 @@
+cff-version: 1.2.0
+title: "AISME — AI Sessions Manager & Security Engine"
+message: "If you use this work or its design documents, please cite it."
+type: software
+authors:
+  - family-names: Alcober
+    given-names: Eduardo
+repository-code: "https://github.com/ealcober/AI-SYSTEM-MONITOR"
+abstract: >-
+  Kernel-level observability and containment for autonomous AI coding agents.
+  AISME correlates what an AI agent declares it will do with what it actually
+  does to the machine, and enforces the difference at the operating-system
+  boundary. It includes a tiered enforcement design that provides in-kernel
+  denial without a reboot, a permission model derived from Android's runtime
+  permissions with a suppression discipline that never removes evidence, and a
+  detection catalogue of deterministic joins over a causal provenance graph.
+keywords:
+  - AI agent security
+  - eBPF
+  - runtime security
+  - prompt injection
+  - provenance
+  - Landlock
+  - policy language
+license: Apache-2.0

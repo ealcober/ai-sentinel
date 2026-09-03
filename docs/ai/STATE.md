@@ -66,6 +66,12 @@ Already in place, not F0 work: `F0.REPO.00` (repository), `F0.SEC.01` (`docs/sec
 
 Nothing.
 
+## Open, not blocking
+
+- **`Q-11`** — AISME-PL rule precedence. Strictest-verdict-wins is implemented and is order-independent and fail-safe; most-specific-wins is the alternative. Under research; the answer either confirms Annex B §B.10 or triggers one edit there.
+- **Trademark** registration for *AISME* and *AI Sentinel*. The licence deliberately does not cover the names (`ADR-06`).
+- **The commercial-edition question.** The DCO means the project cannot be relicensed without every contributor's agreement. The owner is the sole copyright holder **until the first external contribution is merged**; the decision must be taken before that, not after (`ADR-06`).
+
 ## Decisions taken, ADRs owed
 
 All ten open questions were answered by the owner on 2026-08-17 (`docs/02_…` §Owner answers). The ones that need an ADR written to record them:
@@ -79,7 +85,7 @@ All ten open questions were answered by the owner on 2026-08-17 (`docs/02_…` �
 | **Zero hosted-CI cost** — every gate local, nothing on push | recorded as `I-27`; ADR optional |
 | `aisme run` is the documented default onboarding path | with the F8 patch; see `docs/design/02_aisme-run.md` when written |
 
-**ADR-04** (Tauri v2 + `uniffi` fallback) and **ADR-05** (multiplatform detection scope) are now written. No ADR is owed.
+**ADR-04** (Tauri v2 + `uniffi` fallback), **ADR-05** (multiplatform detection scope) and **ADR-06** (open-source licensing) are written. No ADR is owed.
 
 ## Notes for whoever picks this up
 

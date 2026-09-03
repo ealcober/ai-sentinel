@@ -994,16 +994,27 @@ pub struct SentinelCapabilities {
 The architecture is five layers with **strictly downward dependencies**. This is the single most important structural rule in the codebase: it is what makes the engine testable on a laptop, portable to a phone, and survivable across platform decisions like `ADR-02`.
 
 ```
-L4  EDGES          aisme-cli · aisme-otel · aisme-relay · ui · mobile shells
+L4  EDGES          aisme-cli · aisme-otel · aisme-relay · aisme-proto ·
+                   aisme-clientcore · aisme-agentsim · xtask · ui · mobile shells
                    ↓ may depend on L3, L1, L0
-L3  ENGINES        aisme-agentd (hot, 50 MB)  ·  aisme-forensicd (cold)
+L3  ENGINES        aisme-agentd (hot, 50 MB) · aisme-forensicd (cold) · aisme-loaderd
                    ↓ may depend on L2, L1, L0
-L2  ADAPTERS       aisme-linux · sentinel-core · aisme-sdkhost · aisme-windows [POST]
+L2  ADAPTERS       aisme-linux · aisme-tls · sentinel-core · aisme-sdkhost
+                   (aisme-windows [POST], not a member)
                    ↓ may depend on L1, L0  — implement L1 traits, own all platform cfg
-L1  CORE           aisme-core — ontology, traits, policy IR + compiler, taint algebra,
-                   correlation, capability model
+L1  CORE           aisme-core        ontology, traits, policy IR + compiler, taint
+                                     algebra, capability model, detectors
+                   aisme-correlate   causal graph — pure logic, runs in the hot loop
+                   aisme-compress    SAC-lite — deterministic, no I/O
+                   aisme-observer    schema + scoring only; the HTTP client is in
+                                     forensicd, which is L3
                    ↓ may depend on L0 only
 L0  WIRE           aisme-ebpf-common — no_std, zero dependencies, layout-stable types
+
+The authoritative map is `layers.toml` at the repository root; this diagram is
+generated from it and `cargo xtask verify-layering` checks the two agree. A workspace
+member absent from `layers.toml` fails the gate — a new crate declares its layer
+before it compiles.
 ```
 
 **Enforced rules** (CI gate `F0.CI.06`, a dependency-direction check over `cargo metadata`):
@@ -1014,8 +1025,8 @@ L0  WIRE           aisme-ebpf-common — no_std, zero dependencies, layout-stabl
 | A-02 | No layer may depend upward. No sibling dependency inside L2. | Two adapters that know about each other are one adapter with a seam in the wrong place. |
 | A-03 | **`aisme-ebpf-common` is `no_std` with zero dependencies and stable layout.** | It is shared with kernel-verified code. A dependency here is a dependency inside the kernel. |
 | A-04 | No platform-specific type appears in `aisme-core`'s public API. | This is what makes `ADR-02` reversible and what let the Windows removal cost one afternoon instead of a refactor. |
-| A-05 | `aisme-agentd` depends on adapters **only through L1 traits**, never concretely. | Enables `MockSensor` for the entire test suite; enables the walking skeleton. |
-| A-06 | Every dependency added to L0–L2 requires review (`F5.SUP.06`). | These are the audited surfaces: kernel-adjacent and budget-bound. |
+| A-05 | `aisme-agentd` depends on adapters **only through L1 traits**, never concretely — **except in its composition root** `crates/aisme-agentd/src/platform/`, which `verify-layering` recognises by path and which is the single place allowed to name concrete adapters and to use `cfg(target_os)`. | Enables `MockSensor` for the entire test suite; enables the walking skeleton. Something must assemble the adapters, and a rule with no legal home for that code is not a rule. |
+| A-06 | Every dependency added to L0–L2, and every `unsafe` block in L3, requires review (`DEP.SUP.06`). | These are the audited surfaces: kernel-adjacent and budget-bound. |
 
 **Consequence worth stating plainly:** `aisme-core` is where the product lives. Everything else is a driver, a pipe, or a face. If a piece of logic can be written in `aisme-core`, it must be — that is how one implementation serves Linux, WSL2, Android, iOS and the SDK simultaneously.
 
@@ -1023,7 +1034,7 @@ L0  WIRE           aisme-ebpf-common — no_std, zero dependencies, layout-stabl
 
 The system has, on the surface, five very different sensing mechanisms (BPF-LSM, uprobes, cooperative file tailing, a mobile packet tunnel, an in-app SDK) and five very different ways of asking a human a question. Treating them as five subsystems would multiply the engine by five.
 
-They are not five subsystems. **They are five implementations of two traits.**
+They are not ten subsystems. **They are twenty implementations of three traits, serving one engine.**
 
 ```rust
 // ─── L1: aisme-core::sensor ──────────────────────────────────────────────
@@ -1056,8 +1067,11 @@ pub trait Enforcer: Send {
 /// Anything that can answer "allow or deny?" — human or machine.
 pub trait Adjudicator: Send {
     fn channel(&self) -> AdjudicationChannel;  // Modal|Notification|Terminal|Remote|Policy
-    /// Channel-aware budget (§2.20.5). Terminal 30 s, remote 3 s, policy 0 s.
+    /// Channel-aware budget (§2.20.5): local-focused 10 s, local-unfocused 20 s,
+    /// remote 3 s, policy 0 s. Never exceeds the T2 hard timeout.
     fn budget(&self) -> Duration;
+    /// Non-blocking notice for `Verdict::Warn`. Default: no-op.
+    fn notify(&mut self, _w: &Warning) {}
     /// MUST resolve within budget or yield Verdict::Timeout.
     fn ask(&mut self, req: &Escalation) -> BoxFuture<'_, Verdict>;
     /// Capability cap: a remote adjudicator may never allow CRITICAL (I-06).
@@ -1075,7 +1089,7 @@ pub trait PolicySource:     Send { fn load(&mut self) -> Result<PolicyDocument>;
 | Trait | Implementations |
 |---|---|
 | `Sensor` | `BpfSensor` (Linux/WSL2 kernel) · `UprobeSensor` (TLS) · `CooperativeSensor` (JSONL/log tailing) · `TunnelSensor` (Android/iOS flows) · `SdkSensor` (in-app) · `MockSensor` (tests) · `ReplaySensor` (recorded traces) · `FltSensor` `[POST]` |
-| `Enforcer` | `LsmEnforcer` (`-EACCES`) · `SeccompEnforcer` (T1) · `FreezerEnforcer` (T2) · `TunnelEnforcer` (Network Slam, mobile) · `SdkEnforcer` (tool-call veto) · `NullEnforcer` (observe-only tier) |
+| `Enforcer` | `LsmEnforcer` (L3, `-EACCES`) · **`LandlockEnforcer`** (L2 file T0 deny, per-process, inherited) · **`CgroupConnectEnforcer`** (L2 network T0 deny, Network Slam) · `SeccompEnforcer` (T1 escalation) · `FreezerEnforcer` (T2) · `TunnelEnforcer` (Network Slam, mobile) · `SdkEnforcer` (tool-call veto) · `NullEnforcer` (observe-only tier) |
 | `Adjudicator` | `TerminalAdjudicator` (`aisme run`) · `ModalAdjudicator` (desktop UI) · `NotificationAdjudicator` (toast / freedesktop / UN) · `RemoteAdjudicator` (mobile, capped) · `PolicyAdjudicator` (default, always present) · `AutoDenyAdjudicator` (CI/headless) |
 
 Three consequences that fall out of this and would not otherwise:
@@ -1093,7 +1107,9 @@ let adjudicators = AdjudicatorLadder::from(platform::adjudicators(&caps)); // pr
 Engine::new(sensors, enforcers, adjudicators, sink).run()
 ```
 
-`platform::` is the **only** module allowed to know which OS it is on, and it exists once per adapter crate. If a `cfg(target_os)` appears anywhere else, that is a defect.
+`aisme-agentd::platform` is the **composition root**: the only module allowed to know which OS it is on and the only one allowed to name a concrete adapter. Adapters export constructors; `aisme-core` never names an adapter. A `cfg(target_os)` anywhere else is a defect, and `verify-layering` fails on a second composition root.
+
+**Detectors are not a platform trait.** The Annex G catalogue is a set of pure functions in `aisme-core::detect`, run by the engine between correlation and adjudication, composed as an ordered list whose weights load as signed data. They have no platform variants, which is why they can be tested once on CI for every target.
 
 ### 3.3 Lifecycle of one event, end to end
 
@@ -1112,17 +1128,22 @@ Implementers repeatedly need this and it is nowhere else in the document. Latenc
  7. AGENTD      Taint: propagate, decay, evaluate declassification.
  8. AGENTD      Correlate: match against in-flight ToolCall window
                 (lineage ∧ temporal ∧ argument). Attach to graph node.
+ 8b. AGENTD     Detect: run the Annex G detectors over the graph delta;
+                update session risk (DT-09). Pure functions, no I/O.
  9. AGENTD      If ESCALATE: consult AdjudicatorLadder.                         T1 ≤1 ms
                 └─ if the ladder needs a human: Enforcer::suspend(scope),       T2 ≤2.5 s
                    ask, then resume + respond.
 10. AGENTD      Append to WAL (rkyv, mmap, double-buffered). Fsync per policy.
 11. FORENSICD   Tail WAL by offset. Compress (SAC-lite L2–L5).
-12. FORENSICD   Merkle leaf (BLAKE3) → block → Ed25519 sign (TPM).
+12. FORENSICD   Merkle leaf (BLAKE3) → block → sign with the hardware P-256 key
+                where present, else software Ed25519; record `key_hw`.
 13. FORENSICD   Persist to DuckDB/Parquet. Export OTLP. Anchor root externally.
 14. UI          Stream over control-plane protocol to desktop and mobile.
 ```
 
 **Steps 1–4 are the only ones inside the CPU budget that matter.** Everything from step 5 is amortized across a batch, and everything from step 11 is off the hot path entirely and may be arbitrarily slow.
+
+**At L2** (§2.2.1) steps 1–3 differ: the seccomp filter passes every syscall whose class is not escalate-worthy; **Landlock** denies the never-promptable classes and out-of-scope writes in-kernel, and the **cgroup connect hook** denies egress in-kernel; only the escalate class traps to `agentd`, where the compiled trie is evaluated in user space. One honesty consequence: before kernel 6.15 a Landlock deny leaves **no kernel record**, so the event is reconstructed from the syscall-exit tracepoint and written with `inferred_from = sys_exit` (`R1-14`). A deny we inferred must not be presented as one we observed (`I-17`).
 
 ### 3.4 Concurrency and ownership model
 
@@ -1136,7 +1157,7 @@ The 50 MB and 3% budgets are as much a concurrency design as an allocation one.
 | **Tokio capped at 2 workers** | Used for IPC, adjudication and the control plane — never for the hot loop. |
 | **Adjudication is async, enforcement is not** | `Adjudicator::ask` returns a future. `Enforcer::respond` is a synchronous, idempotent, fire-and-forget call. This asymmetry is what keeps slow humans off fast paths. |
 | **`forensicd` shares nothing with `agentd`** | The WAL is the only interface: append-only, offset-addressed, crash-safe. Either process may restart independently. |
-| **No `unsafe` outside adapters** | `aisme-core` is `#![forbid(unsafe_code)]`. Unsafe lives only where the platform forces it, and every block carries a safety comment (`clippy::undocumented_unsafe_blocks` is `deny`). |
+| **`unsafe` is bounded, not banned** | `#![forbid(unsafe_code)]` in `aisme-core` and in every L4 crate. Permitted in L0 (layout), L2 (platform FFI) and the L3 runtimes — `agentd` cannot `mmap` its own ring buffer or WAL without it. Every block carries a safety comment (`clippy::undocumented_unsafe_blocks` is `deny`) and every L3 block is reviewed under `DEP.SUP.06`. |
 
 ### 3.5 Error and degradation model
 
@@ -1154,6 +1175,7 @@ Four error classes, and the class determines the response. This eliminates the m
 - **Degradation is never silent** (`I-16`, `I-17`). A capability loss the user cannot see is worse than a crash, because it looks like protection.
 - **A coverage gap is recorded as a gap in the forensic log** (`I-17`), not skipped.
 - **Fail-open vs fail-closed is always explicit configuration**, never an implicit consequence of an error path.
+- **The restart window is fail-closed by construction, and is recorded.** While `agentd` is down: at L3 the pinned BPF maps keep T0 policy active; at L2 Landlock rulesets are per-process and survive, and the cgroup program stays attached; escalate-class syscalls held by `seccomp_unotify` fail with `ENOSYS` when the listener closes (`R1-05`). Nothing silently opens. The gap itself is written to the WAL on restart as a coverage event (`I-17`) and it is tested (§4.9).
 
 ### 3.6 Versioning and compatibility
 
@@ -1165,7 +1187,7 @@ Five independently deployable artifacts talk to each other. Each pairing needs a
 | `agentd` ↔ `forensicd` (WAL) | Segment header with wire version + schema hash | `forensicd` skips unknown segments, warns, does not corrupt |
 | Policy source ↔ compiled policy | `PolicyGeneration` monotonic counter | Readers use last-good; never a torn read |
 | Engine ↔ control plane | Protocol semver in `aisme-proto`; TS types generated from it | Minor: forward-compatible; major: client refuses with a version message |
-| AI Sentinel SDK ↔ Sentinel | SDK semver; SDK is **always** backward compatible or it no-ops | The SDK must never break its host app (`F11.SDK.06`) |
+| AI Sentinel SDK ↔ Sentinel | SDK semver; SDK is **always** backward compatible or it no-ops | The SDK must never break its host app (`F9.SDK.06`) |
 
 **Rule:** `RawEvent` and `EventKind` are **append-only**. Fields are never reordered, resized or repurposed; new kinds get new discriminants. Layout is asserted at compile time (`F1.EV.03`).
 
@@ -1175,16 +1197,17 @@ Five independently deployable artifacts talk to each other. Each pairing needs a
 
 The original plan was horizontal: build the whole core, then all Linux probes, then all TLS capture, then correlation, then compression, then enforcement, then UI. Integration risk concentrated at the end. If the ring buffer, the correlation window and the enforcement round trip did not compose, that would surface in week 10, with six weeks of built-on-sand work behind it.
 
-The revised order builds a **walking skeleton first**: one narrow path through every layer, end to end, working, in week 3. Then each phase *widens* a proven path rather than adding an unproven layer.
+The revised order builds a **walking skeleton first**: one narrow path through every layer, end to end, working, in week 4.5. Then each phase *widens* a proven path rather than adding an unproven layer.
 
 ```
-WEEK 3 — Walking skeleton (F2). One vertical slice, fully working:
+WEEK 4.5 — Walking skeleton (F2). One vertical slice, fully working:
 
   one tracepoint (openat2)
       → ringbuf → agentd hot loop → intern → correlate against one fake ToolCall
       → one hardcoded policy rule → ESCALATE
       → TerminalAdjudicator asks in the terminal → verdict
-      → seccomp_unotify releases or denies the syscall
+      → Landlock denies out-of-scope writes in-kernel; seccomp_unotify
+        releases or denies the escalate-class syscall
       → WAL → forensicd → one line in the CLI
 
   Everything is narrow: one probe, one rule, one adjudicator, no UI, no LLM,
@@ -1195,11 +1218,11 @@ What this buys, concretely:
 
 | Benefit | Mechanism |
 |---|---|
-| **Integration risk moves from week 10 to week 3** | Every seam — kernel/user, sync/async, hot/cold, engine/adapter — is proven before anything is built on it |
-| **All later phases become parallel** | Once the skeleton stands and traits are frozen, F3/F4/F5/F6/F9/F10 widen independent parts of a working system |
-| **Every phase is demoable** | There is a running product from week 3. Progress is observable, not inferred from task lists |
+| **Integration risk moves from week 10 to week 4.5** | Every seam — kernel/user, sync/async, hot/cold, engine/adapter — is proven before anything is built on it |
+| **All later phases become parallel** | Once the skeleton stands and traits are frozen, F3, F4, F8a and F9→F10→F11 widen independent parts of a working system; F5→F6→F7 remains the core sequence |
+| **Every phase is demoable** | There is a running product from week 4.5. Progress is observable, not inferred from task lists |
 | **Rework collapses** | Interface defects surface while there is almost no code to change |
-| **The budget gates start measuring something real in week 3** | Rather than measuring stubs until week 10 |
+| **The budget gates start measuring something real in week 4.5** | Rather than measuring stubs until week 10 |
 
 **Interface freeze is a milestone, not an event.** At the end of F1 the L1 traits are frozen; changing one after that requires an ADR. This is what makes four parallel tracks safe — every track codes against a contract that cannot move under it.
 
@@ -1235,13 +1258,16 @@ What this buys, concretely:
 | F5 | Correlation, taint, tamper-evident forensics | 2 | Core |
 | F6 | Semantic compression and Observer | 2 | Core |
 | F7 | Policy surface and Circuit Breaker | 2 | Core |
-| F8 | Desktop control plane | 2.5 | UX |
+| F8a | Desktop shell, timeline, graph view, protocol client, CLI | 1.5 | UX (parallel from F2) |
+| F8b | Adjudication modal, `aisme-uiagent`, grant and suppression UI | 1 | UX (after F7) |
 | F9 | AI Sentinel SDK | 2 | Mobile |
 | F10 | AI Sentinel on-device engine | 4 | Mobile |
 | F11 | Mobile control plane and remote adjudication | 2 | Mobile |
 | — | Windows minifilter | — | **`[POST]` — Annex F** |
 
-**Critical path: F0 → F1 → F2 → F5 → F6 → F7 → F8 ≈ 11 weeks.** F3, F4, F9→F10→F11 run in parallel after F2. Total effort ≈ 27 person-weeks across 3 tracks.
+**Critical path: F0 → F1 → F2 → F5 → F6 → F7 → F8b = 1 + 2.5 + 1 + 2 + 2 + 2 + 1 = 11.5 weeks.** F3, F4, F8a and F9→F10→F11 run in parallel after F2. Total effort ≈ 27 person-weeks across 3 tracks.
+
+*The figure is the sum of the table above, and a gate adds it up: an earlier revision claimed 11 weeks while the table summed to 13, because F8 was drawn parallel in one diagram and serial in another. Splitting F8 is what makes both true — its shell depends only on `aisme-proto`, its adjudication UI depends on F7.*
 
 **Renumbering from the previous revision** (applied once, now frozen): old F2 → **F3**; new **F2** = walking skeleton; old F11 (SDK) → **F9**, matching its dependency position; old F9 (mobile control plane) → **F11**; old F10 unchanged; old F3 (Windows) → **Annex F**. Phases F4–F8 keep their numbers and task IDs unchanged.
 

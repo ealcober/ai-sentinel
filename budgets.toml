@@ -1,69 +1,120 @@
-# Resource budgets — enforced by `cargo xtask verify-budgets`.
+# Resource budgets — enforced by `cargo xtask verify-budgets`, which runs locally (I-27).
 #
-# These are BUILD INVARIANTS, not targets. Exceeding a `hard` value fails CI.
-# Changing any `hard` value requires an ADR. See docs/ai/invariants.md §3.
+# These are BUILD INVARIANTS, not targets. Exceeding a `hard` value fails the gate
+# and blocks release. Changing any `hard` value requires an ADR.
 #
 # `target` is what we aim for and track as a trend; `hard` is the release blocker.
+# `direction` is MANDATORY on every metric: "min" = lower is better, "max" = higher
+# is better. verify-budgets refuses to run on an entry that lacks it — inferring the
+# direction from target-vs-hard is undefined when they are equal (the 0/0 entries)
+# and inverted for throughput.
+#
+# Human-readable table with rationale: plan §2.22. This file is the machine copy;
+# the doc-drift gate asserts the two agree, and also checks the headline figures
+# quoted in CLAUDE.md and README.md.
+
+schema = 1
 
 [process.agentd]
-rss_mb           = { target = 42,  hard = 50 }
-alloc_hot_loop   = { target = 0,   hard = 0 }     # allocations/sec, steady state
-growth_mb_per_day= { target = 0.0, hard = 0.5 }   # 72 h soak regression slope
+rss_mb           = { direction = "min", target = 42,  hard = 50 }
+alloc_hot_loop   = { direction = "min", target = 0,   hard = 0 }     # allocations/sec, steady state
+growth_mb_per_day= { direction = "min", target = 0.0, hard = 0.5 }   # 72 h soak regression slope
 
 [process.forensicd]
-rss_mb           = { target = 110, hard = 150 }
+rss_mb           = { direction = "min", target = 110, hard = 150 }
 
 [kernel.linux]
-bpf_map_locked_mb = { target = 8, hard = 12 }
+bpf_map_locked_mb = { direction = "min", target = 8, hard = 12 }
 
-[kernel.windows]
-nonpaged_pool_mb  = { target = 4, hard = 8 }
+# [kernel.windows] nonpaged_pool_mb — deferred by ADR-02; budget retained in plan
+# Annex F. Re-add when the driver returns. verify-budgets reports "skipped: no
+# artefact" for an absent component, never "pass".
 
 [mobile.ios_extension]
 # NEPacketTunnelProvider is hard-killed by the OS near 50 MB. Not negotiable.
-rss_mb           = { target = 30, hard = 45 }
-os_terminations  = { target = 0,  hard = 0 }      # over a 24 h run
+rss_mb           = { direction = "min", target = 30, hard = 45 }
+os_terminations  = { direction = "min", target = 0,  hard = 0 }      # over a 24 h run
 
 [mobile.android_vpnservice]
-rss_mb           = { target = 40, hard = 60 }
+rss_mb           = { direction = "min", target = 40, hard = 60 }
+
+[process.agentd.binary]
+# Binary size is a proxy for dependency creep, and dependency creep is how the RAM
+# budget dies. Measured on the stripped release artefact (plan §5.2).
+size_mb          = { direction = "min", target = 10, hard = 12 }
+
+[relay]
+plaintext_bytes  = { direction = "min", target = 0, hard = 0 }   # I-07
+
+[mobile.app]
+cold_start_ms            = { direction = "min", target = 1200, hard = 2500 }
+push_to_modal_ms         = { direction = "min", target = 2000, hard = 5000 }
+idle_battery_pct_per_day = { direction = "min", target = 1.0,  hard = 3.0 }
+
+[sentinel.classifier]
+per_flow_latency_us = { direction = "min", target = 40, hard = 150 }
+
+[sdk]
+per_call_overhead_us = { direction = "min", target = 50, hard = 200 }
 
 [cpu]
 # Measured against the reference workload defined in the implementation plan §2.22.
 # Protocol in §4.4.2 — three runs with and without, median comparison.
-aggregate_pct       = { target = 1.5, hard = 3.0 }
-idle_pct            = { target = 0.1, hard = 0.3 }
-build_wallclock_pct = { target = 2.0, hard = 4.0 }
-non_session_pct     = { target = 0.1, hard = 0.5 } # the central architectural claim
+aggregate_pct       = { direction = "min", target = 1.5, hard = 3.0 }
+idle_pct            = { direction = "min", target = 0.1, hard = 0.3 }
+build_wallclock_pct = { direction = "min", target = 2.0, hard = 4.0 }
+non_session_pct     = { direction = "min", target = 0.1, hard = 0.5 } # the central architectural claim
 
 [latency]
-t0_p99_us  = { target = 8,    hard = 15 }
-t0_p999_us = { target = 25,   hard = 50 }
-t1_p99_us  = { target = 400,  hard = 1000 }
-t2_p95_ms  = { target = 1200, hard = 2500 }
+# T0 exists at both enforcement tiers but through different primitives, so it has
+# two budgets: L3 is BPF-LSM; L2 is Landlock (files) + cgroup connect hooks (network).
+t0_p99_us  = { direction = "min", target = 8,    hard = 15 }   # L3
+t0_l2_p99_us = { direction = "min", target = 12, hard = 20 }   # L2, in-kernel deny
+t0_p999_us = { direction = "min", target = 25,   hard = 50 }
+t1_p99_us  = { direction = "min", target = 400,  hard = 1000 }
+t2_p95_ms  = { direction = "min", target = 1200, hard = 2500 }
 
 [telemetry]
-drop_rate_pct = { target = 0.0, hard = 0.01 }
+drop_rate_pct = { direction = "min", target = 0.0, hard = 0.01 }
 
 [quality]
 # Detection quality gates — see plan §4.6, §4.7, §4.11.
-correlation_precision   = { target = 0.98, hard = 0.95 }
-correlation_recall      = { target = 0.95, hard = 0.90 }
-compressor_irr          = { target = 0.90, hard = 0.85 }
-compressor_reduction    = { target = 0.85, hard = 0.60 }
-sentinel_precision      = { target = 0.97, hard = 0.95 }
-sentinel_recall         = { target = 0.95, hard = 0.90 }
-sentinel_video_fp_pct   = { target = 0.2,  hard = 1.0 }
+correlation_precision   = { direction = "max", target = 0.98, hard = 0.95 }
+correlation_recall      = { direction = "max", target = 0.95, hard = 0.90 }
+compressor_irr          = { direction = "max", target = 0.90, hard = 0.85 }
+compressor_reduction    = { direction = "max", target = 0.85, hard = 0.60 }
+sentinel_precision      = { direction = "max", target = 0.97, hard = 0.95 }
+sentinel_recall         = { direction = "max", target = 0.95, hard = 0.90 }
+sentinel_video_fp_pct   = { direction = "min", target = 0.2,  hard = 1.0 }
 
 [quality.benign_corpus]
 # A false positive is as serious as a missed detection (invariant I-15).
-blocks      = { target = 0, hard = 0 }
-escalations = { target = 0, hard = 2 }
+blocks      = { direction = "min", target = 0, hard = 0 }
+escalations = { direction = "min", target = 0, hard = 2 }
 
 [ux]
-# Prompt fatigue is the permission model's primary failure mode.
-prompts_per_day = { target = 1, hard = 3 }
+# Prompt fatigue is the permission model's primary failure mode. A warn costs
+# attention but not a decision, so it has its own, looser budget.
+prompts_per_day = { direction = "min", target = 1,  hard = 3 }
+warns_per_day   = { direction = "min", target = 10, hard = 30 }
 
 [sentinel.network]
-throughput_mbps    = { target = 500, hard = 300 }
-added_latency_ms   = { target = 0.5, hard = 2.0 }
-battery_pct_per_day= { target = 3.0, hard = 6.0 }
+throughput_mbps    = { direction = "max", target = 500, hard = 300 }
+added_latency_ms   = { direction = "min", target = 0.5, hard = 2.0 }
+battery_pct_per_day= { direction = "min", target = 3.0, hard = 6.0 }
+
+# ── Profiles ─────────────────────────────────────────────────────────────────
+# `verify-budgets --profile <name>` overrides the values above for a phase whose
+# shape is not yet the full system. An unknown profile name is an error, never a
+# silent full-budget run.
+
+[profiles.idle]        # F1: agentd on MockSensor, no sensors attached
+agentd_rss_mb = { direction = "min", target = 20, hard = 25 }
+
+[profiles.skeleton]    # F2: one tracepoint, one rule, one adjudicator
+agentd_rss_mb = { direction = "min", target = 24, hard = 30 }
+
+[profiles.reference]        # full system under the plan §2.22 reference workload
+[profiles.linux-reference]  # same, Linux/WSL2 kernel track
+# Both inherit every value above unchanged; they exist so a gate can name the
+# workload it certified. Both are run twice, at tier L2 and at tier L3.

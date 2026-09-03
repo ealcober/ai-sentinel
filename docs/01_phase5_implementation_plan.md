@@ -1346,19 +1346,21 @@ pub struct RawEvent {
     pub uid:        u32,
     pub taint:      u32,        // Taint bitflags (H-13)
     pub kind:       EventKind,  // u16, exhaustive enum
-    pub verdict:    Verdict,    // u8: Observed | Allowed | Denied | Escalated
+    pub verdict:    Verdict,    // u8: Observed | Allowed | Warned | Denied | Escalated
     pub flags:      u8,
+    pub wire_version: u8,       // §3.6 reads this; without it the scheme has no field
+    pub _reserved:  [u8; 15],   // pads to exactly 320 B; new fields consume it
     pub payload:    EventPayload, // union, fixed size 256 B
 }
 ```
 
-Rules: fixed 320-byte total; no pointers; strings as inline fixed arrays in the kernel struct, interned to `StrId(u32)` at ingest; **`EventKind` is append-only and versioned** — a wire-format version byte gates the WAL and the shared section so a driver/daemon version skew is detected, not misparsed.
+Rules: fixed 320-byte total — `24 + 20 + 2 + 1 + 1 + 1 + 15 + 256`, asserted at compile time by `F1.EV.03` (an earlier draft summed to 304 and had no `wire_version` field at all); no pointers; strings as inline fixed arrays in the kernel struct, interned to `StrId(u32)` at ingest; **`EventKind` is append-only and versioned** — a wire-format version byte gates the WAL and the shared section so a driver/daemon version skew is detected, not misparsed.
 
 | ID | Task | Notes |
 |---|---|---|
 | `F1.EV.01` | `RawEvent`, `EventKind`, `EventPayload`, `Verdict` in `aisme-ebpf-common` (`no_std`) | Must compile for `bpfel-unknown-none` |
 | `F1.EV.02` | Wire-version negotiation + `WireVersionMismatch` error | Test: old driver + new daemon refuses cleanly |
-| `F1.EV.03` | Property tests: layout stability, `size_of` assertion, endianness | `static_assertions` |
+| `F1.EV.03` | Property tests: `static_assert!(size_of::<RawEvent>() == 320)`, field offsets (a moved field is a wire break), endianness | `static_assertions` |
 | `F1.EV.04` | String interner (`StrId`, arena, 16k LRU for paths) | Bounded memory, no unbounded growth |
 
 #### F1.2 Causal graph ontology *(moved here from F5 in review)*
@@ -1371,6 +1373,8 @@ The ontology is a **core type, not a correlation-engine detail**. F3 (kernel), F
 | `F1.ON.02` | Graph invariants as code: DAG enforcement, single `executed_as` parent or explicit `orphan` | Validated in debug, counted in release |
 | `F1.ON.03` | Lamport / vector clock ordering normalized to boot-monotonic | Sources have different clocks (`F5.CO.03` consumes this) |
 | `F1.ON.04` | Taint bitmask, propagation and declassification **algebra** (pure functions, no I/O) | `H-13`; the policy in F7 supplies the rules, the algebra lives here |
+| `F1.ON.05` | **`File.taint` labelling**: a write by a tainted process labels the file; a read of a labelled file taints the reader; a network fetch labels the target tree root | `H-13` as corrected — this is what makes `RF-09` reachable at all |
+| `F1.ON.06` | `ToolResult` node with `instruction_bearing`, and the `Finding` and `SuppressionRule` types | Annex A; the context plane `DT-02`/`DT-03` join against |
 
 #### F1.3 Policy model and AISME-PL compiler *(moved here from F7 in review)*
 
@@ -1380,9 +1384,12 @@ The ontology is a **core type, not a correlation-engine detail**. F3 (kernel), F
 |---|---|---|
 | `F1.PL.01` | **AISME-PL** grammar and parser per **Annex B** | Declarative, one source |
 | `F1.PL.02` | Compiler → `CompiledPolicy` IR with static validation: unreachable rules, allow/deny conflicts, unbounded globs | Fails at compile, never at runtime |
-| `F1.PL.03` | Backend trait `PolicyBackend` — one IR, three targets (BPF trie, Sentinel trie, Windows trie `[POST]`) | Backends live in adapters; IR lives here |
+| `F1.PL.03` | Backend trait `PolicyBackend` — one IR, **five** targets: BPF trie (L3), **Landlock ruleset (L2 files)**, **cgroup `sock_addr` allowlist (L2 network)**, Sentinel mobile trie, Windows trie `[POST]` | Backends live in adapters; IR lives here |
 | `F1.PL.04` | `promptable = false` enforced at compile time for the three groups in `I-05` | A policy that tries to make them promptable does not compile |
 | `F1.PL.05` | Deterministic compilation: same source → identical bytes | Makes policy generations comparable and diffable |
+| `F1.PL.06` | Grammar: `verdict = "warn"`, `suppressible`, `grant_ttl_days`, path class `PERSISTENCE_CONFIG`, `profile = "strict"` | Annex B |
+| `F1.PL.07` | `Grant` and `SuppressionRule` compile into the same rule space with TTL. A suppression targeting an `I-05` group or a `CRITICAL` verdict **fails to compile** | `I-26` enforced by the compiler, not by convention |
+| `F1.PL.08` | A backend that cannot express a verdict (Landlock cannot escalate; cgroup hooks cannot prompt) **rejects the rule at compile time with a tier-specific message** | Never a silent drop (general rule 9) |
 
 #### F1.4 Interface layer — the trait catalogue
 
@@ -1390,15 +1397,23 @@ Implements §3.2. **This is the interface freeze deliverable.**
 
 | ID | Task | Notes |
 |---|---|---|
-| `F1.PA.01` | `Sensor`, `Enforcer`, `Adjudicator`, `SessionDiscovery`, `EventSink`, `PolicySource` per §3.2 | The full catalogue, not a subset |
+| `F1.PA.01` | `Sensor`, `Enforcer`, `Adjudicator` (including `notify` for the `warn` verdict), `SessionDiscovery`, `EventSink`, `PolicySource` per §3.2 | The full catalogue, not a subset |
 | `F1.PA.02` | `MockSensor` (recorded-trace replay), `NullEnforcer`, `PolicyAdjudicator` | Lets the entire test suite run with no kernel |
 | `F1.PA.03` | `AdjudicatorLadder`: preference-ordered, channel-aware budgets, grant ceilings (`I-06`) | This is the multiplatform prompt delivery mechanism |
 | `F1.PA.04` | `CapabilitySet` probe abstraction (§2.23) | Single definition; Annex D documents it |
 | `F1.PA.05` | Degradation state machine (`L3/L2/L1`, `DEGRADED`) with loud transitions | `I-16`, `I-19` |
-| `F1.PA.06` | `platform::{sensors,enforcers,adjudicators}` composition entry point — **the only place `cfg(target_os)` is permitted** | Rule `A-01` |
-| `F1.PA.07` | **Dependency-direction CI gate**: assert the §3.1 layering over `cargo metadata` | Rule `A-02`; mechanical, not aspirational |
+| `F1.PA.06` | Composition root `aisme-agentd::platform` — the only module that names a concrete adapter or uses `cfg(target_os)`; adapters export constructors | Rules `A-01`, `A-05` |
+| `F1.PA.07` | **Dependency-direction gate**: assert the §3.1 layering over `cargo metadata` and `layers.toml` | Rule `A-02`; mechanical, not aspirational |
 
-#### F1.5 Daemon runtime
+#### F1.5 Detectors (Annex G)
+
+| ID | Task | Notes |
+|---|---|---|
+| `F1.DT.01` | `aisme-core::detect`: the `Detector` function signature, ordered composition, the `Finding` type | L1, no I/O — testable on CI for every target |
+| `F1.DT.02` | `DT-09` session-risk accumulator: deterministic, decaying, weights as data | This is the value the prompt's severity line shows |
+| `F1.DT.03` | Signed-weights format and its pure verifier (the loader is L3) | Same mechanism as `F4.DB.01`; no learned weights in a verdict path |
+
+#### F1.6 Daemon runtime
 
 | ID | Task | Notes |
 |---|---|---|
@@ -1408,8 +1423,9 @@ Implements §3.2. **This is the interface freeze deliverable.**
 | `F1.RT.04` | Bounded backpressure: fixed-capacity ring, drop-with-counter, never unbounded queue | Drop counter → OTel |
 | `F1.RT.05` | Binary WAL: `rkyv`, 64 MB segments, `fsync` policy configurable, crash-safe replay by offset | `forensicd` resumes by offset |
 | `F1.RT.06` | Self-observability: RSS, CPU, queue depths, drop counters exported as metrics | Feeds §4.4 |
-| `F1.RT.07` | Privilege split: tiny privileged loader (`aisme-loaderd`) vs. unprivileged worker | Reduces root surface |
-| `F1.IPC.01` | Local IPC server (UDS on Linux w/ `SO_PEERCRED`, Named Pipe on Windows w/ SID check) | JSON-RPC 2.0; auth by peer identity |
+| `F1.RT.07` | Privilege split: tiny privileged loader (`aisme-loaderd`) vs. unprivileged worker; the session cgroup subtree is **delegated** (`Delegate=` in the unit) so T2 freeze needs no privilege | Reduces root surface |
+| `F1.RT.08` | Crate lints: `#![forbid(unsafe_code)]` in `aisme-core`; `#![deny(clippy::unwrap_used, clippy::expect_used)]` in `aisme-agentd` | §3.4, §3.5 — a panic in a security daemon is a silent protection outage |
+| `F1.IPC.01` | Local IPC server (UDS with `SO_PEERCRED`; Named Pipe with SID check `[POST]` with native Windows) | JSON-RPC 2.0; auth by peer identity |
 
 **GATE F1 — this gate is the INTERFACE FREEZE**
 ```bash
@@ -1417,7 +1433,9 @@ cargo test -p aisme-core -p aisme-agentd
 cargo xtask verify-layering                  # §3.1 rules A-01..A-06 hold
 cargo xtask bench-hotloop --events 5000000   # 0 allocations steady-state, drop rate 0
 cargo xtask verify-budgets --profile idle    # agentd RSS < 25 MB with MockSensor
-cargo xtask test-policy-compiler             # determinism, static validation, I-05 enforcement
+cargo xtask test-policy-compiler             # determinism, static validation, I-05 + I-26
+cargo xtask test-taint --scenario rf-09 --mock  # the corrected algebra reaches the agent
+cargo xtask test-detect --determinism           # same input, same findings, every target
 cargo tree -p aisme-agentd | grep -q serde_json && exit 1   # must NOT be present
 test $(grep -rl 'cfg(target_os' crates/aisme-core/ | wc -l) -eq 0   # rule A-01
 ```
@@ -1441,7 +1459,7 @@ test $(grep -rl 'cfg(target_os' crates/aisme-core/ | wc -l) -eq 0   # rule A-01
 | Hot loop | Drain → intern → canonicalize → correlate | Full taint algebra, graph spill |
 | Correlation | Match against **one** synthetic ToolCall from `agentsim` | Adaptive window, lineage depth |
 | Policy | **One** hardcoded rule compiled through the real AISME-PL pipeline | Rule sets, grants, learning mode |
-| Enforcement | `seccomp_unotify`: allow or deny one syscall | LSM, freezer, Network Slam |
+| Enforcement | `seccomp_unotify` for the escalate class **+ one Landlock ruleset** applied pre-`exec` | LSM, freezer, Network Slam, cgroup hooks |
 | Adjudication | `TerminalAdjudicator` only | Modal, notification, remote |
 | Persistence | WAL append + `forensicd` tail | DuckDB, Parquet, Merkle, OTLP |
 | Surface | One line printed by `aisme-cli` | UI, graph view, dashboards |
@@ -1455,11 +1473,12 @@ test $(grep -rl 'cfg(target_os' crates/aisme-core/ | wc -l) -eq 0   # rule A-01
 | `F2.WS.03` | `agentsim` emits one synthetic ToolCall with a hidden correlation token | Ground-truth scoring possible from day one |
 | `F2.WS.04` | One AISME-PL rule compiled by the real F1 compiler and published to a real BPF map | Policy generation counter increments; no torn read |
 | `F2.WS.05` | `SeccompEnforcer` implementing `Enforcer`: suspend, ask, respond | A denied `openat2` returns `-EACCES` to the caller |
-| `F2.WS.06` | `TerminalAdjudicator` implementing `Adjudicator` with the §7.3 prompt | A human answers in the terminal and the syscall obeys |
+| `F2.WS.06` | `TerminalAdjudicator` implementing `Adjudicator`, with the terminal prompt specified in `docs/design/01_permission-model.md` §7.3 | A human answers in the terminal and the syscall obeys |
 | `F2.WS.07` | `forensicd` tails the WAL by offset and prints the event | Kill `forensicd` mid-stream; it resumes with zero loss |
 | `F2.WS.08` | `aisme run -- <cmd>` establishes session identity and scope | The session's own process tree is correctly attributed |
-| `F2.WS.09` | End-to-end latency instrumentation across all four tiers | T0/T1/T2 measurable, even if unoptimized |
-| `F2.WS.10` | The whole slice runs on `MockSensor` with no kernel at all | CI runs the full path in milliseconds |
+| `F2.WS.09` | End-to-end latency instrumentation across the tiers present at this shape: T1, T2, T-tel, and the Landlock deny cost | Measurable, even if unoptimized |
+| `F2.WS.10` | The whole slice runs on `MockSensor` with no kernel at all | The gate runs the full path in milliseconds |
+| `F2.WS.11` | `aisme run` applies **one** Landlock ruleset before `exec` (deny writes outside the workspace) — conditional on `R1-04` | A write outside the workspace fails with `-EACCES` **and produces zero notification traffic**; observed via the syscall-exit tracepoint with `inferred_from = sys_exit` |
 
 #### Why each seam matters
 
@@ -1468,7 +1487,7 @@ test $(grep -rl 'cfg(target_os' crates/aisme-core/ | wc -l) -eq 0   # rule A-01
 | kernel → user (ringbuf) | Event layout, wire version, drop accounting, zero-copy assumption |
 | sync enforcement → async adjudication | The `H-01` correction actually works: nothing blocks in the kernel |
 | hot path → cold path (WAL) | The `H-03` two-process split survives a crash without event loss |
-| policy source → compiled → kernel map | The `H-08`/`F7` compiler targets a real backend, not a hypothetical one |
+| policy source → compiled → **published atomically**, then evaluated | The compiler targets a real artefact and publication is torn-read-free. *Kernel-side evaluation of that artefact is F3's first gate*: at this shape the sensor is a tracepoint and enforcement is seccomp, so the kernel never reads the trie |
 | engine → adapter (traits) | `§3.2` composition is real; `MockSensor` substitution works |
 | `aisme run` session identity | The preferred discovery path works before heuristics are needed |
 
@@ -1477,6 +1496,8 @@ test $(grep -rl 'cfg(target_os' crates/aisme-core/ | wc -l) -eq 0   # rule A-01
 cargo xtask test-skeleton              # full slice against MockSensor, no kernel
 cargo xtask vm run -- aisme run -- sh -c 'cat /etc/hostname'   # real kernel, allowed
 cargo xtask vm run -- aisme run -- sh -c 'cat /etc/shadow'     # real kernel, denied -EACCES
+cargo xtask vm run -- aisme run -- sh -c 'cat ~/.aws/credentials'  # ESCALATE -> terminal prompt -> answer obeyed
+cargo xtask vm run -- aisme run -- sh -c 'touch /tmp/outside'  # Landlock deny, zero notifications (if R1-04)
 cargo xtask verify-budgets --profile skeleton                  # measuring real code now
 cargo xtask bench-t0 --syscalls 100000                         # baseline recorded
 ```

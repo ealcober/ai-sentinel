@@ -11,12 +11,14 @@ The four documents in this directory are the **original research input** for the
 
 `extracted/` contains plain-text extractions of each document. **Use these** — LLMs cannot read `.docx` directly, and the extractions include the tables, which carry a lot of the technical detail.
 
+The extractions were produced with `python-docx` from paragraphs and tables only: they omit images, text boxes, headers and footers, footnotes and comments. Where a figure carried design content, the `.docx` is the reference.
+
 ## How to read these
 
 > **These documents have been superseded by [`docs/01_phase5_implementation_plan.md`](../01_phase5_implementation_plan.md).**
 
 The research is strong on diagnosis and on the choice of fundamental primitives — Ring-0 as the trust boundary, eBPF/Aya, minifilters, GC-free Rust, the provenance graph, Lamport-ordered correlation. Those decisions were adopted.
 
-Nineteen specific designs in these documents were analysed and **rejected or corrected**, each recorded as a finding `H-01`…`H-19` in Part II of the implementation plan, with the reasoning. Among them: the FUSE-RPC blocking mechanism, in-process DuckDB, JSON on the hot path, `/proc/self/maps` spoofing, SSL-pinning defeat, the single-channel Inverted Call Model, the OTel trace mapping, and the applicability of Semantic-Anchor Compression.
+Eighteen specific designs in these documents were analysed and **rejected, cut, corrected or deferred**, each recorded as a finding `H-01`…`H-18` in Part II of the implementation plan, with the reasoning (`H-19` adds a requirement absent from the research). Among them: the FUSE-RPC blocking mechanism, in-process DuckDB, JSON on the hot path, `/proc/self/maps` spoofing, SSL-pinning defeat, the single-channel Inverted Call Model, the OTel trace mapping, and the applicability of Semantic-Anchor Compression.
 
 **If something in these documents contradicts a finding in the plan, the plan wins.** These files are kept for provenance and for the material the plan did adopt — not as an implementation reference.

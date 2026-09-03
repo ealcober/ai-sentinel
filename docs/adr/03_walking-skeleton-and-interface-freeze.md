@@ -7,7 +7,7 @@
 
 A full review of the plan before F0 started found three structural defects. None were visible while writing the phases in isolation; all three would have cost weeks once implementation began.
 
-**1. A circular dependency.** The Linux phase (then F2) included `F2.PT.01` — "path trie in BPF" — and the LSM enforcement hooks. But AISME-PL, the language that compiles *into* that trie, was defined in F7, five phases later. The kernel phase would have been built against an invented placeholder policy format and then rewritten when the real compiler arrived. The same applied to the causal-graph ontology, defined in F5 but needed by F3, F4, F9 and F10.
+**1. A circular dependency.** The Linux phase (then F2) included `F2.PT.01` (pre-renumbering id; now `F3.PT.01`) — "path trie in BPF" — and the LSM enforcement hooks. But AISME-PL, the language that compiles *into* that trie, was defined in F7, five phases later. The kernel phase would have been built against an invented placeholder policy format and then rewritten when the real compiler arrived. The same applied to the causal-graph ontology, defined in F5 but needed by F3, F4, F9 and F10.
 
 **2. Horizontal layering.** The order built each layer fully across the whole system before proving any path end to end: all of core, then all Linux probes, then all TLS capture, then correlation, then compression, then enforcement, then UI. Nothing worked end to end until roughly week 10. Every integration assumption — ring buffer semantics, the sync-enforcement/async-adjudication split, the hot/cold process boundary, the trait composition — sat unvalidated behind six weeks of accumulated work.
 

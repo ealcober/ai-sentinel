@@ -1,7 +1,13 @@
 # ADR-02 — Defer the Windows kernel driver; cover Windows via WSL2
 
 **Status**: **Accepted** 2026-08-17 · **Date raised**: 2026-08-17
-**Raised by**: project owner · **Supersedes in part**: plan phase `F3`, finding `H-15`
+**Raised by**: project owner · **Supersedes in part**: the Windows phase, finding `H-15`
+
+> **Editor's note (2026-08-17, after ADR-03 and the challenge review).** Identifiers
+> below predate two later changes. Read "phase `F3`" as *the Windows phase, now plan
+> Annex F*; "the F2 Linux engine" as *F3*; and the traits `KernelSource` /
+> `PolicyPublisher` / `Enforcer` as their current names `Sensor` / `Enforcer` /
+> `Adjudicator` (plan §3.2). The body is otherwise unchanged.
 
 ## Context
 
@@ -50,6 +56,7 @@ Both the first and second rows remove exactly the same cost and risk; the second
 - The highest-severity failure mode in the project — a kernel bugcheck on a user's machine — is eliminated.
 - **Coverage boundary**: agents running as native Windows processes (Claude Desktop, native VSCode, any `.exe` agent) are outside the WSL2 VM and therefore invisible. Agents running inside WSL2 are fully covered. This boundary must be surfaced in the UI per invariant `I-16`.
 - `aisme-windows`, `driver/aisme-flt`, `T4.3.*` and the Windows CI matrix are removed. The `aisme-uiagent` design (permission-model note §7.2) loses its Windows implementation but keeps the architecture, which was driven by the session-0 constraint — worth preserving, since macOS will need the same split.
+- **WSL2 exposes no TPM** (`R1-18`). The forensic chain for Windows-via-WSL2 users is therefore signed with a software key (`key_hw = SoftwareEd25519`), and its non-repudiation rests on external root anchoring, which is enabled by default for such installs (`I-18`). This consequence of the platform choice surfaced in the challenge review, not when the decision was taken; it is stated in the README and shown in the UI.
 
 **Reversal cost.** Moderate but not prohibitive. The plan's architecture deliberately keeps all intelligence in the Rust daemon behind the `KernelSource` / `PolicyPublisher` / `Enforcer` traits (`F1.PA.01`), precisely so a platform backend can be added later. Re-adding Windows means writing the driver and starting the procurement — the core engine does not change. **Keep the trait boundaries even with Windows removed**, or this reversal becomes expensive.
 

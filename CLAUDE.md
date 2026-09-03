@@ -24,7 +24,7 @@ This list is canonical. `docs/ai/AGENTS.md` §1 and plan Part 0 rule 5 repeat it
 
 ## The single most important rule
 
-> **The implementation plan contains 19 findings `H-01` … `H-19` in Part II. Each one records a design from the original research that was analysed and rejected or corrected, with the reasoning.**
+> **The implementation plan contains 19 findings `H-01` … `H-19` in Part II. Eighteen record a design from the original research that was analysed and rejected, cut, corrected or deferred, with the reasoning; `H-19` adds a requirement the research did not cover.**
 >
 > If you are about to implement something that appears in `docs/research/` but contradicts an `H-xx` finding, **the finding wins.** Do not "restore" the original design believing you are fixing an omission. If you genuinely think a finding is wrong, write an ADR arguing it — do not silently implement around it.
 

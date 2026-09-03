@@ -90,6 +90,8 @@ On mobile, AISME enforces at the network and tool-call layers, which is what the
 
 All coverage differences are enumerated in the capability parity matrix (plan §2.20.2) and surfaced in the product itself. AISME never claims a capability it does not have on the device it is running on.
 
+What AISME does **not** defend against is stated as plainly as what it does: see the non-goals in the [threat model](docs/security/01_threat-model.md).
+
 ## Licence
 
 TBD.

@@ -25,7 +25,7 @@ Read-only script `verify_docs.py` (scratchpad, not in the repo). **Prediction wr
 
 ## Skeleton
 
-**Status 2026-08-17: all 33 points closed.** 204 numbered defects, 18 unverified claims (R1), 13 fallen claims (R2), 10 questions for the owner (§Questions below).
+**Status 2026-08-17: all 34 points closed; all 10 owner questions answered (§Owner answers).** 209 numbered defects, 18 unverified claims (R1, two withdrawn), 13 fallen claims (R2).
 
 **A. Root and working documents**
 
@@ -69,6 +69,7 @@ Read-only script `verify_docs.py` (scratchpad, not in the repo). **Prediction wr
 | P-31 | Part VIII risks and schedule | **closed** |
 | P-32 | Annexes A–F | **closed** |
 | **P-33** | **Detection techniques — research-backed expansion** (added 2026-08-17 at the owner's request; closed after P-14 because it depends on H-13, H-19 and §2.20.3; P-21, P-26 and P-32 reference it) | **closed** |
+| **P-34** | **Local-only build and gates** (added 2026-08-17 from the owner's answer to Q-09; supersedes the hosted-CI assumptions in P-16 and P-28) | **closed** |
 
 ---
 
@@ -93,6 +94,25 @@ Consolidated from the points. Each proceeds on the stated assumption until answe
 
 ---
 
+## Owner answers (2026-08-17)
+
+Recorded verbatim in substance; each answer names the patch it settles. Git was initialised by the owner before these answers (`b8b7a27 first commit`, 63 files, clean tree, remote `origin` on GitHub, single contributor) — this report is in that commit.
+
+| # | Answer | Settles | Consequence |
+|---|---|---|---|
+| Q-01 | **300 Mbps** hard floor | P-04 D-15 | Plan §2.22 row 28 → 500 / 300 to match `budgets.toml:67`; F10 gate already at 300 |
+| Q-02 | **Narrow-only.** A repo's `.aisme/scope.toml` can restrict, never extend | P-08 D-36 | Decision, not question: `permission-model.md` §3 and `F7.PS.07` as written; `aisme.scope.widen_attempt` event; ADR to be written with the F7 patch |
+| Q-03 | **Per-machine, never synced** (grants and suppression rules) | P-08 | `F7.PS.02/03`, `F11` as written; STATE open decision 2 closed |
+| Q-04 | **Conform ADRs to `NN_slug.md`** — and the slug must not start with a hyphen: `0001-record-…` → `01_record-architecture-decisions.md`, not `01_-record-…` | P-09 D-41, P-10 D-49 | ADR-0001 numbering section: two digits, sequential, no reservation, `NN_slug.md`; renames of 0001–0003 by `git mv`; every `ADR-000N` reference → `ADR-0N`; `verify-docs` naming rule covers `docs/adr/` (no exception) and rejects `NN_-` |
+| Q-05 | **Already done by the owner** (`git init`, private repo, one contributor) | P-10 D-48, P-16 `F0.REPO.00` | `F0.REPO.00` is complete; its done-when holds (`git log` = one commit, clean). P-03's `Cargo.lock` tracking check is now runnable |
+| Q-06 | **Rename both**: plan → `docs/01_phase5_implementation_plan.md`, this report → `docs/02_challenge_ampliacion_sistema.md` | P-10 D-49 | One `git mv` commit with every reference updated (list in P-10 §3) |
+| Q-07 | **`docs/ai/` exempt** from `NN_` numbering (instruction files by fixed name) | P-10 D-49 | `AGENTS.md` §5 sentence; `verify-docs` exemption list = `README.md`, `docs/ai/*` |
+| Q-08 | **P-256 wherever a hardware key exists**; Ed25519 only for software keys; `key_hw` in every block and in the UI | P-14 D-61/62, P-27 | H-17, §2.20.6, `F5.FO.02`, `F10.FO.01`, `F11.CC.*` as patched |
+| Q-09 | **Hard rule: zero GitHub cost.** Everything builds and gates locally. No Actions on push, ever. If a multi-platform build ever needs Actions it will be announced, run once, verified, and disabled again. Additional consumption: 0 | P-16 D-93, P-28 D-176, R1-15, R-17 | **New point P-34** below; R1-15 and R-17 are moot |
+| Q-10 | **Rename Part V to `DEP.*`** | P-29 D-177 | Part V tables, Part 0 rule 1, plan citations; this report's policy in P-29 §3 stands |
+
+---
+
 ## R1 — Register of unverified claims
 
 What could not be checked against a file, a figure or an output. **Does not enter the body.**
@@ -112,7 +132,7 @@ What could not be checked against a file, a figure or an output. **Does not ente
 | R1-12 | Commodity TPM 2.0, iOS Secure Enclave and Android StrongBox do **not** offer non-exportable Ed25519; all offer P-256 | P-14 D-61/D-62 | Hardware docs not captured | `tpm2_getcap algorithms` on reference hardware; Apple "Protecting keys with the Secure Enclave"; Android `KeyGenParameterSpec`/StrongBox docs |
 | R1-13 | BLAKE3 is 5–10× faster than SHA-256 on the ingest path (`plan:603`) | H-17 | Not benchmarked | `cargo bench` in F5 on 320 B leaves |
 | R1-14 | Landlock audit records (`LANDLOCK_RESTRICT_SELF_LOG_*`) arrived in kernel 6.15; before that a Landlock deny leaves no kernel record | P-15 D-84 | Version asserted from memory | Kernel changelog / `Documentation/userspace-api/landlock.rst` "Audit" section |
-| R1-15 | GitHub-hosted `windows-latest` runners cannot run WSL2 (no nested virtualisation; WSL1 only) | P-16 D-93 | Not tested | A workflow step `wsl --set-default-version 2 && wsl --install -d Ubuntu` on a hosted runner |
+| R1-15 | ~~GitHub-hosted runners cannot run WSL2~~ | P-16 D-93 | **Withdrawn** — moot under Q-09 (no hosted CI); see P-34 | — |
 | R1-16 | `BPF_PROG_TYPE_CGROUP_SOCK_ADDR` at `BPF_CGROUP_INET4/6_CONNECT` works with cgroup v2 and `CAP_NET_ADMIN`/`CAP_BPF`, independent of the `lsm=` list, kernel ≥ 4.17 | P-19 D-113 | Attach semantics asserted from memory | `bpftool cgroup attach` on the matrix VMs with `bpf` **absent** from `/sys/kernel/security/lsm`; deny a `connect` from the session cgroup |
 | R1-17 | iOS App Groups are scoped to one developer team; a third-party app cannot join AI Sentinel's group | P-25 D-147 | Apple docs not captured | Apple "Configuring app groups" (team-scoped identifiers); attempt from a second-team fixture app |
 | R1-18 | WSL2 exposes no TPM device (`/dev/tpm*` absent; no vTPM passthrough) | P-31 D-196 | Not probed | `ls /dev/tpm* /dev/tpmrm*` inside the WSL2 image (`F0.WSL.01`) |
@@ -144,6 +164,7 @@ Each entry is one pass, run after the point named, over everything before it.
 |---|---|---|---|
 | P-14 (first pass, on the owner's instruction) | D-01…D-68 contiguous, unique, no dangling refs; R1-01…13 and R2-01…07 all defined; every P-ref resolves or is forward; proposed IDs diffed against the plan | (1) `F4.CO.03` proposed by P-13 **already exists** (`plan:1474`, adapter registry). (2) `RF-17` reserved by P-08 for suppression; the draft of P-33 was about to reuse it. (3) `T4.8.*` cited by P-07 is not a scheme the plan has — §4.8 tests are `RF-xx` scenarios. | P-13 renumbered to `F4.CO.04/05`; P-33 starts at `RF-18`; P-07 test reference changed to `RF-17` |
 | P-33 | Same checks + `DT-nn` uniqueness + proposed `RF-nn` diffed against Annex C | Nothing. D-01…D-77 contiguous; RF-18…24 free; DT-01…15 unique; new task IDs (`F0.DOC.01`, `F4.CO.04/05`, `F4.DT.01`) all intentional | — |
+| P-34 (after owner answers) | Answers table added; P-34 appended; R1-15 withdrawn; P-16 question closed by pointer; skeleton status updated | D-205…D-209 contiguous after D-204; no dangling refs | Surgical edits to P-16 and R1 as listed |
 | P-32 (final) | Same checks over the full report; Part V rename (`F5.*` → `DEP.*`, P-29) applied to *proposal-side* text in P-03 §3, P-15 A-06 and P-21 (plan-quoting citations kept verbatim by the policy stated in P-29); seed-memory count (6 → 10, P-30) propagated to P-16; ADR template existence added to GATE F0 | D-01…D-204 contiguous; R1-01…18, R2-01…13 defined; every P-ref resolves (P-01…P-33 all closed); 0 pending rows | Surgical edits to P-03, P-15, P-16, P-21 as listed |
 | P-27 | Same checks; proposed IDs (`F3.EN.09–12`, `F3.WSL.01/02`, `F4.CO.04/05`, `F4.DT.01`, `F4.VAL.03`, `F5.DT.01–07`, `F7.PS.01–08`, `F8.UA.01/02`, `F8.UI.08/09`, `F9.SDK.09/10`, `F10.CORE.10–12`, `F10.IOS.09`, `F10.T.05`) checked against the F3–F11 tables; unbackticked task-ID refs now also matched (D-127's lesson) | Nothing new. D-01…D-163 contiguous; R1-01…17, R2-01…12 defined. Three regex hits reviewed by hand and dismissed: `F1.PL.04` and `F3.EN.08` are *extended*, not re-created; `F10.T.05` was referenced-undefined in the baseline and P-26 defines it | — |
 | P-18 | Same checks; proposed task IDs (`F0.REPO.00`, `F0.CI.08`, `F0.VER.*`, `F1.ON.05`, `F1.PL.06/07`, `F1.DT.01–03`, `F1.RT.08`, `F2.WS.11`) checked against the F0/F1/F2 tables | Nothing. D-01…D-110 contiguous; R1-01…15 and R2-01…11 defined; all proposed IDs free. Note: P-15's fix of the 30 s terminal budget (D-81) is consistent with P-08's tier ladder and §2.20.5 | — |
@@ -820,7 +841,7 @@ No question for the owner.
 - **D-97** New tasks accepted in earlier points but not yet in the F0 table: `F0.REPO.00` (git init, P-10), `F0.DOC.01` (seed memories, P-05), `layers.toml` (P-03), R1 verifications (P-12…P-14).
 - Verified sound and unchanged: `F0.CI.02–05`, `F0.VM.01`, `F0.SEC.01` (gains P-33 G.3/G.4 content), the deprecations `F0.WIN.*`.
 
-**Question for the owner** (infrastructure, money-adjacent): if R1-15 confirms that hosted runners cannot run WSL2, is a **self-hosted Windows runner** acceptable for the WSL2 CI lane, or should WSL2 verification be a manual pre-release gate instead? Implementation assumes self-hosted.
+**Question for the owner** — answered (Q-09): **no hosted CI at all**; see **P-34**, which supersedes the `F0.CI.01` and self-hosted-runner text below. The remainder of this point stands.
 
 **3. Implementation.** The F0 table (`plan:1204–1226`) will be edited in place, rows added in ID order:
 - `F0.REPO.00 | **Initialise git**; first commit = the repository as it stands before any patch from docs/02_… | \`git log\` shows one commit, \`git status\` clean` (inserted before `F0.REPO.01`).
@@ -1380,3 +1401,36 @@ No question for the owner.
 
 **Closure.** Verified every annex against the upstream corrections that must land in it. D-204 is small and telling: the document's own "end" was not at its end. Part B is closed; with it the skeleton is complete.
 
+---
+
+### P-34 — Local-only build and gates (owner rule, Q-09)
+
+> Added 2026-08-17 from the owner's answer to Q-09. It supersedes the CI assumptions in P-16 (D-93, self-hosted runner) and P-28 (D-176, hosted per-PR/nightly lanes), and moots R1-15 and R-17. Append-only: the earlier points keep their text with a pointer here.
+
+**1. Challenge.** The plan assumed GitHub Actions as the execution substrate for every gate (`F0.CI.01`, `plan:1211`; §4.12 cadences, `plan:2088–2094`; the `.github/workflows/` directory in Part VI). The owner's rule is categorical: **no GitHub cost, ever; everything designed to build and gate locally; nothing runs on push; any future Actions use is announced, one-off, verified, and disabled again.** Read against the objective this is not a constraint on quality — every gate in Part IV is a command, and commands run anywhere. It is a constraint on *where* and *when*, and it removes a whole class of risk (a stray workflow burning minutes) in exchange for one discipline: the gates must be as easy to run on a laptop as they were going to be in a runner.
+
+**2. Verification.** What the rule touches, measured against the plan:
+
+- **D-205** `F0.CI.01` (`plan:1211`) "GitHub Actions matrix" and P-16 §3's "self-hosted Windows runner" — both violate the rule. *Bias*: neutral. *Falsified by*: any `.github/workflows/*.yml` with `on: push` or `on: pull_request`.
+- **D-206** §4.12 (`plan:2088–2094`) defines cadences as "per-commit / per-PR / nightly / weekly" on hosted infrastructure. The *cadences* survive; the *substrate* does not. Nightly and weekly runs need a local scheduler (the owner's machine or a lab box), not a cloud.
+- **D-207** Part VI tree lists `.github/workflows/ CI: per-commit, per-PR, nightly, release` (`plan:2404`); the directory exists in the repo with only `.gitkeep`. The presence of the directory invites someone to add a workflow. *Bias*: optimistic toward the failure mode the owner forbids.
+- **D-208** No invariant states the rule. Owner rules that fail silently need a CI-style check — here, ironically, a *local* check.
+- **D-209** `F5.SUP.04` Sigstore/cosign and `DEP.SUP.*` release steps do not depend on Actions (they are local commands) ✓. The WSL2 lane (`F0.CI.01`, R1-15, R-17) becomes a local lane on the owner's Windows machine — which is *better* than a hosted runner, because WSL2 there is the real target.
+- Verified unchanged: every gate command in Part III/IV is already a `cargo xtask …` invocation; nothing in the plan requires a hosted service to *execute* a gate.
+
+No question for the owner: the rule is stated; this point applies it.
+
+**3. Implementation.**
+- New invariant appended to `docs/ai/invariants.md` group 5: `**I-27 — Zero hosted-CI cost.** Every gate runs locally through \`cargo xtask\`. No workflow in this repository triggers on push or pull request. Any hosted run is announced, one-off, verified and disabled again. Enforced by \`verify-docs\` (\`F0.CI.08\`): the repository contains no \`.github/workflows/*.yml\` with \`on: push\` / \`on: pull_request\` / \`schedule\`.` `CLAUDE.md` "Invariants you must not break" gains the one-line version.
+- `.github/workflows/` is **removed** from the repository and from the Part VI tree (`git rm` of the `.gitkeep`; one commit). If a one-off hosted run is ever needed, the workflow is created for that run, uses `workflow_dispatch` only, and is deleted in the same PR that records the result.
+- `F0.CI.01` → `**Local gate runner**: \`cargo xtask gate --level <commit|pr|nightly|weekly>\` runs the §4.12 cadence sets locally; a \`pre-commit\` hook runs the \`commit\` level; \`nightly\` and \`weekly\` are launched by a local scheduler (systemd timer / cron on the owner's machine or lab box). WSL2 lane runs on the owner's Windows machine, where WSL2 is the real target. **No hosted CI.**` The `F0.CI.*` block is renamed **`F0.GATE.*`** in the plan (ID freeze not yet started) to stop the word "CI" implying a service; P-02/P-04/P-05/P-06/P-09/P-10/P-16/P-28 references to `F0.CI.0x` map 1:1 to `F0.GATE.0x`.
+- §4.12 cadence paragraph → `**Levels** (all local): \`commit\` ≤ 10 min, \`pr\` ≤ 60 min (run before merging a branch), \`nightly\` (local scheduler), \`weekly\` (soak on dedicated local hardware). The release checklist (\`DEP.SUP.08\`) records the \`weekly\` run's signed report.`
+- Part VI: `.github/workflows/` line removed; `xtask/` line gains `gate runner (all levels, local)`.
+- P-16 D-93 and its self-hosted-runner question (Q-09) are closed by this point; R1-15 → **withdrawn** (no longer needed); R-17 → **withdrawn** and replaced by `R-17′ | Local gate discipline erodes (nobody runs \`nightly\`) | Med | Med | \`STATE.md\` records the last nightly/weekly run date; \`verify-docs\` warns when older than 7/14 days; the release checklist refuses without a fresh weekly report | F0`.
+- §4.12 "Release blockers" gains `✗ Any workflow file that triggers on push, pull_request or schedule (I-27)`.
+
+**4. Tests.** **New** — `verify-docs` asserts no `.github/workflows/*.yml` exists with `on: push|pull_request|schedule` (passes trivially when the directory is absent). **New** — `cargo xtask gate --level commit` is the `pre-commit` hook and must complete under 10 minutes on the reference laptop. **Changed** — every "CI fails" phrase in Part IV reads "the gate fails" (wording, `verify-docs` optional).
+
+**5. Documentation.** `invariants.md` I-27; `CLAUDE.md` one line; plan `F0.CI.*` → `F0.GATE.*`, §4.12, Part VI; `AGENTS.md` §4 forbidden actions gains `| Add a workflow that triggers on push/PR/schedule | I-27 — zero hosted-CI cost |`; README "Build and verify" (via `CLAUDE.md:89–99`) gains `All gates run locally: \`cargo xtask gate --level commit\`.`
+
+**Closure.** The rule was measured against every place the plan assumed a hosted runner (three) and every gate command (none needs one). Two earlier findings are withdrawn rather than fixed. Nothing fell; nothing open.

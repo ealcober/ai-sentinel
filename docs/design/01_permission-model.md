@@ -78,6 +78,8 @@ Four verdicts, defined by two independent bits: *does it block?* and *does the u
 | `escalate` | yes | yes | The prompt of §5. Blocks pending a verdict, within the channel's budget |
 | `deny` | yes | record only | Blocked by policy. Visible in the timeline, not as an interruption |
 
+The four verdicts are **totally ordered** — `allow < warn < escalate < deny` — and that order is normative (plan Annex B §B.10). It is the same order `seccomp(2)` uses for its own actions, combined the same way: the strictest matching verdict wins, so policy order never matters.
+
 **`warn` is the verdict that makes deny-by-default liveable.** Without it every "I want to know but not be interrupted" case collapses into either silence or a modal. It counts against a separate budget — `warns_per_day`, target 10, hard 30 — and **not** against `prompts_per_day`, because a warn costs attention but not a decision.
 
 Group defaults gain `warn` where it is the right posture: `PACKAGE_INSTALL` is `warn` for a user-scope install and `ask` for a system-scope one; `NETWORK_EGRESS` is `warn` for a host already seen in this workspace and `ask` the first time.

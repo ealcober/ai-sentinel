@@ -1501,13 +1501,15 @@ F3 builds a policy trie in a BPF map, and a trie is meaningless without the lang
 | ID | Task | Notes |
 |---|---|---|
 | `F1.PL.01` | **AISME-PL** grammar and parser per **Annex B §B.0** | Declarative, one source, deliberately not Turing-complete |
-| `F1.PL.02` | Compiler → `CompiledPolicy` IR with static validation: **unreachable rules as defined by §B.10**, unbounded globs that would blow the verifier's loop budget | Fails at compile, never at runtime |
+| `F1.PL.02` | Compiler → `CompiledPolicy` IR with static validation: **unreachable rules as defined by §B.10**, `except` well-formedness (§B.11: same key dimension, no nesting, no cross-rule reference), `assert never` guardrails (§B.12), unbounded globs that would blow the verifier's loop budget | Fails at compile, never at runtime |
 | `F1.PL.03` | Backend trait `PolicyBackend` — one IR, **five** targets: BPF trie (L3), **Landlock ruleset (L2 files)**, **cgroup `sock_addr` allowlist (L2 network)**, Sentinel mobile trie, Windows trie `[POST]` | Backends live in adapters; IR lives here |
 | `F1.PL.04` | `promptable = false` enforced at compile time for the three groups in `I-05` | A policy that tries to make them promptable does not compile |
 | `F1.PL.05` | Deterministic compilation: same source → identical bytes | Makes policy generations comparable and diffable |
 | `F1.PL.06` | Grammar: `verdict = "warn"`, `suppressible`, `grant_ttl_days`, path class `PERSISTENCE_CONFIG`, `profile = "strict"` | Annex B |
 | `F1.PL.07` | `Grant` and `SuppressionRule` compile into the same rule space with TTL. A suppression targeting an `I-05` group or a `CRITICAL` verdict **fails to compile** | `I-26` enforced by the compiler, not by convention |
-| `F1.PL.08` | A backend that cannot express a verdict or a key **rejects the rule at compile time with a tier-specific message**, checked against the **§B.9** matrix; the L3→L2 `escalate` substitution is stated, not silent | Never a silent drop (general rule 9) |
+| `F1.PL.08` | A backend that cannot express a verdict or a key **rejects the rule at compile time with a tier-specific message**, checked against the **§B.9** matrix; every verdict the backend's monotone map changes is named, never substituted silently | Never a silent drop (general rule 9) |
+| `F1.PL.09` | **Compiler diagnostics that §B.10 makes cheap**: for each rule, the set of other rules whose effective verdict it raises (over-blocking triage, feeds `test-benign`); detection of an `allow` wholly shadowed by a broader `deny`; and, since `R ⊆ R'` implies `V_R ≤ V_R'`, a static check that one policy version is at least as strict as another | All three are impossible under a specificity-ordered language |
+| `F1.PL.10` | **`decided_by`**: the combining step records the rule that supplied the maximum, carried on the verdict into the WAL and the UI (§B.10) | `seccomp` keeps `*match` beside the winning action for the same reason: a verdict nobody can attribute is a verdict nobody trusts |
 
 #### F1.4 Interface layer — the trait catalogue
 
@@ -3110,6 +3112,7 @@ Adopted largely from the research, which was sound here.
 | `SuppressionRule` | Changes **notification only** (`I-26`) | `id`, `match`, `scope`, `ttl`, `origin`, `hits`, `report` |
 | `ToolResult` | What a tool returned — the context plane | `toolcall_id`, `origin` (File\|Web\|Mcp\|Sdk), `content_hash`, `instruction_bearing`, `taint` |
 | `Finding` | A detector fired (Annex G) | `dt`, `severity`, `evidence_refs[]`, `suppressed_by?` |
+| *(verdict fields)* | Carried on every decision event | `decided_by` (the rule that supplied the maximum, §B.10), `suppressed_by?` (`I-26`) |
 
 ### A.2 Edges
 
@@ -3151,8 +3154,9 @@ TOML is the surface syntax: no new parser, diffable, and familiar to the people 
 ```ebnf
 policy        = { session_defaults | rule | suppression | profile } ;
 rule          = "[[rule]]" , id , group , match , verdict ,
-                { taint | severity_floor | promptable | suppressible
+                { except | taint | severity_floor | promptable | suppressible
                 | audit | event | escalate_if } ;
+except        = "except" , "=" , "{" , match_key , { "," , match_key } , "}" ;
 suppression   = "[[suppression]]" , match , scope , ttl_days , origin , [ report ] ;
 
 id            = "id" , "=" , string ;               (* unique; the diff key *)
@@ -3171,6 +3175,8 @@ GROUP         = "FILES_OUTSIDE_WORKSPACE" | "SYSTEM_CONFIG" | "CREDENTIALS"
 ```
 
 Keys inside one `match` are **AND**; a list value is **OR** within that key.
+
+`except` narrows **the match set of the rule it appears in**, and nothing else. It is a set difference on the predicate, not a precedence mechanism — see §B.10.
 
 ### B.1 Sketch
 
@@ -3264,15 +3270,99 @@ event   = "aisme.exfiltration.blocked"
 | verdict `escalate` | ✅ | **❌** | **❌** | ✅ | ✅ |
 | verdict `warn` | ✅ | ⚠️ allow + notify from user space | ⚠️ same | ✅ | ✅ |
 
-The common case is benign and must read clearly: an `escalate` rule compiles into the BPF trie at L3 and, at L2, into a Landlock **deny** plus a user-space escalation path. **The compiler states that substitution**; it does not perform it silently.
+**Each backend declares one monotone map** `f` from the verdict order into the verdicts it can enforce. Because the order is a chain (§B.10) and `f` is order-preserving, `f(max S) = max f(S)` — degradation is a lattice homomorphism, so **the compiler applies `f` per rule, before combining, and the result is provably identical to combining first and degrading after.** The "can this backend express this rule?" check is therefore purely local: one rule at a time, no whole-policy analysis.
 
-### B.10 Precedence
+| Backend | `allow` | `warn` | `escalate` | `deny` |
+|---|---|---|---|---|
+| BPF trie (L3) | allow | warn | escalate | deny |
+| **Landlock** | allow | **allow** (the notice is delivered by the LSM/tracepoint path in parallel) | **deny** (fail closed) | deny |
+| cgroup connect | allow | allow | **deny** (fail closed) | deny |
+| Sentinel | allow | warn | escalate | deny |
+| Windows `[POST]` | allow | warn | escalate | deny |
 
-**Strictest verdict wins**: `deny` > `escalate` > `warn` > `allow`, evaluated across every rule whose match succeeds.
+The precedent for insisting on this is concrete: AppArmor's `priority` qualifier is **accepted and silently ignored** on six of its rule classes — capability, signal, dbus, ptrace, mount and unix — so a policy that is wrong is also quiet about it. `B.8` exists so that cannot happen here.
 
-Order in the file is irrelevant, so policy files merge without conflict and a rule can be added anywhere. The rationale is `I-15`'s sibling: in a security product the surprising outcome should be the safe one. It also resolves the case the §B.1 examples already contain — `${workspace}/.env` matches both `workspace-free` (allow) and `credentials-ask` (escalate), and escalate wins.
+A backend MUST declare, for each verdict it cannot enforce, whether it degrades **upward** (fail closed) or **downward** (fail open). Downward degradation of `escalate` or `deny` is rejected unless the rule carries an explicit `degrade-open` marker. `verify-docs` fails if any declared map is not monotone.
 
-`B.1`'s "no allow/deny conflicts" is restated precisely: **a rule that can never be the strictest for any input is unreachable and fails to compile.** That is the defect the requirement was reaching for; two rules with the same verdict and overlapping matches are not a conflict.
+The common case must read clearly: an `escalate` rule compiles into the BPF trie at L3 and, at L2, into a Landlock **deny** plus a user-space escalation path. **The compiler names every rule whose verdict `f` changes**; it never substitutes silently.
+
+### B.10 Verdict order and combining (normative)
+
+**The four verdicts are totally ordered — a chain, not a partial order:**
+
+```
+allow  <  warn  <  escalate  <  deny
+```
+
+**This order is normative and load-bearing.** A verdict that is not comparable to every existing verdict may not be added; extending the language with an incomparable verdict requires an ADR, because §B.9's per-rule degradation proof depends on the order being total.
+
+**Combining.** For an event *e*, the effective verdict is
+
+```
+V(e) = max { verdict(r) : r ∈ R, r matches e }      V(e) = allow when no rule matches
+```
+
+Because `max` on a chain is commutative, associative and idempotent, `V(e)` is independent of rule order, file order, module grouping and load order. **`allow` and `warn` are not terminal**: evaluation may stop early only on `deny`, the top of the order. A permissive verdict never ends the evaluation, so a later rule can always raise it — which is what makes the maximum well defined and is the property nftables warns about in the other direction (*"it is not possible to have a drop verdict changed to an accept in a later chain"*, while an accept is not final). **An implementation must not give significance to rule order, file order, match length, prefix length, rule specificity, or the number of key dimensions a rule constrains.** Two policy files concatenate in any order without changing any decision.
+
+This is the combining rule the platform already uses at every layer AISME builds on, which is the strongest argument for it: `seccomp(2)` defines its actions in precedence order `ALLOW < LOG < TRACE < USER_NOTIF < ERRNO < KILL` — *allow < warn < escalate < deny*, the same lattice — and takes "the first-seen action value of highest precedence" across all filters. `bpf_prog_run_array_cg` runs every program and never lets a recorded deny be overwritten. Landlock intersects across layers and can only ever narrow. AWS IAM, Google Cloud IAM and Istio are deny-overrides. Kubernetes NetworkPolicy states that policies "do not conflict; they are additive… order of evaluation does not affect the policy result".
+
+**Why not most-specific-wins: for this language it is not riskier, it is undefined.** Specificity is well defined on one axis — a routing table works because addresses are totally ordered on one dimension. AISME's match space is not one axis. `credentials-ask` matches `path_glob = **/.env`, `workspace-free` matches `path_under = ${workspace}`: a glob against a prefix, with no principled ordering between them. `network-slam` matches on taint and destination and **is incomparable to every path rule**. In more than one dimension "more specific" is set inclusion, which is a **partial** order, so pairs routinely overlap with neither subsuming the other. The only remaining tiebreaker is rule order — at which point the language has silently become first-match-wins and inherited its documented pathologies: shadowing, redundancy and correlation, where deleting one rule changes the verdict for requests nobody touched. **Under §B.10 those states are unreachable by construction**, not defects a linter has to hunt.
+
+Adopting specificity would mean inventing a total order on incomparable predicates and defending it forever.
+
+**Provenance is part of the join.** The engine records `decided_by = <rule_id>` alongside every verdict — the rule that supplied the maximum. `seccomp(2)` does exactly this: its filter loop keeps `*match` next to the winning action, so the kernel always knows which filter decided. This costs one field and it answers the only serious usability objection to strictest-wins, which is that a surprising verdict is hard to attribute. It is the same shape as `I-26`'s `suppressed_by`.
+
+Three properties follow, and the compiler and the datapath both use them:
+
+1. **Sound early exit.** Evaluating any subset gives a lower bound, and adding rules can only raise the verdict, so evaluation may stop the moment `deny` is observed. Under specificity-wins a partial evaluation bounds nothing — an unexamined rule might be both more specific and more permissive.
+2. **Sound indexing.** The LPM trie is a *slice* of the rule set, and slicing is sound only because the operator is associative, commutative and idempotent. Each trie node stores `max` over every rule whose match set contains it, precomputed at compile time: one O(1) datapath lookup.
+3. **Mergeability.** The union of two policy files is the pointwise `max`. A shipped baseline, an organisation's policy and a local policy compose with no merge conflict and no rule whose meaning depends on what else is loaded.
+
+`B.1`'s "no allow/deny conflicts" is restated precisely: **a rule that can never be the strictest for any input is unreachable and fails to compile.** This includes an `allow` rule wholly shadowed by a broader `deny` — the case that went undiagnosed in AppArmor for fifteen years and produced its longest-standing usability complaint. Refusing ambiguity at build time rather than resolving it at runtime is the same move as SELinux's `neverallow`, OPA's `eval_conflict_error` and OpenFGA's refusal to build a model it cannot resolve.
+
+**The honest counter-evidence**, recorded because it is real. A 54-participant study (Reeder et al., CMU-CyLab-09-006) found specificity-precedence gave substantial accuracy gains over deny-precedence, up to 78 %, and stated that deny-precedence "makes certain policy configurations impossible". Two things keep it from applying here, and both are in that paper. Its resource space is *"a strict hierarchy, so folders cannot have overlapping memberships"* and its groups do not nest — a single-axis match space, which AISME's is not. And it names the two cases where specificity fails outright: peer groups, where "specificity precedence cannot resolve the conflict", and *"a two-dimensional conflict, in which one rule is more specific in its principal and another rule is more specific in its resource"*. Its winning method is also not specificity alone but a hybrid, "first specificity and then deny precedence". The usability cost it measures is real, and `decided_by` is the mitigation.
+
+### B.11 Exceptions
+
+The cost of `max` is that no rule can lower another's verdict, so "deny all of `/etc` except `/etc/hosts`" needs a mechanism. **That mechanism is `except`, which narrows the rule's own match set — never precedence.** This is what every system that faced the problem chose: Cedar's `unless` on a `forbid`, AWS IAM's `NotAction`/`NotResource` on a `Deny`, Google Cloud IAM's `exceptionPrincipals` as a field *on the deny rule*, XACML's narrowed `<Target>`.
+
+```toml
+[[rule]]
+id      = "system-config-deny"
+group   = "SYSTEM_CONFIG"
+match   = { path_under = ["/etc", "/boot", "/usr/lib/systemd"] }
+except  = { path_glob  = ["/etc/hosts"] }
+verdict = "deny"
+```
+
+That this mechanism is *necessary* rather than a convenience is settled empirically. Compiling the AppArmor profile `deny /etc/** r, /etc/hosts r,` and the profile `deny /etc/** r,` alone produces **byte-identical binary policy** — the narrower `allow` contributes nothing, and swapping the rule order changes nothing. Without `except`, the same is true here.
+
+Rules, all enforced by the compiler:
+
+- `except` narrows **the rule in which it appears** and creates no exception to any other rule.
+- An `except` operand is drawn from **the same key dimension** as the term it narrows, and compiles to a set difference representable in the target backend's match structure. A path prefix trie computes that natively.
+- **`except` does not nest**, and it may not reference another rule. Unbounded exception predicates are how a policy language loses its analyzability.
+
+So specificity lives **inside one rule's predicate**, where it is one-dimensional, single-author and well defined; the algorithm **across** rules stays `max`.
+
+### B.12 Guardrails are compile-time assertions, not runtime precedence
+
+A policy-set invariant is written as an assertion over the complete rule set and evaluated by the compiler:
+
+```toml
+[[assert]]
+never = { group = "SELF_PROTECTION", verdict = ["allow", "warn"] }
+```
+
+A violated assertion is a **compile error**, not a runtime verdict. This follows SELinux's `neverallow`, which is a build-time check for the same reason: an invariant enforced at compile time cannot be defeated at runtime and costs nothing on a 15 µs path. Guardrails may not be expressed as runtime precedence.
+
+### B.13 Reserved: authority tiers
+
+`tier` is a **reserved keyword and is not implemented.**
+
+Every system surveyed that added precedence added it to encode **who wrote the rule** — Kubernetes AdminNetworkPolicy's `Admin > NetworkPolicy > Baseline` tiers exist because a cluster admin and a developer are different authorities, and AppArmor 4's `priority` is an author-declared integer. **None of them arbitrate by computed specificity.** If a future ADR introduces tiers here, a tier must correspond to a declared authority boundary and must not be derived from any computed property of a rule. Within a tier, §B.10 applies unchanged, and **a tier must be resolved entirely at compile time and must never reach the datapath** — AppArmor drops its `priority` before the kernel sees the policy, and a runtime priority field on the T0 path would forfeit the precomputation that §B.10's early exit and the trie's per-node maximum both depend on. And **two rules with equal tier and overlapping matches must be a compile error** — Kubernetes documents the alternative and it is not acceptable here: *"if two (or more) policies with the same priority could both match a connection, then the implementation can apply any of the matching policies… and there is no way for the user to reliably determine which one it will choose."*
+
+The cost of the alternative is on the record: Windows Filtering Platform implements the fully general hybrid — weighted sublayers, hard and soft permits and blocks, callout vetoes — and its own documentation says that when a veto is issued "it is an indication of conflict in the configuration". Third-party firewalls are bypassed through it in practice. **For a security product, every knob that lets a lower verdict win is an attack surface.**
 
 ---
 

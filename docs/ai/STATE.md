@@ -44,8 +44,6 @@
 
 ## Next up
 
-**One owner question is open**: `Q-11` — AISME-PL rule precedence, **strictest-verdict-wins** (implemented, order-independent, fails safe) versus most-specific-wins. The safe default is in place; answering it either confirms Annex B §B.10 or triggers one edit there.
-
 **Phase F0.** Ordered; task IDs from Plan Part III.
 
 1. **The four `[BLOCKING]` verifications of §F0.4, in week 1** — `F0.VER.04` (Landlock), `F0.VER.16` (cgroup connect hook), `F0.VER.18` (WSL2 TPM), `F0.VER.12` (hardware curves). They do not confirm claims, they decide what plan rows say, and three phases plus a High/High risk rest on them. `F0.WSL.01` is where three of the four are measured.
@@ -68,7 +66,6 @@ Nothing.
 
 ## Open, not blocking
 
-- **`Q-11`** — AISME-PL rule precedence. Strictest-verdict-wins is implemented and is order-independent and fail-safe; most-specific-wins is the alternative. Under research; the answer either confirms Annex B §B.10 or triggers one edit there.
 - **Trademark** registration for *AISME* and *AI Sentinel*. The licence deliberately does not cover the names (`ADR-06`).
 - **The commercial-edition question.** The DCO means the project cannot be relicensed without every contributor's agreement. The owner is the sole copyright holder **until the first external contribution is merged**; the decision must be taken before that, not after (`ADR-06`).
 
@@ -85,7 +82,7 @@ All ten open questions were answered by the owner on 2026-08-17 (`docs/02_…` �
 | **Zero hosted-CI cost** — every gate local, nothing on push | recorded as `I-27`; ADR optional |
 | `aisme run` is the documented default onboarding path | with the F8 patch; see `docs/design/02_aisme-run.md` when written |
 
-**ADR-04** (Tauri v2 + `uniffi` fallback), **ADR-05** (multiplatform detection scope) and **ADR-06** (open-source licensing) are written. No ADR is owed.
+**ADR-04** (Tauri v2 + `uniffi` fallback), **ADR-05** (multiplatform detection scope), **ADR-06** (open-source licensing) and **ADR-07** (rule combining, closing `Q-11`) are written. **No ADR is owed and no question is open.**
 
 ## Notes for whoever picks this up
 

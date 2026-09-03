@@ -10,6 +10,7 @@ All notable changes to this repository. Format: [Keep a Changelog](https://keepa
 - Planning complete and executable; no product code. Next: phase F0, starting with the four `[BLOCKING]` verifications of plan §F0.4.
 
 ### Added
+- **`Q-11` resolved** (`ADR-07`): rule combining stays strictest-verdict-wins. Adds Annex B §B.10 (total order, combining, `decided_by` provenance), §B.11 (`except` narrows a rule, never overrides one), §B.12 (guardrails are compile-time assertions), §B.13 (tiers reserved for authority, never specificity); §B.9 gains a monotone verdict map per backend; `F1.PL.09`/`F1.PL.10`.
 - **Licensing** (`ADR-06`): Apache-2.0 workspace-wide; GPL-2.0-only for `crates/aisme-ebpf` and dual GPL-2.0-only OR BSD-2-Clause for `crates/aisme-ebpf-common`, both required by the kernel's `gpl_only` helper rule; CC-BY-4.0 for `docs/`. Adds `LICENSE.md`, `LICENSE-APACHE`, `LICENSE-GPL`, `LICENSE-BSD`, `NOTICE`, `CITATION.cff`, `CONTRIBUTING.md` (DCO, no CLA) and `SECURITY.md`.
 - `docs/03_challenge_accionabilidad.md` — executability review, 12 points, 35 findings, all applied. (`2ce1e47`…`bc667b6`)
 - Plan Annex H — the `xtask` command surface: 68 commands, each with an owning task and a gate level; exit code 3 = not implemented yet. (`19b9a0d`)
@@ -41,7 +42,6 @@ All notable changes to this repository. Format: [Keep a Changelog](https://keepa
 - Q-01 300 Mbps · Q-02 `scope.toml` narrow-only · Q-03 grants and suppressions per-machine · Q-04 ADRs as `NN_slug.md` · Q-05 repository initialised · Q-06 plan and reports renamed · Q-07 `docs/ai/` exempt from numbering · Q-08 P-256 in hardware · Q-09 zero hosted-CI cost · Q-10 `DEP.*` for Part V.
 
 ### Open
-- Q-11 — AISME-PL rule precedence: strictest-verdict-wins is implemented; most-specific-wins is the alternative. Under research.
 - Trademark registration for *AISME* and *AI Sentinel* (`ADR-06` follow-up).
 - The commercial-edition question, which the DCO makes irreversible after the first external contribution is merged (`ADR-06`).
 

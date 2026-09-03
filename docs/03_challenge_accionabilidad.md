@@ -32,9 +32,9 @@ Read-only script over `docs/01_phase5_implementation_plan.md`. **Prediction writ
 | P-35 | **The `xtask` surface** — 77 commands, 5 tasked | **closed** |
 | P-36 | `EventKind`, `EventPayload`, `Verdict` — the wire enumeration | **closed** |
 | P-37 | AISME-PL — a grammar, not examples | **closed** |
-| P-38 | Control-plane protocol — method shapes and error model | pending |
-| P-39 | Fixtures and corpora — formats, provenance, size | pending |
-| P-40 | `F0.VER.01…18` — the R1 register needs its commands in the plan | pending |
+| P-38 | Control-plane protocol — method shapes and error model | **closed** |
+| P-39 | Fixtures and corpora — formats, provenance, size | **closed** |
+| P-40 | `F0.VER.01…18` — the R1 register needs its commands in the plan | **closed** |
 | P-41 | ADR-04 and ADR-05 — owed by the plan, never written | pending |
 | P-42 | The threat model (`F0.SEC.01`) — a named deliverable that does not exist | pending |
 | P-43 | The ten seed memories — listed, never written | pending |
@@ -275,4 +275,152 @@ Task changes: `F1.PL.01` gains "per Annex B §B.0"; `F1.PL.02` gains the unreach
 **5. Documentation.** Annex B §B.0, §B.9, §B.10; `B.1` restated; `01_permission-model.md` §4.1 gains a pointer to §B.9 (why `warn` behaves differently at L2); Annex E gains "Backend capability".
 
 **Closure.** Verified by searching the plan for any grammar production: none. The three findings compound — no grammar means no key inventory, no key inventory means the backend-rejection rule has nothing to check, and no precedence rule means the security core has undefined behaviour on overlapping rules, which the four examples already exhibit (`${workspace}/.env` matches both `workspace-free` and `credentials-ask`). One owner question is open (Q-11); the implementation proceeds on strictest-wins.
+
+---
+
+### P-38 — The control-plane protocol: six method names, no shapes
+
+**1. Challenge.** `F8.API.01` names six methods — `subscribe`, `getSession`, `getGraph`, `respondEscalation`, `setPolicy`, `pairDevice` — and says "**this is the same protocol F11 consumes remotely**, defined once". That sentence is the load-bearing one: the desktop UI, the CLI, the mobile app and the relay all speak it. `F8.API.02` says the schema lives in `aisme-proto` with TS codegen. Measured: **no method signature, no error model, no versioning behaviour, no authorization rule per method.**
+
+Two phases (F8a, F11) and two languages (Rust, TypeScript) are supposed to code against it in parallel. They cannot.
+
+**2. Verification.**
+
+- **D-220** No method shapes. *Damage today*: none. *Open path*: F8a and F11 run in parallel by design (§3.7) and would each invent the protocol. *Bias*: neutral; **it blocks the parallelism the schedule depends on** → urgent. *Falsified by*: signatures in `aisme-proto`.
+- **D-221** **No per-method authorization.** The protocol carries `respondEscalation` and `setPolicy`, and `F7.PS.08` requires that policy mutation be accepted **only from a human principal**, never from a session lineage. The transport authenticates by peer identity (`F1.IPC.01`, `SO_PEERCRED`), but nothing says which methods require what. A remote caller over the relay is not a local peer, and `I-06` caps what it may do. *Bias*: **optimistic** — the authorization rule exists in F7 and has no expression in the protocol that carries the call → urgent.
+- **D-222** No error model. JSON-RPC has an error object; nothing says which failures are protocol errors, which are domain results, and which must never be distinguishable. That last class matters: **a failed `pairDevice` must not reveal whether the pairing secret was wrong or expired**, or the protocol leaks an oracle. *Bias*: **optimistic** (a security-relevant omission). *Falsified by*: an error table with a stated indistinguishability rule.
+- **D-223** `subscribe` is the only streaming method and its backpressure is unspecified. The UI subscribing to a session under `npm ci` receives events faster than it can render. Unbounded buffering in `agentd` violates §3.4's "bounded everything"; dropping silently violates `I-17`. *Bias*: **optimistic** → the rule must be stated: **the server coalesces and reports the coalescing**, never silently drops.
+- Verified sound: JSON-RPC 2.0 over UDS (not on the hot path, so `I-21` is satisfied); one schema with TS codegen (`F8.API.02`); the same protocol local and remote, which is what makes the relay blind (`I-07`) — it forwards opaque frames.
+
+No question for the owner.
+
+**3. Implementation.** A new **Annex I — control-plane protocol (normative)** with four sections.
+
+**I.1 Methods.** Each row: name · direction · params · result · authorization · idempotent.
+
+| Method | Params | Result | Auth | Idempotent |
+|---|---|---|---|---|
+| `getCapabilities` | — | tier, `key_hw`, coverage boundary, versions | any authenticated peer | yes |
+| `listSessions` | `{ active_only }` | session summaries | any | yes |
+| `getSession` | `{ session_id }` | session detail, risk, taint, tier | any | yes |
+| `getGraph` | `{ session_id, since_seq, limit }` | graph delta, `next_seq` | any | yes |
+| `subscribe` | `{ session_id?, kinds[], min_severity }` | stream of events, coalesced | any | n/a |
+| `respondEscalation` | `{ escalation_id, verdict, nonce, sig? }` | accepted \| expired \| superseded | **local peer, or remote with a hardware signature (`I-06`)** | **yes** — first valid verdict wins, later ones return `superseded` |
+| `setPolicy` | `{ source, generation_expected }` | new generation \| conflict | **human principal only (`F7.PS.08`)** | no — compare-and-swap on generation |
+| `manageGrant` | `{ op: create\|revoke, … }` | grant state | **human principal only** | yes |
+| `manageSuppression` | `{ op: create\|revoke, … }` | rule state | **human principal only** | yes |
+| `pairDevice` | `{ qr_payload, device_pubkey, hw_pubkey }` | paired \| rejected | **local peer only** | no |
+| `revokeDevice` | `{ device_id }` | revoked | local peer, or the device revoking itself | yes |
+| `verifySession` | `{ session_id }` | inclusion proofs, `key_hw`, anchor status | any | yes |
+
+Three authorization classes, checked by the server on every call, never by the client: **any authenticated peer** (read-only), **local peer** (`SO_PEERCRED`, UID matches the installing user), **human principal** (a local peer whose process is *not* inside any session cgroup — this is what mechanically distinguishes the user from the agent, and it is what `F7.PS.08` needs).
+
+**I.2 Errors.** Protocol errors use JSON-RPC codes; domain outcomes are *results*, not errors — `expired`, `superseded` and `conflict` are successful calls with a negative answer, so a client cannot conflate "the network broke" with "you were too late".
+
+| Condition | Shape | Note |
+|---|---|---|
+| Malformed / unknown method | JSON-RPC `-32600`/`-32601` | |
+| Unauthorized for this method | `-32001`, message names the class required | Never names *why* the caller failed |
+| Version incompatible | `-32002` with both versions | §3.6 |
+| Escalation expired or already answered | **result**, not error | |
+| Policy generation conflict | **result** with the current generation | |
+| **Pairing failure of any kind** | `-32003`, **one message, constant time** | Wrong secret, expired secret and unknown device are **indistinguishable** — anything else is an oracle |
+
+**I.3 Streaming and backpressure.** `subscribe` is server-push with a bounded per-subscriber queue. On pressure the server **coalesces by intent** (the same rule as the permission model's prompts) and emits a `Coalesced { kind_range, count, window }` marker. It never drops silently: a subscriber that cannot keep up receives fewer, larger, honest events (`I-17`). A subscriber that stops reading is disconnected after a bounded timeout, and the disconnection is an event.
+
+**I.4 Versioning.** Semver in `aisme-proto`. Minor is additive and forward-compatible; a client ignores unknown fields. Major means the server refuses with `-32002` naming both versions — never a partial conversation. TS types are generated from the Rust definitions (`F8.API.02`), so the two cannot drift; `test-protocol-contract` proves it.
+
+Task changes: `F8.API.01` gains "per Annex I"; new `F8.API.03 | Authorization classes enforced server-side on every method, including the human-principal test by session-cgroup membership | F7.PS.08 has its expression in the protocol`; `F11.PA.01` gains "pairing failures are constant-time and indistinguishable (Annex I.2)".
+
+**4. Tests.** **New** — `test-protocol-authz`: every method called from each of the three principal classes, asserting the matrix; specifically, a caller inside a session cgroup is refused `setPolicy`, `manageGrant` and `manageSuppression` (this is `RF-24`'s protocol half). **New** — `test-pairing-oracle`: wrong, expired and unknown-device pairings are indistinguishable in message and in timing. **New** — `test-subscribe-backpressure`: a slow subscriber under the reference workload receives coalescing markers and zero silent drops. **Changed** — `test-protocol-contract` also asserts every Annex I method exists in both languages with matching shapes.
+
+**5. Documentation.** New Annex I; Part I index; `F8.API.01`/`F11.PA.01` task text; Annex E gains "human principal".
+
+**Closure.** Verified by searching for any signature or error definition: none existed. D-221 is the one that matters — `F7.PS.08` states a security rule about who may change policy, and the protocol that carries every policy change had no way to express it. The human-principal test (a local peer outside any session cgroup) is the mechanical distinction the rule needs. Nothing fell. Open: none.
+
+---
+
+### P-39 — Fixtures and corpora: named everywhere, specified once
+
+**1. Challenge.** The test plan rests on seven fixtures and five corpora. Measured: the red-team corpus has a TOML format (Annex C) — and **the other four corpora have no format at all**, the fixtures have build notes but no interface, and nothing says who produces them, how large they are, or how they are versioned. The flow corpus is "10,000 labelled network flows captured from real devices" (§4.11), which is a data-collection project with privacy implications, described in one line.
+
+These are not test details. `T4.11.01`'s classifier gate, `T4.7.02`'s IRR gate and `T4.6.01`'s correlation gate are all *release blockers* whose inputs do not exist.
+
+**2. Verification.**
+
+- **D-224** Four of five corpora have no schema: `benign`, `flows`, `mobile-apps`, `annex-g`. *Damage today*: none. *Open path*: F5, F6 and F10 each land on a gate whose corpus has to be invented at the moment it is needed, by whoever is unlucky. *Bias*: neutral → but three release blockers depend on it.
+- **D-225** **The flow corpus has a privacy problem the plan does not name.** "Captured from real devices" means real traffic metadata — destinations, SNI, timing — from real people. Even metadata-only, that is personal data under GDPR, and this is an EU-targeted product that elsewhere refuses to let a relay see plaintext (`I-07`). *Bias*: **optimistic** — the plan asks for a dataset it has not thought about collecting lawfully → **urgent, and it is a legal exposure, not only an engineering one**. *Falsified by*: a stated provenance and consent basis.
+- **D-226** No fixture interface. `fx-sse-server` is "a local TLS server streaming SSE with known token content" — used as ground truth by `T4.5.01`, `T4.5.02`, `T4.5.08` and `T4.5.13`. Four tests compare against "known content" that is nowhere defined. *Bias*: neutral. *Falsified by*: a fixture contract.
+- **D-227** No corpus versioning. A corpus is an input to a *gate*, so a change to it changes what passes. The plan versions policy generations, wire formats and offset manifests, and not the data its release blockers read. *Bias*: **optimistic** — a silent corpus edit can turn a red build green. *Falsified by*: a manifest with a hash and a changelog.
+- Verified sound: building the TLS fixtures rather than testing against moving third-party binaries (§4.5, one of the plan's better instincts); the Annex C scenario TOML; benign twins (P-33); the hard-negative emphasis for video (`T4.11.02`).
+
+No question for the owner: the privacy answer below is the conservative one and does not need a decision to proceed.
+
+**3. Implementation.** A new **§4.14 Test assets: fixtures and corpora (normative)**.
+
+**Every corpus is a directory with a `manifest.toml`** carrying: `schema`, `version`, `entry_count`, `sha256` of the content, `produced_by`, `licence`, and for anything derived from real observation, `provenance` and `consent_basis`. `verify-docs` asserts the manifest hash matches the content; a gate records the corpus version in its report, so a result is always attributable to an input.
+
+| Corpus | Format | Entries | Produced by | Provenance |
+|---|---|---|---|---|
+| `redteam` | Annex C TOML, one file per scenario | 24 classes × ≥ 3 instances | Written by hand with the detector (`F5.DT.*`) | Synthetic |
+| `benign` | Same TOML with `expect.verdict = "allow"` or `"warn"` and `max_prompts` | 16 workflows + one twin per detector | Recorded from real developer workflows **on the team's own machines** | Synthetic or self-recorded |
+| `annex-g` | A view, not a corpus: `redteam ∪ benign` filtered by `detector` | — | Generated | — |
+| `flows` | Parquet: one row per flow, **metadata only** — see below | ≥ 10 000 | `F10.CORE.*` capture tool | **See D-225 resolution** |
+| `mobile-apps` | Flow corpus subset, labelled by app category | ≥ 2 000 | Same | Same |
+
+**Resolution of D-225 — the flow corpus is synthetic-first.** Three tiers, in this order, and the gate states which tier it ran against:
+
+1. **Generated (primary, and the only one a gate may require).** A traffic generator drives real client SDKs (Anthropic, OpenAI, Google, Mistral, Ollama) and real negative sources (a video player, a messaging client, a package manager) against **local or first-party endpoints**, recording only the metadata the classifier consumes. No third party's traffic, no consent question, reproducible, and regenerable when a protocol changes — which matters, because QUIC adoption will invalidate a captured corpus.
+2. **Self-recorded (supplementary).** Team members' own devices, opt-in, metadata only, with a documented retention window.
+3. **Third-party capture: `[CUT]`.** Not collected. It is personal data, the product's own invariants refuse far less than this, and tier 1 is better science anyway because it is reproducible.
+
+The corpus row schema is **metadata only, and enumerated** — `ts`, `direction`, `bytes`, `packets`, `proto`, `dst_ip_class` (not the address), `dst_port`, `sni_hash`, `dns_name_hash`, `ja4`, `ja4h`, `inter_arrival_us[]`, `frame_sizes[]`, `label`, `app_category`. **No payload field exists in the schema**, so `T4.11.05` ("zero payload inspection") is enforced by the *shape of the data*, not only by the code. That is the strongest form the invariant can take.
+
+**Fixture contract.** Each fixture ships a `fixture.toml` declaring `provides` (what a test may assume), `ground_truth` (the file a test compares against) and `build` (the reproducible command). `fx-sse-server` declares its token stream in `ground_truth/sse-tokens.json`, so the four tests that compare against "known content" compare against a file.
+
+Task changes: `F0.VM.01` gains "fixture build harness"; new `F0.ASSET.01 | Corpus manifest format, verify-docs hash check, and the empty directory structure with its licences | Gates can name the corpus version they certified`; `F10.CORE.13 | Flow-corpus generator driving real SDKs against local endpoints, metadata-only schema | The corpus is regenerable, which a captured one is not`; `F5.DT.08 | Benign-twin authoring: one twin per detector, written with the detector | I-15 weights them equally`.
+
+**4. Tests.** **New** — `verify-docs` checks every corpus manifest hash and fails on drift. **New** — a schema test asserting the flow row type has **no** payload field, which is `T4.11.05` enforced structurally. **New** — corpus regeneration: the generator reproduces a corpus with the same label distribution, so a regenerated corpus is comparable. **Changed** — `T4.11.01` and `T4.7.02` record the corpus version in their report.
+
+**5. Documentation.** Plan §4.14 (new); Part I index; `docs/ops/` gains nothing (this is build-time); Part VI tree gains `manifest.toml` and `fixture.toml`; Annex E gains "corpus manifest".
+
+**Closure.** Verified by listing every corpus and fixture reference and looking for a format: one of five had one. D-225 is the finding with consequences outside engineering — the plan casually asked for 10 000 real network flows from real devices, in a product whose own invariants forbid a relay from seeing plaintext. Making the corpus synthetic-first is not only the lawful answer, it is the better one: it regenerates when QUIC or a provider's TLS stack changes, and a captured corpus does not. Nothing fell. Open: none.
+
+---
+
+### P-40 — `F0.VER.01…18`: the register needs its commands in the plan
+
+**1. Challenge.** Report 02 turned its R1 register into `F0.VER.01…18` and made "the register is empty" a condition of GATE F0. That was right, and it is currently a promise: **the plan's F0 table has one row covering all eighteen**, pointing at a register in a different document. An implementer would have to read report 02, extract eighteen verification commands from a table, and hope none was ambiguous.
+
+Worse, four of the eighteen are not equal to the others: `R1-04` (Landlock present), `R1-16` (cgroup hook attaches), `R1-18` (no TPM in WSL2) and `R1-12` (hardware curves) **change what a plan row says**. The other fourteen confirm or withdraw a claim. That difference should be visible.
+
+**2. Verification.**
+
+- **D-228** The eighteen verifications live in another document. *Damage today*: none. *Open path*: F0 does thirteen of them and nobody notices the other five, because there is no per-item row to leave unchecked. *Bias*: neutral. *Falsified by*: eighteen rows in the plan.
+- **D-229** **Four verifications are blocking and fourteen are not, and the plan does not distinguish them.** `R1-04` decides whether the L2 row in H-16 and Annex D reads as written; `R1-16` decides whether `F3.EN.10` exists at all; `R1-18` decides a risk rated High/High and a README sentence; `R1-12` decides the signing curve across F5, F10 and F11. If those four are deferred, four phases build on an assumption. *Bias*: **optimistic** → they belong in week 1, not "before GATE F0".
+- **D-230** No stated outcome per verification. Report 02's register says what *would* verify a claim, not what happens to the plan if it fails. `R1-04` failing means the L2 row becomes L2- and the CPU budget expectation changes; that consequence is written nowhere. **Predict before you measure** (general rule 5): each verification should state, now, what each possible result will mean. *Bias*: neutral, and it is the rule the whole method rests on.
+- Verified sound: the decision to make the register a gate condition; the numbering; the "empty at GATE F0" bar.
+
+No question for the owner.
+
+**3. Implementation.** The F0 table's single `F0.VER.01…18` row is replaced by a new **§F0.4 Verification backlog** with eighteen rows: **id · claim · command · if it holds · if it does not**. The last two columns are the prediction, written before the measurement.
+
+The four blocking ones are marked `[BLOCKING]` and move to week 1, ahead of `F0.REPO.01`:
+
+| ID | Claim | Command | If it holds | If it does not |
+|---|---|---|---|---|
+| `F0.VER.04` `[BLOCKING]` | Landlock is active on the matrix kernels and in stock WSL2 (`R1-04`) | `cat /sys/kernel/security/lsm`; `landlock_create_ruleset(NULL,0,LANDLOCK_CREATE_RULESET_VERSION)` per VM | §2.2.1, H-16's L2 row and Annex D stand as written; `F3.EN.09` proceeds | The affected platform is **L2-**; the installer, Annex D and the CPU expectation say so; `F2.WS.11` is dropped from the skeleton and `F3.EN.09` becomes conditional |
+| `F0.VER.16` `[BLOCKING]` | `BPF_CGROUP_INET4/6_CONNECT` attaches without BPF-LSM and denies only session flows (`R1-16`) | `bpftool cgroup attach` on a VM with `bpf` absent from the LSM list; `connect` from inside and outside the session cgroup | `F3.EN.10` proceeds; Network Slam is T0 at L2 | Network Slam at L2 falls back to `seccomp_unotify` with its TOCTOU caveat stated; `H-13`'s slam condition gains an L2 note; the L2 CPU budget is re-examined |
+| `F0.VER.18` `[BLOCKING]` | WSL2 exposes no TPM (`R1-18`) | `ls /dev/tpm* /dev/tpmrm*` inside the WSL2 image | Risk R-18 stands; software signing and default anchoring for WSL2 confirmed in README, ADR-02 and the UI | R-18 is downgraded; the WSL2 row in Annex D gains a hardware-key line; the README sentence is removed |
+| `F0.VER.12` `[BLOCKING]` | Commodity TPM, Secure Enclave and StrongBox offer non-exportable P-256 and not Ed25519 (`R1-12`) | `tpm2_getcap algorithms`; the Apple and Android key-generation docs; a key-generation attempt on each | H-17 and `F5.FO.02`/`F10.FO.01`/`F11.CC.02` stand | The curve choice is revisited in an ADR; `key_hw` gains the value the hardware actually offers |
+
+The remaining fourteen (`F0.VER.01`…`03`, `05`…`11`, `13`…`15`, `17`, `19`, `20`) keep the same four columns and run any time before GATE F0. Two of them are new from this report: `R1-19` (BPF range check on `EventKind`) and `R1-20` (Landlock ABI 4 port rules), so the backlog is **twenty**, not eighteen, and GATE F0's count changes with it.
+
+GATE F0 gains `cargo xtask verify-backlog` — a command that reads §F0.4, checks that every row has a recorded outcome in `docs/reports/f0-verification.md`, and fails if any is unrecorded. "The register is empty" becomes a machine check rather than a habit.
+
+**4. Tests.** **New** — `verify-backlog` as above, and a `verify-docs` check that every `R1-nn` in reports 02 and 03 has a matching `F0.VER.nn` row (so a future report's register entry cannot be forgotten). **Changed** — GATE F0's memory-file count and its new backlog line.
+
+**5. Documentation.** Plan §F0.4 (new, replacing one row); GATE F0; `STATE.md` "Next up" item 8 points at §F0.4 and marks the four blocking ones as week 1; report 02's R1 register gains a line noting that its entries are now plan rows.
+
+**Closure.** Verified by comparing the F0 table against report 02's register: one row stood for eighteen items. The substantive finding is D-229 — four of the verifications are not confirmations but decisions in disguise, and three phases plus a High/High risk rest on them. Writing each one's two possible outcomes *before* measuring is the project's own rule 5, applied to itself. The backlog grew to twenty as this report added two. Nothing fell. Open: none.
 

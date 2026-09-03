@@ -35,10 +35,10 @@ Read-only script over `docs/01_phase5_implementation_plan.md`. **Prediction writ
 | P-38 | Control-plane protocol — method shapes and error model | **closed** |
 | P-39 | Fixtures and corpora — formats, provenance, size | **closed** |
 | P-40 | `F0.VER.01…18` — the R1 register needs its commands in the plan | **closed** |
-| P-41 | ADR-04 and ADR-05 — owed by the plan, never written | pending |
-| P-42 | The threat model (`F0.SEC.01`) — a named deliverable that does not exist | pending |
-| P-43 | The ten seed memories — listed, never written | pending |
-| P-44 | The reference workload — the CPU budget rests on a trace nobody recorded | pending |
+| P-41 | ADR-04 and ADR-05 — owed by the plan, never written | **closed** |
+| P-42 | The threat model (`F0.SEC.01`) — a named deliverable that does not exist | **closed** |
+| P-43 | The ten seed memories — listed, never written | **closed** |
+| P-44 | The reference workload — the CPU budget rests on a trace nobody recorded | **closed** |
 | P-45 | Phase entry and exit artefacts — what each phase hands the next | pending |
 | P-46 | Final sweep: is every gate command now creatable, and by whom? | pending |
 
@@ -423,4 +423,144 @@ GATE F0 gains `cargo xtask verify-backlog` — a command that reads §F0.4, chec
 **5. Documentation.** Plan §F0.4 (new, replacing one row); GATE F0; `STATE.md` "Next up" item 8 points at §F0.4 and marks the four blocking ones as week 1; report 02's R1 register gains a line noting that its entries are now plan rows.
 
 **Closure.** Verified by comparing the F0 table against report 02's register: one row stood for eighteen items. The substantive finding is D-229 — four of the verifications are not confirmations but decisions in disguise, and three phases plus a High/High risk rest on them. Writing each one's two possible outcomes *before* measuring is the project's own rule 5, applied to itself. The backlog grew to twenty as this report added two. Nothing fell. Open: none.
+
+---
+
+### P-41 — ADR-04 and ADR-05: owed by the plan, never written
+
+**1. Challenge.** The plan cites `ADR-04` (Tauri v2 with a `uniffi` fallback) in §2.20.7, `F11.CC.03` and risk R-05, and `ADR-05` (multiplatform detection scope) in §2.20.4. `STATE.md` lists both as owed. Neither exists. `ADR-01` decision 3 requires an ADR for "cross-platform contracts", and both are exactly that.
+
+This is small but it is the specific decay `ADR-01` was written to prevent: a decision referenced by three places, whose reasoning lives only in a planning section that a future contributor may not read before deciding to "simplify" the mobile stack.
+
+**2. Verification.**
+
+- **D-231** `ADR-04` and `ADR-05` referenced 20 and 9 times respectively (measured), both absent from `docs/adr/`. *Damage today*: none. *Open path*: the reasoning behind the mobile technology choice and the mobile scope boundary exists only inside §2.20.7 and §2.20.4, which are subsections of a finding about something else. *Bias*: neutral. *Falsified by*: two files.
+- **D-232** Report 02 renamed `ADR-0019`→`ADR-04` and `ADR-0020`→`ADR-05` on the reasonable assumption they were the next free numbers. They are — but if either is written *after* some other ADR, the numbers move. **Reserving them is exactly what `ADR-01` now forbids.** *Bias*: neutral; a small self-contradiction. *Falsified by*: writing them now, which makes the reservation moot.
+- Verified sound: the substance of both decisions, argued in §2.20.7 and §2.20.4 and unchanged by this review.
+
+No question for the owner.
+
+**3. Implementation.** Write both, now, so the numbers stop being reserved.
+
+**`docs/adr/04_tauri-v2-mobile-with-uniffi-fallback.md`** — Status Accepted. *Context*: the UI is React/TS by earlier decision; extending to mobile without tripling the codebase; Tauri v2's mobile targets are younger than its desktop ones, and the iOS Network Extension runs in a separate process with a ~50 MB ceiling. *Decision*: Tauri v2 for the client shell, with the logic layer (`aisme-core` + `aisme-clientcore`) compiled to `aarch64-linux-android` and `aarch64-apple-ios` and bound through `uniffi`; the sensor layer stays native and thin. *Consequences*: one UI, one crypto/protocol implementation; the shared-core investment survives the fallback. *Reversal*: if Tauri mobile blocks the release, the fallback is a native shell hosting the same web UI — **the `uniffi` boundary is what makes that a shell swap rather than a rewrite, so it must exist from the start even while Tauri works**. *Follow-up*: `F11.CC.03` builds the fallback path, not merely plans it.
+
+**`docs/adr/05_multiplatform-detection-scope.md`** — Status Accepted, *Formalizes* `H-19`. *Context*: "the app must also work on Android and iOS" has two readings and only one of them was buildable as stated. *Decision*: both ship. The control plane runs on mobile (F11) **and** AI Sentinel detects and contains on-device (F10), through the platform's supported frameworks: `VpnService`/`NEPacketTunnelProvider` for network observation and synchronous pre-egress enforcement, the SDK for semantic capture and tool-call veto, device posture, platform telemetry. The ontology, correlation, taint, policy and forensic format are **shared and identical**; only the sensor and enforcement adapters differ. *Consequences*: Network Slam has genuine parity on mobile — the highest-value enforcement action in the system works without root or MDM; semantic capture is **better** on mobile than on desktop, because the SDK gives structurally what F4 reverse-engineers; file and process visibility are bounded by the app sandbox and that boundary is surfaced in-app (`I-16`). *Explicitly `[CUT]`*: Android AccessibilityService screen-scraping — a policy minefield, a privacy liability, and redundant given S1+S2. *Reversal*: adding S5 (eBPF on rooted/AOSP) is additive and needs no change above the adapter layer.
+
+Both cite the plan sections that argue them rather than restating the argument, per `ADR-01` decision 5.
+
+**4. Tests.** `verify-docs` already asserts ADR numbers are contiguous and every ADR has a `Status`; with these two written, that check covers 01–05. **New** — a `verify-docs` check that **every `ADR-nn` cited anywhere resolves to a file**, which is what would have caught this.
+
+**5. Documentation.** Two new ADRs; `STATE.md`'s "ADRs owed" row for these two is removed; the plan's citations resolve.
+
+**Closure.** Verified by counting citations (20 and 9) against `ls docs/adr/`. The self-contradiction in D-232 is the interesting part: report 02 fixed a numbering scheme that reserved numbers, and in the same breath left two numbers reserved. Writing them resolves it. Nothing fell. Open: none.
+
+---
+
+### P-42 — The threat model: a named deliverable that does not exist
+
+**1. Challenge.** `F0.SEC.01` produces `docs/security/01_threat-model.md`, gains the OWASP mapping and the sandbox relationship, and is a GATE F0 item. It does not exist, and — more to the point — **the plan has never stated its threat model in one place**. The pieces are scattered: the adversary is named in `H-05` ("an LLM agent under prompt injection or hallucination, not an APT implant"), the anti-goals in `H-05`/`H-06`/`H-12`, the trust boundaries implicitly in §3.1 and `I-01`…`I-07`, and the attack surface across Annex G and §2.20.6.
+
+A threat model assembled from six sections is one nobody has read as a whole, and it is the document a security review asks for first.
+
+**2. Verification.**
+
+- **D-233** No threat model document. *Damage today*: none. *Open path*: F0's gate cannot pass honestly; and the compliance story the project targets (NIS2, CRA, AI Act — cited as the commercial veto behind `H-05`) begins with this document. *Bias*: neutral. *Falsified by*: the file.
+- **D-234** **The adversary is stated once, in a subsection about something else, and it is the most consequential scoping decision in the project.** `H-05` says the threat model is "an LLM agent under prompt injection or hallucination, not an APT implant engineered to detect eBPF", and uses that to justify cutting memory spoofing. That single sentence also justifies: not defeating pinning (`H-06`), tamper-evidence rather than tamper-invisibility, and accepting that a determined human attacker with root wins. **Every one of those is defensible only if the adversary is stated up front**, and a reviewer who has not read `H-05` will read them as naivety. *Bias*: **optimistic** — the design looks weaker than it is because its threat model is buried → worth fixing for the product, not only for the gate.
+- **D-235** No stated non-goals. The plan says what it does not do in eight places (`[CUT]` markers, anti-goals, coverage boundaries). A threat model needs them collected: **AISME does not defend against a malicious human with root on the machine**, does not defend a machine whose kernel is already compromised, does not prevent a user from disabling it, and does not claim to observe native Windows processes or another app's files on mobile. *Bias*: **optimistic** if unstated → a product that seems to promise more than it does.
+- Verified sound: the anti-goals themselves; the invariants that encode them; the OWASP mapping (Annex G §G.3) and the sandbox relationship (§G.4) as inputs.
+
+No question for the owner.
+
+**3. Implementation.** Write `docs/security/01_threat-model.md` with six sections, each assembled from material that already exists and is only scattered:
+
+1. **Assets** — what is worth protecting, in order: the user's source code and secrets; the integrity of the machine; the forensic record; the user's attention (over-alerting is an attack on the product's usefulness, and `I-15` already treats it as such).
+2. **Adversaries**, explicitly ranked, with what is in scope for each:
+   - **A1 — the misaligned agent** (hallucination, over-eager tool use). *Primary.* No intent, unbounded capability.
+   - **A2 — content that instructs the agent** (indirect prompt injection through a file, a web page, an MCP tool description). *Primary.* This is the adversary Annex G's `DT-02`/`DT-03` exist for.
+   - **A3 — a hostile AI application** on mobile, or a hostile host embedding the SDK. *Secondary;* bounded by `F9.SDK.09`.
+   - **A4 — a human attacker with root.** **Out of scope for prevention, in scope for evidence.** They can rewrite the log and re-sign it; external anchoring (`H-17`) is what survives them.
+   - **A5 — an APT implant engineered to detect and evade eBPF.** **Out of scope.** Stated plainly, with `H-05`'s reasoning: the cost of contesting it is enormous, the benefit marginal, and the techniques required would make the product a rootkit.
+3. **Trust boundaries** — the four that matter, each with what crosses it and what checks the crossing: kernel↔`agentd`, `agentd`↔`forensicd` (the WAL), engine↔control plane (Annex I's authorization classes), device↔device (the relay is blind, `I-07`).
+4. **Attack surface** — enumerated: the ring buffer decode path (fuzzed, `T4.2.12`), the policy compiler, the Observer's input (`H-12`), the offset scanner (sacrificial process), the pairing handshake, the SDK transport, and the prompt itself (`I-05`: a prompt is an attack surface, which is why three groups are never promptable).
+5. **Non-goals**, collected from the eight places they currently live.
+6. **Mappings** — OWASP Agentic Top 10 (Annex G §G.3), and the relationship to the agent's own sandbox (§G.4).
+
+The document cites, never restates: it is a map of the reasoning, not a second copy of it.
+
+**4. Tests.** `verify-docs` asserts the file exists (already a GATE F0 line) and, new, that **every `[CUT]` marker and every declared anti-goal in the plan appears in the non-goals section** — so the collected list cannot fall behind the sources it collects.
+
+**5. Documentation.** `docs/security/01_threat-model.md` (new); `F0.SEC.01` points at its six sections; the README's "Scope and honesty" gains a link, since the non-goals are exactly what a prospective user should read.
+
+**Closure.** Verified by `ls docs/security/`: empty. D-234 is the finding worth the point: the project's most consequential scoping decision — which adversary it is *not* defending against — sits in a subsection about `/proc/self/maps` spoofing. Stated up front, the cuts read as discipline; buried, they read as gaps. Nothing fell. Open: none.
+
+---
+
+### P-43 — The ten seed memories: listed, never written
+
+**1. Challenge.** Plan §7.4 lists ten seed memories "this project should already have", `F0.DOC.01` requires them, and GATE F0 counts them. They are one-line descriptions in a table. The *content* — the fact, why it matters, how to apply it — does not exist, and the whole point of the memory directory is that it holds what was expensive to discover.
+
+**2. Verification.**
+
+- **D-236** Ten memories described in one line each; none written. `ls docs/ai/memory/` is empty. *Damage today*: none. *Open path*: F0 writes ten files from ten one-line summaries, losing the reasoning the summaries stand for — which is precisely the loss the mechanism exists to prevent. *Bias*: neutral. *Falsified by*: ten files with the §7.4 frontmatter.
+- **D-237** Six of the ten record facts **discovered by the two challenge reviews**, and their full reasoning lives in report 02 and report 03 — documents §7.6 ranks *below* the plan and marks as proposals. If the memories are thin, the reasoning becomes hard to find precisely when someone challenges the fact. *Bias*: neutral. *Falsified by*: each memory citing its source point.
+- Verified sound: the three-part write criterion (§7.4); the frontmatter; the prohibition on storing status or decisions there.
+
+No question for the owner.
+
+**3. Implementation.** `F0.DOC.01` gains, for each of the ten, its **fact, why it matters, how to apply it, and its source** — so the F0 session transcribes rather than reconstructs. In outline:
+
+| Slug | Fact | Source |
+|---|---|---|
+| `ev-cert-windows-only` | Azure Trusted Signing cannot substitute for an EV certificate on kernel drivers; Partner Center requires one before any attestation signing. Hardware-token storage is mandatory for OV too | ADR-02 |
+| `wsl2-capabilities` | Stock WSL2 ships BTF; BPF-LSM needs `kernelCommandLine` in `.wslconfig`; `/mnt/*` is 9p/virtiofs with different inode and rename semantics; systemd is opt-in | §2.16.1, `F0.VER.04` |
+| `wsl2-has-no-tpm` | No TPM device under WSL2 ⇒ software-signed forensics for Windows users and anchoring on by default | R-18, `F0.VER.18` |
+| `landlock-l2-file-deny` | Landlock gives in-kernel, inherited, monotonic path deny with no reboot and no BPF-LSM. It is what makes L2 a real tier rather than a seccomp trap storm | §2.2.1, report 02 P-12 |
+| `cgroup-connect-l2-net-deny` | `BPF_CGROUP_INET4/6_CONNECT` denies egress in kernel with cgroup v2 and no `lsm=` change — and sees the address in kernel, which seccomp cannot | §2.2.1, `F3.EN.10` |
+| `hardware-keys-are-p256` | Commodity TPM 2.0, Secure Enclave and StrongBox offer non-exportable P-256, not Ed25519; Noise DH is X25519, so a hardware key cannot be a Noise static | H-17, §2.20.6 |
+| `ios-app-groups-same-team` | App Groups are scoped to one developer team, so a third-party app can never join ours; cross-vendor IPC on iOS is loopback or nothing | `F9.SDK.05` |
+| `ios-extension-memory-ceiling` | `NEPacketTunnelProvider` is OS-killed near 50 MB; the flow table is the main consumer | §2.20.7, `budgets.toml` |
+| `android-full-screen-intent-restricted` | Android 14 restricts `USE_FULL_SCREEN_INTENT` to calling and alarm apps; use heads-up notifications with action buttons | `01_permission-model.md` §7.4 |
+| `seccomp-unotify-toctou` | Never decide from user memory read in a notification. At L3 the LSM-resolved `struct file` is the path of record; at L2 the supervisor resolves and delivers the fd with `ADDFD` | H-01, `F3.EN.12` |
+| `bpf-probe-write-user-is-experimental` | Documented as experimental, warns in the kernel log; using it to hide from a monitored process is what would make the product a rootkit | H-05 |
+
+That is **eleven**, not ten: `wsl2-ebpf-support` splits into `wsl2-capabilities` and `wsl2-has-no-tpm`, because they are separate facts with separate verification tasks and a reader looking for one should not have to find the other. §7.4 and GATE F0's count change accordingly.
+
+**4. Tests.** GATE F0's count becomes `-ge 11`. **New** — `verify-docs` checks each memory has the §7.4 frontmatter keys and a non-empty source citation.
+
+**5. Documentation.** Plan §7.4 table gains the four columns; `F0.DOC.01` and GATE F0 count.
+
+**Closure.** Verified against the empty directory and §7.4's ten rows. The split to eleven came from noticing that the WSL2 seed carried two facts with two different verification tasks. Nothing fell. Open: none.
+
+---
+
+### P-44 — The reference workload: the CPU budget rests on a trace nobody recorded
+
+**1. Challenge.** "<3% CPU" is the product's second headline claim and a release blocker. §2.22 defines it against a **reference workload** whose third component is *"an agent simulator (`aisme-agentsim`) replaying a recorded Claude Code trace: 200 tool calls/hour, 4 000 file reads, 600 writes, 40 subprocess executions, 120 HTTPS requests with SSE streaming"*.
+
+Measured: `aisme-agentsim` has one task (`F2.WS.03`, "emits one synthetic ToolCall with a hidden correlation token") and **no task records the trace**. The counts are stated; the trace they summarize does not exist. Without it the CPU number is not reproducible, and §4.4.2's whole protocol — three runs with, three without, compare medians — is measuring against a workload that differs every time it is generated.
+
+**2. Verification.**
+
+- **D-238** No task records or generates the reference trace. *Damage today*: none. *Open path*: the CPU budget, the T0 latency distribution, the drop-rate gate and `T4.4.14` (the central architectural claim) all run against a workload assembled ad hoc. Two runs a month apart are not comparable, and a regression is indistinguishable from a different trace. *Bias*: **optimistic** — a reproducible-sounding protocol over an irreproducible input → urgent, and it is a release blocker's input.
+- **D-239** The trace is also the correlation harness's input (§4.6: "`aisme-agentsim` emits a declared tool call carrying a hidden correlation token, then performs the exact corresponding syscalls"). So one artefact serves the CPU gate *and* the precision/recall gate — which is efficient and means its absence blocks two release blockers, not one. *Bias*: neutral; worth stating so it is built once.
+- **D-240** The counts do not add up to a *shape*. 4 000 file reads over 30 minutes is 2.2/s on average, but the CPU cost of this system is dominated by **burstiness**, not by averages: a build storm is what exhausts a ring buffer, and `T4.4.05` tests exactly that. A trace defined by totals can be replayed as a flat rate and pass a gate that a real agent would fail. *Bias*: **optimistic** → the trace must carry inter-arrival timing, not just counts.
+- Verified sound: the workload's other three components (`cargo build`, `npm ci`, IDE indexing) — real, reproducible, pinned by version; the three-run median protocol; the pinned-governor, turbo-disabled machine spec.
+
+No question for the owner: recording the trace from the project's own agent sessions raises no third-party data question, unlike P-39's flow corpus.
+
+**3. Implementation.** New tasks, and a definition of the artefact:
+
+- `F0.ASSET.02 | **Record the reference trace**: capture a real Claude Code session on this repository — an actual working session, not a script — with `aisme run` in observe-only mode, into `tests/fixtures/reference-trace/`. Ship it with a `manifest.toml` (P-39 format) carrying its hash, the agent and model that produced it, the repository commit, and the wall-clock duration | The CPU and correlation gates get a fixed, hashed input |
+- `F1.SIM.01 | `aisme-agentsim` replays a recorded trace **preserving inter-arrival timing**, with a `--speed` multiplier and a `--seed` for the synthetic variance; emits the hidden correlation token per declared tool call (§4.6) | One artefact serves the CPU gate and the correlation gate |
+- `F1.SIM.02 | Trace format: an append-only log of `{ t_offset_us, action, args_hash, declared_intent, correlation_token }`, one line per agent action, plus a summary block with the §2.22 counts so a trace can be checked against the spec | Diffable, hashable, human-readable |
+
+§2.22's reference-workload paragraph gains: *"Component (c) replays `tests/fixtures/reference-trace/` at 1× with its recorded inter-arrival timing. **The trace's hash is recorded in every certification report**; a CPU figure certified against a different trace is not comparable and the report says so."*
+
+The bootstrapping order matters and is stated: the trace is recorded in **F0**, in observe-only mode, before any enforcement exists — so recording it needs nothing that recording it would perturb.
+
+**4. Tests.** **New** — `verify-budgets` refuses to run the `reference` profile if the trace hash does not match the manifest. **New** — a replay-fidelity test: replaying the trace twice produces inter-arrival distributions within a stated tolerance (a replayer that flattens the bursts is a broken replayer, D-240). **Changed** — §4.4.2 step 2 and the certification report template record the trace hash.
+
+**5. Documentation.** Plan §2.22 paragraph; F0 and F1 task tables; Part VI tree gains `tests/fixtures/reference-trace/`; the certification report template in `docs/reports/`.
+
+**Closure.** Verified by grepping for any task producing the trace: none. The finding is that the plan's most-quoted number rests on an input it never arranged to create, and the same input is what two other release blockers measure against. D-240 is the subtler half: totals are not a workload, because this system's cost is burst-shaped and a flat replay would pass a gate a real agent fails. Nothing fell. Open: none.
 

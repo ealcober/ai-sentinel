@@ -71,7 +71,7 @@ All ten open questions were answered by the owner on 2026-08-17 (`docs/02_…` �
 | **Zero hosted-CI cost** — every gate local, nothing on push | recorded as `I-27`; ADR optional |
 | `aisme run` is the documented default onboarding path | with the F8 patch; see `docs/design/02_aisme-run.md` when written |
 
-Still owed from the plan: **ADR-04** (Tauri v2 + `uniffi` fallback) and **ADR-05** (multiplatform detection scope / AI Sentinel sensor architecture).
+**ADR-04** (Tauri v2 + `uniffi` fallback) and **ADR-05** (multiplatform detection scope) are now written. No ADR is owed.
 
 ## Notes for whoever picks this up
 

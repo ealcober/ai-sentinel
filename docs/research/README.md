@@ -13,7 +13,7 @@ The four documents in this directory are the **original research input** for the
 
 ## How to read these
 
-> **These documents have been superseded by [`docs/PHASE5_IMPLEMENTATION_PLAN.md`](../PHASE5_IMPLEMENTATION_PLAN.md).**
+> **These documents have been superseded by [`docs/01_phase5_implementation_plan.md`](../01_phase5_implementation_plan.md).**
 
 The research is strong on diagnosis and on the choice of fundamental primitives — Ring-0 as the trust boundary, eBPF/Aya, minifilters, GC-free Rust, the provenance graph, Lamport-ordered correlation. Those decisions were adopted.
 

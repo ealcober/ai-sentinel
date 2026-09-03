@@ -36,13 +36,13 @@ All LSM hooks return in bounded time, reading only maps. Synchronous user-space 
 **I-10 — A failure of AISME degrades service; it never hangs the machine.**
 Every wait is bounded. Every fallback path is explicit and configurable. Daemon death, driver unload and probe detachment all have defined, tested behaviour.
 
-**I-11 — The Windows verdict thread performs no filesystem I/O.** *(INACTIVE — Windows driver deferred by ADR-0002. Reactivate with phase F3.)*
+**I-11 — The Windows verdict thread performs no filesystem I/O.** *(INACTIVE — Windows driver deferred by ADR-02. Reactivate with phase F3.)*
 Re-entrancy deadlock. *Test: `T4.3.05`.*
 
 **I-12 — No kernel-touching test ever runs on a host OS.**
 Snapshot-restored disposable VMs only, for every developer and every CI runner.
 
-**I-13 — The Windows minifilter contains no business logic.** *(INACTIVE — deferred by ADR-0002.)*
+**I-13 — The Windows minifilter contains no business logic.** *(INACTIVE — deferred by ADR-02.)*
 Filtering, lookup and message passing only. Target < 3,000 LoC. All intelligence lives in the Rust daemon. (Finding `H-14`.)
 
 ## 3. Resource invariants (CI-enforced)

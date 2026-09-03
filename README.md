@@ -4,7 +4,7 @@ Kernel-level observability and containment for autonomous AI coding agents.
 
 AISME watches what an AI agent *says it is going to do* and what it *actually does to your machine*, links the two causally, and stops the operations that do not match. It runs on Linux workstations from Ring-0 — including **Windows via WSL2** — and on Android and iOS through the **AI Sentinel** app.
 
-> **Status: pre-implementation.** The architecture and implementation plan are complete through Part IV; no product code has been written yet. See [docs/PHASE5_IMPLEMENTATION_PLAN.md](docs/PHASE5_IMPLEMENTATION_PLAN.md).
+> **Status: pre-implementation.** The architecture and implementation plan are complete through Part IV; no product code has been written yet. See [docs/01_phase5_implementation_plan.md](docs/01_phase5_implementation_plan.md).
 
 ---
 
@@ -46,13 +46,13 @@ Ring 0          Linux:   eBPF · BPF-LSM · seccomp_unotify · cgroup freezer
                 Mobile:  VpnService / NEPacketTunnelProvider · AI Sentinel SDK
 ```
 
-Full topology and the reasoning behind every choice: [implementation plan, Part II](docs/PHASE5_IMPLEMENTATION_PLAN.md).
+Full topology and the reasoning behind every choice: [implementation plan, Part II](docs/01_phase5_implementation_plan.md).
 
 ## Repository layout
 
 ```
 crates/        Rust workspace — engine, daemons, correlation, compression, CLI
-driver/        aisme-flt — Windows minifilter (C11 / WDK)  [DEFERRED — ADR-0002]
+driver/        aisme-flt — Windows minifilter (C11 / WDK)  [DEFERRED — ADR-02]
 mobile/        AI Sentinel — Android (Kotlin) and iOS (Swift) sensor shims
 sdk/           AI Sentinel SDK bindings for third-party AI applications
 ui/            React/TypeScript control-plane UI (Tauri v2 shell)
@@ -65,7 +65,7 @@ tests/         Fixtures, labelled corpora, adversarial scenarios
 
 | Document | Purpose |
 |---|---|
-| [docs/PHASE5_IMPLEMENTATION_PLAN.md](docs/PHASE5_IMPLEMENTATION_PLAN.md) | The definitive plan. Start here |
+| [docs/01_phase5_implementation_plan.md](docs/01_phase5_implementation_plan.md) | The definitive plan. Start here |
 | [docs/ai/AGENTS.md](docs/ai/AGENTS.md) | Working contract for development LLMs |
 | [docs/ai/STATE.md](docs/ai/STATE.md) | Live project state — what is done, what is next |
 | [docs/ai/invariants.md](docs/ai/invariants.md) | Non-negotiable constraints |
@@ -81,7 +81,7 @@ tests/         Fixtures, labelled corpora, adversarial scenarios
 
 ## Scope and honesty
 
-AISME's workstation engine enforces from Ring-0 on Linux, and on Windows through WSL2 — a real Linux kernel, so the engine runs unmodified. **The boundary: agents running as native Windows processes are outside the WSL2 VM and are not covered.** A native Windows driver was specified and reviewed but deferred, because distributing a kernel driver requires an EV certificate and Microsoft Partner Center attestation that Azure Trusted Signing cannot substitute — a commercial gate, not a technical one. See [ADR-0002](docs/adr/0002-drop-windows-kernel-driver.md).
+AISME's workstation engine enforces from Ring-0 on Linux, and on Windows through WSL2 — a real Linux kernel, so the engine runs unmodified. **The boundary: agents running as native Windows processes are outside the WSL2 VM and are not covered.** A native Windows driver was specified and reviewed but deferred, because distributing a kernel driver requires an EV certificate and Microsoft Partner Center attestation that Azure Trusted Signing cannot substitute — a commercial gate, not a technical one. See [ADR-02](docs/adr/02_drop-windows-kernel-driver.md).
 
 On mobile, AISME enforces at the network and tool-call layers, which is what the platforms permit — synchronous, pre-egress, and sufficient for the exfiltration threat, but not equivalent to kernel enforcement for file and process activity.
 

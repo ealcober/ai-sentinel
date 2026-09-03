@@ -1,4 +1,4 @@
-# ADR-0003 — Walking skeleton delivery, interface freeze, and layered architecture
+# ADR-03 — Walking skeleton delivery, interface freeze, and layered architecture
 
 **Status**: **Accepted** 2026-08-17
 **Supersedes in part**: the original Part III phase ordering
@@ -37,7 +37,7 @@ The L1 traits freeze at GATE F1 (week 3.5). After that they change only by ADR.
 
 ### 5. Renumbering, applied once
 
-Old F2 → **F3**. New **F2** = walking skeleton. Old F11 (SDK) → **F9**, matching its dependency position. Old F9 (mobile control plane) → **F11**. Old F3 (Windows, deferred by ADR-0002) → **Annex F**, task IDs retagged `F3.*` → `WIN.*`. F4–F8 unchanged.
+Old F2 → **F3**. New **F2** = walking skeleton. Old F11 (SDK) → **F9**, matching its dependency position. Old F9 (mobile control plane) → **F11**. Old F3 (Windows, deferred by ADR-02) → **Annex F**, task IDs retagged `F3.*` → `WIN.*`. F4–F8 unchanged.
 
 Permitted because no code exists. **Task IDs freeze at F0 start** (`I-23`).
 
@@ -69,4 +69,4 @@ Permitted because no code exists. **Task IDs freeze at F0 start** (`I-23`).
 - [x] Deduplication: red flags → Annex C only; budgets → §2.22 + `budgets.toml` only; capability matrix → Annex D only; session protocol → `docs/ai/AGENTS.md` only.
 - [ ] `F0.CI.06` — implement the dependency-direction gate.
 - [ ] `F0.CI.07` — implement the doc-drift gate between §2.22 and `budgets.toml`.
-- [ ] Write ADR-0019 (Tauri v2 + uniffi fallback) and ADR-0020 (multiplatform detection scope).
+- [ ] Write ADR-04 (Tauri v2 + uniffi fallback) and ADR-05 (multiplatform detection scope).

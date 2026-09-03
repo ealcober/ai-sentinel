@@ -1,4 +1,4 @@
-# ADR-0002 — Defer the Windows kernel driver; cover Windows via WSL2
+# ADR-02 — Defer the Windows kernel driver; cover Windows via WSL2
 
 **Status**: **Accepted** 2026-08-17 · **Date raised**: 2026-08-17
 **Raised by**: project owner · **Supersedes in part**: plan phase `F3`, finding `H-15`

@@ -1,4 +1,4 @@
-# ADR-0001 — Record architecture decisions
+# ADR-01 — Record architecture decisions
 
 **Status**: Accepted · **Date**: 2026-08-17
 
@@ -10,7 +10,7 @@ The project already has a concrete instance of this risk: nineteen designs from 
 
 ## Decision
 
-1. **Architecture decisions are recorded as ADRs** in `docs/adr/NNNN-title.md`, numbered sequentially, never deleted. Superseded ADRs are marked `Superseded by ADR-NNNN` and kept.
+1. **Architecture decisions are recorded as ADRs** in `docs/adr/NN_title.md`, numbered sequentially, never deleted. Superseded ADRs are marked `Superseded by ADR-NNNN` and kept.
 2. **Findings `H-01`…`H-19` in the implementation plan have ADR force.** Contradicting one requires a new ADR that argues the case explicitly. It may not be done silently, and it may not be done in a pull request comment.
 3. **An ADR is required for:** anything affecting the resource invariants, the security invariants, a kernel-space mechanism, the policy or wire formats, a cross-platform contract, or the addition of a dependency that runs in `agentd` or in kernel space.
 4. **An ADR is not required for:** implementation detail inside a settled boundary, refactors, tests, or documentation.
@@ -26,4 +26,4 @@ The project already has a concrete instance of this risk: nineteen designs from 
 
 ## Numbering
 
-`0001`–`0018` are reserved for the ADRs that formalize findings `H-01`…`H-18` — to be backfilled as each area is implemented, so the reasoning sits next to the code rather than only in a planning document. `ADR-0019` (Tauri v2 for the mobile client, with a `uniffi` fallback) and `ADR-0020` (multiplatform detection scope and the AI Sentinel sensor architecture) are already referenced by the plan and should be written next.
+`0001`–`0018` are reserved for the ADRs that formalize findings `H-01`…`H-18` — to be backfilled as each area is implemented, so the reasoning sits next to the code rather than only in a planning document. `ADR-04` (Tauri v2 for the mobile client, with a `uniffi` fallback) and `ADR-05` (multiplatform detection scope and the AI Sentinel sensor architecture) are already referenced by the plan and should be written next.

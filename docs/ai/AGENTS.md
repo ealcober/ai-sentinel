@@ -9,7 +9,7 @@ This is the operational protocol. `CLAUDE.md` at the repository root is the shor
 1. CLAUDE.md                    ← rules and forbidden patterns
 2. docs/ai/STATE.md             ← what is actually done; trust it over assumptions
 3. docs/ai/invariants.md        ← what you may not break
-4. docs/PHASE5_IMPLEMENTATION_PLAN.md  ← find your task by ID
+4. docs/01_phase5_implementation_plan.md  ← find your task by ID
 5. docs/adr/ (relevant only)    ← why things are the way they are
 6. docs/ai/memory/ (skim)       ← durable non-obvious facts
 ```
@@ -87,4 +87,4 @@ Do not ask for permission to do the work you were asked to do. Pick the sensible
 
 **Platform tiers.** Linux L3 (full enforce, needs BPF-LSM and a reboot), L2 (enforce via `seccomp_unotify`, no reboot), L1 (observe only). The MVP quality target is that **L2 is genuinely useful**, because most users will not reboot.
 
-**The mobile asymmetry.** Desktop can ask before the fact; mobile denies first and grants retroactively. That is a platform constraint, not a bug — see `docs/design/permission-model.md` §7.
+**The mobile asymmetry.** Desktop can ask before the fact; mobile denies first and grants retroactively. That is a platform constraint, not a bug — see `docs/design/01_permission-model.md` §7.

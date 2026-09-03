@@ -7,7 +7,7 @@ You are working on **AISME**, a Ring-0 security engine for AI agents. This file 
 1. **This file.**
 2. `docs/ai/STATE.md` — what is actually done and what is next. Trust this over your assumptions.
 3. `docs/ai/invariants.md` — constraints you may not violate.
-4. `docs/PHASE5_IMPLEMENTATION_PLAN.md` — the plan. Find your task by its `F<phase>.<block>.<task>` ID.
+4. `docs/01_phase5_implementation_plan.md` — the plan. Find your task by its `F<phase>.<block>.<task>` ID.
 5. The relevant ADR in `docs/adr/` if your task touches an architectural decision.
 
 ## Write order (end of every session, non-optional)

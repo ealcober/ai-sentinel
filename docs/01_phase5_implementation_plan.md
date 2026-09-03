@@ -1,6 +1,6 @@
 # AI Sessions Manager & Security Engine — Definitive Implementation Plan (Phase 5 / MVP)
 
-> **Document**: `PHASE5_IMPLEMENTATION_PLAN.md`
+> **Document**: `01_phase5_implementation_plan.md`
 > **Version**: 1.0.0 · **Date**: 2026-08-17 · **Status**: `APPROVED_FOR_EXECUTION`
 > **Product codename**: `AISME` (*AI Sessions Manager & Security Engine*)
 > **Primary audience**: development LLMs (Claude Code / coding agents) and the supervising human engineer.
@@ -108,7 +108,7 @@ Annexes   A. Causal graph ontology (normative schema)
           C. Red Flag catalogue
           D. Capability matrix by kernel/OS
           E. Glossary
-          F. Windows minifilter specification            [POST — ADR-0002]
+          F. Windows minifilter specification            [POST — ADR-02]
 ```
 
 ---
@@ -140,7 +140,7 @@ That said, **eighteen points of the design do not survive contact with engineeri
 | H-12 | Observer LLM treated as a trusted component | **CORRECTED** | Structured input, constrained output schema, severity monotonicity, never auto-allow |
 | H-13 | Binary taint tracking without declassification | **CORRECTED** | Taint as a category bitmask + propagation rules + explicit declassification |
 | H-14 | "Rust core" including the Windows driver | **CORRECTED** | Minifilter in C/WDK, thin and logic-free. All intelligence in the Rust daemon |
-| H-15 | ELAM + PPL as an implementation detail | **`[CUT]` for MVP** | EV cert + MVI make the kernel driver untenable. **Windows minifilter deferred; WSL2 is the Windows strategy** (ADR-0002) |
+| H-15 | ELAM + PPL as an implementation detail | **`[CUT]` for MVP** | EV cert + MVI make the kernel driver untenable. **Windows minifilter deferred; WSL2 is the Windows strategy** (ADR-02) |
 | H-16 | "Zero friction" on Linux | **CORRECTED** | BPF-LSM requires `lsm=...,bpf` on the kernel cmdline → reboot. Becomes an explicit install decision with three service tiers |
 | H-17 | Local Merkle log = "mathematically immutable" | **CORRECTED** | Tamper-**evident**, not immutable. Requires external root anchoring for real non-repudiation |
 | H-18 | NVML/ROCm GPU discovery heuristics | **`[POST]`** | Out of MVP scope (target = remote-inference clients) |
@@ -533,7 +533,7 @@ The research treats PPL/ELAM as an implementation detail ("the daemon is instant
 
 No other target platform imposes anything comparable — Apple $99/yr, Android $25 once, Linux free with GPG. The entire burden is concentrated in one component, which is also the longest phase (F3, 4 weeks), the only one requiring C and the WDK, and the highest-blast-radius code in the project.
 
-**Plan correction — the Windows kernel driver is removed from the MVP; WSL2 is the Windows strategy.** Decided in `ADR-0002`.
+**Plan correction — the Windows kernel driver is removed from the MVP; WSL2 is the Windows strategy.** Decided in `ADR-02`.
 
 | Item | Status |
 |---|---|
@@ -565,7 +565,7 @@ Windows developers overwhelmingly run AI coding agents inside **WSL2, which is a
 3. **systemd is opt-in** (`systemd=true` in `/etc/wsl.conf`). The daemon must run under both systemd and non-systemd WSL distributions.
 4. **Networking** is NAT by default, mirrored mode on newer builds. Egress enforcement works inside the VM; the mapping to host-visible addresses differs between modes and must be handled in the flow model.
 
-**Prompt delivery in WSL2 is unusually good.** The user's desktop is Windows while the daemon is in Linux, which would normally be an awkward split — except that the developer is already sitting in a terminal. The `aisme run -- <cmd>` terminal prompt path (`docs/design/permission-model.md` §7.3) is the natural primary channel here, with WSLg as a secondary for the dashboard. This is a second independent argument for making `aisme run` the documented default onboarding path.
+**Prompt delivery in WSL2 is unusually good.** The user's desktop is Windows while the daemon is in Linux, which would normally be an awkward split — except that the developer is already sitting in a terminal. The `aisme run -- <cmd>` terminal prompt path (`docs/design/01_permission-model.md` §7.3) is the natural primary channel here, with WSLg as a secondary for the dashboard. This is a second independent argument for making `aisme run` the documented default onboarding path.
 
 **Reversibility.** The `Sensor` / `Enforcer` / `Adjudicator` trait boundaries (§3.2) (`F1.PA.01`) are retained unchanged. Re-adding native Windows later means writing a backend plus starting procurement; the core engine does not change. **Do not collapse these traits just because there is currently one implementation.**
 
@@ -709,7 +709,7 @@ Being precise here prevents a future sprint from being burned rediscovering plat
 | Loading eBPF from a store app on **Android** | SELinux restricts BPF loading to platform domains | S1+S2; S5 in R mode |
 | Observing another app's on-device model inference | No API on either platform | Network-shape classifier for remote inference; SDK for cooperative on-device agents |
 
-**Decision recorded as ADR-0020.** The requirement is met: detection is multiplatform. The mechanisms are platform-appropriate, the ontology is unified, and the coverage gaps are explicit, bounded and documented rather than hidden.
+**Decision recorded as ADR-05.** The requirement is met: detection is multiplatform. The mechanisms are platform-appropriate, the ontology is unified, and the coverage gaps are explicit, bounded and documented rather than hidden.
 
 > **Declared scope statement (goes in `README.md` and `docs/ai/invariants.md`):**
 > AISME detects and contains AI agent activity on Linux, Windows, Android and iOS. On workstations it does so from Ring-0. On mobile it does so through the platform's supported network-extension, SDK-instrumentation and device-posture frameworks, with synchronous enforcement at the network and tool-call layers. Coverage differences between platforms are enumerated in the capability parity matrix and surfaced to the user in-app; AISME never claims a detection capability it does not have on the device it is running on.
@@ -777,7 +777,7 @@ The research specified "TypeScript/React" for the dashboard. Extending that to m
 
 The native sensor shims contain **no detection logic whatsoever** — they marshal flow metadata into the Rust core and apply the verdict the Rust core returns. This mirrors the H-14 decision for the Windows driver: the platform-specific, hard-to-test component stays dumb; all intelligence lives in one testable Rust codebase that is identical on every platform. It also means the flow classifier is tested once, on CI, on x86_64.
 
-**Declared risk `[RISK]`:** Tauri v2's mobile targets are younger than its desktop targets, and iOS Network Extensions run in a **separate process with a hard memory limit (~50 MB for `NEPacketTunnelProvider`)**. **Mitigations:** (a) the Rust core is bound via `uniffi`, so if Tauri mobile blocks the release the fallback is a native shell hosting the same web UI — the shared-core investment survives either way; (b) the iOS extension memory ceiling is treated as a hard budget invariant (§2.22) and the extension holds only the classifier and flow table, never the forensic store. Recorded as `ADR-0019` with the fallback pre-specified.
+**Declared risk `[RISK]`:** Tauri v2's mobile targets are younger than its desktop targets, and iOS Network Extensions run in a **separate process with a hard memory limit (~50 MB for `NEPacketTunnelProvider`)**. **Mitigations:** (a) the Rust core is bound via `uniffi`, so if Tauri mobile blocks the release the fallback is a native shell hosting the same web UI — the shared-core investment survives either way; (b) the iOS extension memory ceiling is treated as a hard budget invariant (§2.22) and the extension holds only the classifier and flow table, never the forensic store. Recorded as `ADR-04` with the fallback pre-specified.
 
 **Push notifications `[RISK]`:** Circuit Breaker alerts on mobile require APNs (iOS) and FCM (Android). Both require developer accounts and a push relay. Content is **encrypted end-to-end**; the push payload carries only an opaque escalation ID and a wake signal, never the finding text. The relay cannot read notifications.
 
@@ -941,7 +941,7 @@ pub struct SentinelCapabilities {
 
 ### 3.1 Layering and dependency rules
 
-The architecture is five layers with **strictly downward dependencies**. This is the single most important structural rule in the codebase: it is what makes the engine testable on a laptop, portable to a phone, and survivable across platform decisions like `ADR-0002`.
+The architecture is five layers with **strictly downward dependencies**. This is the single most important structural rule in the codebase: it is what makes the engine testable on a laptop, portable to a phone, and survivable across platform decisions like `ADR-02`.
 
 ```
 L4  EDGES          aisme-cli · aisme-otel · aisme-relay · ui · mobile shells
@@ -963,7 +963,7 @@ L0  WIRE           aisme-ebpf-common — no_std, zero dependencies, layout-stabl
 | A-01 | **`aisme-core` contains no I/O, no async runtime, no `cfg(target_os)`, no platform crate.** | It must compile and run identically on x86_64 CI, aarch64 Linux, Android and iOS. The moment it learns about a platform, mobile reuse dies. |
 | A-02 | No layer may depend upward. No sibling dependency inside L2. | Two adapters that know about each other are one adapter with a seam in the wrong place. |
 | A-03 | **`aisme-ebpf-common` is `no_std` with zero dependencies and stable layout.** | It is shared with kernel-verified code. A dependency here is a dependency inside the kernel. |
-| A-04 | No platform-specific type appears in `aisme-core`'s public API. | This is what makes `ADR-0002` reversible and what let the Windows removal cost one afternoon instead of a refactor. |
+| A-04 | No platform-specific type appears in `aisme-core`'s public API. | This is what makes `ADR-02` reversible and what let the Windows removal cost one afternoon instead of a refactor. |
 | A-05 | `aisme-agentd` depends on adapters **only through L1 traits**, never concretely. | Enables `MockSensor` for the entire test suite; enables the walking skeleton. |
 | A-06 | Every dependency added to L0–L2 requires review (`F5.SUP.06`). | These are the audited surfaces: kernel-adjacent and budget-bound. |
 
@@ -1032,7 +1032,7 @@ Three consequences that fall out of this and would not otherwise:
 
 1. **The whole engine is testable without any kernel.** `MockSensor` + `NullEnforcer` + `PolicyAdjudicator` runs the complete pipeline on CI in milliseconds. Every correlation, taint, compression and policy test in Part IV runs this way.
 2. **Mobile is not a port.** `sentinel-core` supplies `TunnelSensor` + `TunnelEnforcer`; everything above is the identical `aisme-core` binary logic. This is why §2.20.2 could promise ontology parity without promising a second engine.
-3. **The permission model gets multiplatform prompt delivery for free.** `docs/design/permission-model.md` §7 describes a five-tier delivery ladder; it is literally a `Vec<Box<dyn Adjudicator>>` sorted by preference, each reporting its own budget and ceiling. No per-platform branching in the engine.
+3. **The permission model gets multiplatform prompt delivery for free.** `docs/design/01_permission-model.md` §7 describes a five-tier delivery ladder; it is literally a `Vec<Box<dyn Adjudicator>>` sorted by preference, each reporting its own budget and ceiling. No per-platform branching in the engine.
 
 **Composition** (`aisme-agentd` at startup):
 
@@ -1207,7 +1207,7 @@ What this buys, concretely:
 | `F0.REPO.05` | **Layer scaffolding**: crates created in their §3.1 layer with the dependency direction already correct | `cargo xtask verify-layering` passes on stubs |
 | `F0.REPO.02` | `rust-toolchain.toml` pinned; `+nightly` only for the eBPF crate | Reproducible across machines |
 | `F0.REPO.03` | `xtask` build orchestrator (`cargo xtask build-ebpf`, `dist`, `verify-budgets`) | `cargo xtask --help` works |
-| `F0.REPO.04` | `docs/ai/` skeleton: `AGENTS.md`, `STATE.md`, `invariants.md`, `adr/0001-*.md`, `memory/`, `glossary.md` | Part VII protocol executable |
+| `F0.REPO.04` | `docs/ai/` skeleton: `AGENTS.md`, `STATE.md`, `invariants.md`, `adr/01_*.md`, `memory/`, `glossary.md` | Part VII protocol executable |
 | `F0.CI.01` | GitHub Actions matrix: Linux x86_64/aarch64, WSL2 | Green on empty workspace |
 | `F0.CI.02` | Lints as errors: `clippy::pedantic`, `unsafe_op_in_unsafe_fn`, `missing_docs` on public API | CI fails on warning |
 | `F0.CI.03` | `cargo-deny` (licences, advisories, duplicate deps) | Advisory DB wired |
@@ -1217,9 +1217,9 @@ What this buys, concretely:
 | `F0.CI.07` | Doc-drift gate: `budgets.toml` is the single source for all budget numbers; CI fails if the plan or `invariants.md` state a different figure | Fails on a planted mismatch |
 | `F0.VM.01` | Reproducible test VM images: Ubuntu 22.04/24.04, Debian 12, Fedora 40 | `cargo xtask vm up <name>` boots |
 | `F0.VM.02` | Linux kernel matrix via `virtme-ng`: 5.4, 5.10, 5.15, 6.1, 6.8 | Boots and runs a smoke BPF program |
-| ~~`F0.WIN.01`~~ | ~~Start EV code-signing certificate procurement~~ | **`DEPRECATED`** — cancelled by ADR-0002 |
-| ~~`F0.WIN.02`~~ | ~~Submit MVI application~~ | **`DEPRECATED`** — cancelled by ADR-0002 |
-| ~~`F0.WIN.03`~~ | ~~Test-signing dev environment + Driver Verifier~~ | **`DEPRECATED`** — cancelled by ADR-0002 |
+| ~~`F0.WIN.01`~~ | ~~Start EV code-signing certificate procurement~~ | **`DEPRECATED`** — cancelled by ADR-02 |
+| ~~`F0.WIN.02`~~ | ~~Submit MVI application~~ | **`DEPRECATED`** — cancelled by ADR-02 |
+| ~~`F0.WIN.03`~~ | ~~Test-signing dev environment + Driver Verifier~~ | **`DEPRECATED`** — cancelled by ADR-02 |
 | `F0.WSL.01` | **WSL2 capability probe**: does the stock WSL2 kernel ship `CONFIG_BPF_LSM=y`? | Answered; decides whether WSL2 reaches tier L2 or L3 (§2.16.1) |
 | `F0.WSL.02` | WSL2 test images: Ubuntu 24.04 under WSL2, with and without systemd, cgroup v1 and v2 | `cargo xtask vm up wsl2-*` boots |
 | `F0.SEC.01` | Threat model document (`docs/security/threat-model.md`) with the H-05/H-06/H-12 anti-goals written down | Reviewed |
@@ -1402,7 +1402,7 @@ cargo xtask bench-t0 --syscalls 100000                         # baseline record
 
 **Objective:** full observability at L1–L3 plus deterministic enforcement, inside the T0 budget.
 
-> **Since `ADR-0002`, this phase also delivers Windows coverage.** WSL2 runs a real Linux kernel, so everything below applies there unmodified. WSL2-specific test coverage (`/mnt/*` path canonicalization, systemd and non-systemd startup, cgroup v1/v2, NAT vs. mirrored networking) is part of this phase's gate, not an afterthought — see §2.16.1 and §4.12.
+> **Since `ADR-02`, this phase also delivers Windows coverage.** WSL2 runs a real Linux kernel, so everything below applies there unmodified. WSL2-specific test coverage (`/mnt/*` path canonicalization, systemd and non-systemd startup, cgroup v1/v2, NAT vs. mirrored networking) is part of this phase's gate, not an afterthought — see §2.16.1 and §4.12.
 
 #### F2.1 Observation probes
 
@@ -1562,7 +1562,7 @@ cargo xtask test-observer-schema                # malformed output rejected, eve
 
 **Objective:** the policy *surface* — default rule sets, grants, red-flag detectors, learning mode — and the unified T0/T1/T2 decision path.
 
-> The policy **language and compiler** moved to `F1.PL.*` in review (`ADR-0003`): F3 cannot build a policy trie before the language that compiles into it exists. This phase consumes that compiler; it does not define it.
+> The policy **language and compiler** moved to `F1.PL.*` in review (`ADR-03`): F3 cannot build a policy trie before the language that compiles into it exists. This phase consumes that compiler; it does not define it.
 
 | ID | Task | Notes |
 |---|---|---|
@@ -1826,7 +1826,7 @@ kasan.fault=panic lsm=lockdown,capability,landlock,yama,apparmor,bpf
 
 ---
 
-### 4.3 Safe Ring-0 injection — Windows `[POST]` — **DEFERRED BY ADR-0002**
+### 4.3 Safe Ring-0 injection — Windows `[POST]` — **DEFERRED BY ADR-02**
 
 > Inactive for the MVP along with the Windows phase (Annex F). Retained as specification. In its place, the Linux suite (§4.2) gains a **WSL2 matrix entry** covering `/mnt/*` path canonicalization, systemd and non-systemd startup, cgroup v1/v2, and NAT vs. mirrored networking.
 
@@ -2121,7 +2121,7 @@ The detection quality of the mobile engine is only as good as its corpus. This i
 | Fedora | 40 | x86_64 | Full L3 |
 | RHEL/Alma | 9 | x86_64 | L2/L3 depending on kernel |
 | **WSL2** (Ubuntu 24.04) | on Win 11 23H2+ | x86_64 | **L2, or L3 if `CONFIG_BPF_LSM=y` — see `F0.WSL.01`** |
-| Windows (native) | — | — | `[POST]` — deferred by ADR-0002 |
+| Windows (native) | — | — | `[POST]` — deferred by ADR-02 |
 | Android | 12 – 15 | arm64 | Sentinel U + M |
 | iOS | 16 – 18 | arm64 | Sentinel U + M |
 | macOS | — | — | `[POST]` — Endpoint Security framework track, not in Phase 5 |
@@ -2132,7 +2132,7 @@ The detection quality of the mobile engine is only as good as its corpus. This i
 
 ## Part V — Documentation and deployment
 
-Scope note: the native Windows driver is deferred by `ADR-0002` and its specification lives in **Annex F**. Windows is served by **WSL2** running the Linux engine. This part reflects that; the native-Windows packaging specification is retained in the ADR for revival.
+Scope note: the native Windows driver is deferred by `ADR-02` and its specification lives in **Annex F**. Windows is served by **WSL2** running the Linux engine. This part reflects that; the native-Windows packaging specification is retained in the ADR for revival.
 
 ### 5.1 Cross-platform builds
 
@@ -2367,7 +2367,7 @@ AI-SYSTEM-MONITOR/
 │   ├── aisme-ebpf-common/        no_std event structs shared with BPF programs
 │   ├── aisme-ebpf/               BPF programs (bpfel-unknown-none)
 │   ├── aisme-linux/              Aya loader, seccomp_unotify, cgroup freezer
-│   ├── aisme-windows/            [POST — ADR-0002] FltPort client, ETW
+│   ├── aisme-windows/            [POST — ADR-02] FltPort client, ETW
 │   ├── aisme-agentd/             HOT PATH daemon — 50 MB budget lives here
 │   ├── aisme-forensicd/          Cold path: DuckDB, Parquet, Merkle, export
 │   ├── aisme-loaderd/            Minimal privileged loader (CAP_BPF only)
@@ -2383,7 +2383,7 @@ AI-SYSTEM-MONITOR/
 │   ├── sentinel-core/            Mobile detection: flows, classifier, verdicts
 │   └── aisme-agentsim/           Agent simulator for the reference workload
 │
-├── driver/aisme-flt/             [POST — ADR-0002] Windows minifilter (C11/WDK)
+├── driver/aisme-flt/             [POST — ADR-02] Windows minifilter (C11/WDK)
 ├── mobile/android/               AI Sentinel — VpnService shim (Kotlin, thin)
 ├── mobile/ios/                   AI Sentinel — NEPacketTunnelProvider (Swift, thin)
 ├── sdk/{kotlin,swift,typescript,python}/   AI Sentinel SDK bindings
@@ -2391,7 +2391,7 @@ AI-SYSTEM-MONITOR/
 ├── xtask/                        Build, test, budget certification orchestration
 │
 ├── docs/
-│   ├── PHASE5_IMPLEMENTATION_PLAN.md   This document
+│   ├── 01_phase5_implementation_plan.md   This document
 │   ├── ai/                       LLM working docs — see Part VII
 │   │   ├── AGENTS.md             Session protocol, definition of done
 │   │   ├── STATE.md              Live status — updated every session
@@ -2419,7 +2419,7 @@ AI-SYSTEM-MONITOR/
 
 1. **`crates/aisme-agentd` is a budgeted crate.** Adding a dependency there requires justification (`F5.SUP.06`). Cold-path work belongs in `forensicd`.
 2. **`aisme-ebpf-common` is shared with kernel code** — it must stay `no_std` and layout-stable. Changing a struct there is a wire-format change requiring a version bump.
-3. **Platform crates implement traits from `aisme-core`.** No platform-specific type ever appears in `aisme-core`'s public API. This is what keeps `ADR-0002` reversible.
+3. **Platform crates implement traits from `aisme-core`.** No platform-specific type ever appears in `aisme-core`'s public API. This is what keeps `ADR-02` reversible.
 4. **`tests/corpus/` is a first-class asset**, versioned and reviewed like code. The benign corpus is the false-positive gate and the red-team corpus doubles as the IRR corpus.
 5. **`docs/research/` is provenance, not specification.** Findings `H-01`…`H-19` override it.
 
@@ -2438,7 +2438,7 @@ Putting the right fact in the wrong file is how these systems rot. The rule is: 
 | `docs/ai/AGENTS.md` | *How do I work here?* | Stable | Rarely |
 | `docs/ai/invariants.md` | *What may I never break?* | Stable — changes need an ADR | Rarely |
 | `docs/ai/STATE.md` | *Where are we right now?* | Ephemeral — always current | **Every session** |
-| `docs/adr/NNNN-*.md` | *Why is it this way?* | Permanent, append-only | On architectural decisions |
+| `docs/adr/NN_*.md` | *Why is it this way?* | Permanent, append-only | On architectural decisions |
 | `docs/design/*.md` | *How should this work?* | Evolves into spec, then retires | During design |
 | `docs/ai/memory/*.md` | *What did we learn the hard way?* | Permanent | On discovery |
 | `docs/ai/handoff/*.md` | *What was I in the middle of?* | Deleted when resumed | On interruption |
@@ -2499,7 +2499,7 @@ Related: [[other-memory-slug]]
 
 | Slug | Fact |
 |---|---|
-| `ev-cert-windows-only` | Azure Trusted Signing cannot substitute for an EV cert on kernel drivers; Partner Center requires one. Source of `ADR-0002` |
+| `ev-cert-windows-only` | Azure Trusted Signing cannot substitute for an EV cert on kernel drivers; Partner Center requires one. Source of `ADR-02` |
 | `wsl2-ebpf-support` | WSL2 ships BTF; BPF-LSM needs `kernelCommandLine` in `.wslconfig`; `/mnt/*` is 9p/virtiofs with different path semantics |
 | `ios-extension-memory-ceiling` | `NEPacketTunnelProvider` is OS-killed near 50 MB; hard 45 MB budget |
 | `android-full-screen-intent-restricted` | Android 14 restricts `USE_FULL_SCREEN_INTENT` to calling/alarm apps; use heads-up notifications with actions |
@@ -2514,7 +2514,7 @@ Numbered, sequential, never deleted. Superseded ADRs are marked, not removed.
 
 **Not required for:** implementation detail inside a settled boundary, refactors, tests, docs.
 
-Template: `docs/adr/0000-template.md` — Context / Decision / Consequences / Follow-up actions / Sources. Short. If it needs ten pages, it is a design note and the ADR references it.
+Template: `docs/adr/00_template.md` — Context / Decision / Consequences / Follow-up actions / Sources. Short. If it needs ten pages, it is a design note and the ADR references it.
 
 ### 7.6 The precedence rule
 
@@ -2562,7 +2562,7 @@ Collected because they are the specific ways this project would degrade:
 | Adding a convenience dependency to `agentd` | Each one seems small | `F5.SUP.06` review; forbidden-dep CI gate |
 | Weakening the benign corpus to ship | False positives feel less urgent than features | `I-15`; zero-block gate |
 | Marking a phase done without running its gate | The code works, so it feels done | §7.7 |
-| Collapsing platform traits because there is one implementation | Looks like dead abstraction | `ADR-0002` reversibility depends on them |
+| Collapsing platform traits because there is one implementation | Looks like dead abstraction | `ADR-02` reversibility depends on them |
 | Summarizing test output instead of showing it | Feels tidier | §7.8 |
 | Silently narrowing scope on hitting a platform limit | Feels pragmatic | `I-16`, `I-19`: document and degrade explicitly |
 
@@ -2580,18 +2580,18 @@ Severity = impact if it happens. Likelihood after mitigation.
 | R-02 | **Sentinel classifier false-positives on video streaming** | High | Med | Hard 1% FP gate (`T4.11.02`); labelled hard-negative corpus; learning mode before enforcement | F10 |
 | R-03 | **Prompt fatigue kills adoption** | High | Med | ≤3 prompts/day budget as a CI metric; 7-day learning mode; generous in-workspace scope; intent coalescing | F7, F8 |
 | R-04 | **Store review rejection** (Play device-abuse, App Store 5.1.2) | High | Med | Early review-intent submission (`F5.MOB.04`); precise positioning as a self-monitoring console; accurate privacy manifests | F10, F11 |
-| R-05 | **Tauri v2 mobile immaturity** | Med | Med | Client is thin; `uniffi` fallback to native shells pre-specified in `ADR-0019`; shared Rust core survives either way | F11 |
+| R-05 | **Tauri v2 mobile immaturity** | Med | Med | Client is thin; `uniffi` fallback to native shells pre-specified in `ADR-04`; shared Rust core survives either way | F11 |
 | R-06 | **50 MB budget missed** under real load | High | Low | Two-process split (`H-03`); line-item budget; 72 h soak with growth-slope regression; zero-alloc hot loop | F1 |
 | R-07 | **eBPF verifier rejects programs on older kernels** | Med | Med | Kernel matrix in CI from commit #1; complexity budget at 60% of limit; documented degradation per capability | F3 |
 | R-08 | **WSL2 lacks `CONFIG_BPF_LSM`** → stuck at L2 | Low | Med | `F0.WSL.01` answers this in week 1. L2 is designed to be genuinely useful; custom kernel documented as opt-in | F0 |
 | R-09 | **Correlation accuracy below gate** on real workloads | High | Low | Ground-truth harness with scripted intent (`§4.6`); adaptive temporal window; decoy resistance testing | F5 |
 | R-10 | **Observer LLM cost** makes continuous supervision uneconomic | Med | Low | SAC-lite 60–90% reduction with IRR gate; Observer is asynchronous and optional; enforcement never depends on it | F6 |
 | R-11 | **iOS extension OOM-killed** in the field | High | Low | 45 MB hard budget; flow table bounded with LRU; zero-termination gate over 24 h | F10 |
-| R-12 | **A kernel defect crashes user machines** | Critical | Low | **Largely eliminated by `ADR-0002`** — no kernel driver ships. eBPF is verifier-sandboxed. Remaining risk is loader logic, covered by the VM matrix | F3 |
+| R-12 | **A kernel defect crashes user machines** | Critical | Low | **Largely eliminated by `ADR-02`** — no kernel driver ships. eBPF is verifier-sandboxed. Remaining risk is loader logic, covered by the VM matrix | F3 |
 | R-13 | **Scope creep back into Windows/macOS/GPU** | Med | Med | `[POST]` markers; `CLAUDE.md` forbidden list; ADR required to revive | all |
 | R-14 | Sentinel SDK adoption is zero, leaving mobile semantic capture empty | Med | Med | S1 network detection works without SDK; `uncooperative` signal makes non-adoption visible; publish the ontology spec | F9 |
 
-**Risks removed by `ADR-0002`:** EV certificate procurement delay, MVI denial, WHQL/HLK test infrastructure, Driver Verifier defect discovery late in the cycle, and the single highest-severity failure mode in the original plan — a bugcheck on a user's machine.
+**Risks removed by `ADR-02`:** EV certificate procurement delay, MVI denial, WHQL/HLK test infrastructure, Driver Verifier defect discovery late in the cycle, and the single highest-severity failure mode in the original plan — a bugcheck on a user's machine.
 
 ### 8.2 Critical path
 

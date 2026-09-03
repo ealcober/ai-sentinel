@@ -980,6 +980,14 @@ pub struct SentinelCapabilities {
 **Annex D is the single normative capability matrix**; it is not repeated elsewhere. The rule it enforces: **every missing capability degrades one concrete, documented function, is surfaced to the user, and never produces undefined behaviour** (`I-16`, `I-19`).
 
 ---
+
+### 2.24 Detection techniques → Annex G
+
+Part II corrects *how the system observes and enforces*. **What it looks for** is a separate, normative surface: **Annex G, the detection catalogue** — fifteen detectors `DT-01`…`DT-15`, each a deterministic join over the causal graph, each with a default verdict, a false-positive control, a red-flag scenario and a benign twin.
+
+Two things belong here rather than in the annex. First, the **principle**: a detector is a join across at least two of three signal planes — *intent* (prompts, CoT, tool calls), *action* (file, exec, socket) and *context* (what the agent read, with provenance). A single-plane signal is a `warn` at most. Second, the **prohibitions**: no text classifier for injection in any decision path (weak and evadable — it is a signal, per `H-12`), no payload inspection on mobile (the S1 privacy invariant), no LLM at T0 or T1 (`H-11`), and no learned weights in any verdict path. Weights and catalogues ship as **signed data**, never as code.
+
+---
 ## Part III — Software architecture and development phases
 
 > **Revision note (2026-08-17).** This part was restructured after a full review. Three defects were found and fixed:
@@ -3186,9 +3194,6 @@ Deployment modes: **U** unmanaged · **M** managed (Device Owner / Supervised) �
 | **Warn** | A verdict that allows and records, and surfaces a non-blocking notice. Never a modal. Budgeted separately from prompts |
 | **WOULD_BLOCK** | Learning-mode record of an action that would have been blocked |
 
----
-
-*End of document. Findings `H-01`…`H-19` in Part II and the invariants in `docs/ai/invariants.md` take precedence over any other material in this repository, including the original research in `docs/research/`.*
 
 ---
 
@@ -3239,3 +3244,61 @@ cargo xtask win test-unload        # 200 load/unload cycles under load, no leaks
 ```
 
 ---
+
+---
+
+## Annex G — Detection catalogue (normative)
+
+### G.0 Principle
+
+Three signal planes: **intent** (prompts, chain-of-thought, tool calls — F4, F9), **action** (file, exec, socket — F3 kernel, F10 tunnel) and **context** (what the agent *read*, with provenance — `File.taint`, `ToolResult`). Every detector is a join across two or three of them over time; a single-plane signal is a `warn` at most.
+
+Detectors are pure functions `fn observe(&GraphDelta, &SessionState) -> Option<Finding>` in `aisme-core::detect` (L1, `#![forbid(unsafe_code)]`, no I/O), composed as an ordered list. Weights and thresholds ship as **signed data** (`F1.DT.03`), like the offset manifest and the endpoint catalogue. They have no platform variants, which is why they are tested once, on CI, for every target.
+
+### G.1 The catalogue
+
+| ID | Detector | Join | Primitive / tier | Platforms | Default | FP control | Scenario |
+|---|---|---|---|---|---|---|---|
+| **DT-01** | **Secret-in-prompt** — bytes carrying `SECRET_MATERIAL` provenance appear in the outbound request body to the AI provider | context × intent | F4 plaintext (tiers A–D); SDK on mobile | desktop A–D, mobile SDK; **not** S1 | `warn` for env-style values · `escalate` for private keys, cloud credentials, JWTs | **Provenance match, never entropy**: the bytes must originate in a file the session read and classed `secret`. `.env.example` with placeholders produces nothing | `RF-18` / `BN-11` |
+| **DT-02** | **Injection-bearing input → class-shift action** (indirect prompt injection) | context × action, **ordered** | `File.taint = UNTRUSTED_INPUT`, or an MCP/web `ToolResult` with `instruction_bearing` (imperatives addressed to the assistant, hidden text, HTML comments, zero-width or bidi characters), **followed within k tool calls** by a first-of-kind action class for this session | all with an intent plane | `warn` on the input alone · `escalate` on the conjunction | Neither half fires alone, and the class shift is measured against *this session's* history, not a global list | `RF-09` |
+| **DT-03** | **MCP manifest integrity** — tool poisoning and rug pull | intent, over time | Hash `name+description+schema` of every MCP tool at session start (`F9.SDK.10`, `.mcp.json`, server handshake logs); flag instruction-like text in descriptions; **change after approval** → escalate; cross-server name shadowing → warn | desktop tier A, mobile SDK | `warn` on a suspicious description · `escalate` on a post-approval change or shadowing | Hash on normalized text; a version bump the server declares is `warn`, not `escalate` | `RF-19` / `BN-12` |
+| **DT-04** | **Intent/action divergence** — three concrete predicates | intent × action | (a) a tool call's declared targets versus the kernel-observed targets — `Edit(A)` writing B ∉ closure(A); (b) `Bash(cmd)`: the shell-parsed command graph versus the observed `execve` children — `npm test` spawning `curl`; (c) **post-hoc narrative inconsistency**: a destructive event (bulk unlink, truncate, `rm -rf`, `DROP`) with no covering ToolCall, or followed by an assistant message asserting the opposite | all with an intent plane | (a)(b) `escalate` · (c) `escalate`, severity HIGH | (b) uses a real shell parser and allows known indirections (`sh -c`, `npx`, `cargo run`); (c) needs a destructive threshold **and** an absent covering ToolCall in the causal window | `RF-06`, `RF-09`, `RF-23` / `BN-15` |
+| **DT-05** | **Denied-then-retry-by-indirection** | action, over time | After a deny or timeout on canonical target T, any access to T by a different exec lineage, syscall family or path spelling (`/proc/self/root/…`, bind mounts, symlinks) within the session | all; kernel and tunnel | 2nd attempt `escalate` · 3rd `deny` + HIGH; **never promptable** for `SELF_PROTECTION` targets | The join key is the **kernel-resolved** target, so every spelling collapses to one identity. A retry after a *transient* failure is not a retry after a deny | `RF-20` / `BN-13` |
+| **DT-06** | **Config-as-code persistence** | action (path class) | Writes to the new path class `PERSISTENCE_CONFIG`: `.git/hooks/*`, `.git/config` (`core.hooksPath`, `credential.helper`, filters), `package.json` scripts, `Makefile`, `build.rs`, `.cargo/config.toml`, `.npmrc`, `.envrc`, `.vscode/tasks.json` and `settings.json`, `.idea/*.xml`, shell rc files, `~/.gitconfig` | kernel; SDK-reported on mobile | `warn` inside the workspace · `escalate` when the write adds an **executing** key (`tasks.json runOn`, a git hook, `runner`, `rustc-wrapper`, `credential.helper`, `postinstall`) | Developers edit `package.json` constantly. Diff-aware, not file-aware: `warn` is the ceiling unless something that *runs later* was added | `RF-21` / `BN-14` |
+| **DT-07** | **Self-observation** — the agent looks at AISME | action | Reads or execs of `/etc/aisme/**`, the WAL and forensic directories, `aisme*` binaries, `/proc/<agentd>/`, `bpftool`, `/sys/kernel/debug/tracing`, or `ps`/`grep` argv naming AISME | kernel | `warn` + severity. **Never suppressible** (`I-05`, `I-26`) | AISME's own processes are whitelisted by lineage | `RF-07` |
+| **DT-08** | **Secret-to-VCS** | context × action | A `SECRET_MATERIAL`-labelled file (or its bytes) under a git-tracked path; `git add`/`commit` argv naming it; a `.gitignore` edit removing a secret pattern | kernel + intent | `escalate` | Label provenance, not regex | `RF-22` |
+| **DT-09** | **Session risk accumulation** (deterministic) | all planes | A decaying score: taint acquisitions, class shifts, instruction-bearing inputs, denies and detector hits each contribute. Thresholds tighten the session's *posture* by one notch; at CRITICAL the session is suspended for review | all | Drives the prompt's policy-severity line and `aisme.session.risk` | Fixed weights as signed data; identical input gives an identical score on every target (`T4.13.01`) | — |
+| **DT-10** | **Agent baseline profiles** | action versus profile | Per known agent (Claude Code, Codex CLI, Cursor, Aider, OpenHands, Gemini CLI): expected process tree, endpoints, file patterns, child binaries, and whether it emits reasoning to stdout (which `F3.OB.07` gates on). Deviation is an anomaly | desktop; mobile via the S1 catalogue | `warn` | Profiles ship signed and versioned. An unknown agent has no profile and therefore no anomaly — absence is not evidence | feeds `RF-14` |
+| **DT-11** | **Encrypted AI-stream classification** | action (flow shape) | `F10.CORE.04`–`.05` features **plus** JA4/JA4H client fingerprints of known SDKs, HTTP/2 stream cadence, and the token-length streaming shape; QUIC-Initial SNI parsing; ECH and DoH degrade to shape-only with stated confidence | mobile S1; desktop network fallback | a classification, never a verdict on its own | Fixed-weight model; video and voice hard negatives in the corpus (`sentinel_video_fp_pct`) | §4.11 corpus |
+| **DT-12** | **Uncooperative inference** | flow × SDK | An app that S1 sees doing inference while reporting no SDK telemetry | mobile | `warn` | Existing signal | `RF-14` |
+| **DT-13** | **Write-then-exec, fetch-then-exec** | action, over time | `chmod +x` or `execve` of a file the session wrote < N s ago; `bash -c "$(curl …)"`; `python -c` with base64 decode; `eval` of fetched bytes; `memfd` exec; `LD_PRELOAD` in an exec environment | kernel | `escalate` · **`deny`** for `memfd` and `LD_PRELOAD`, never promptable | Build systems write-then-exec constantly: paths under `target/`, `node_modules/.bin` and `.venv/bin` created by allowlisted toolchains are exempt | `RF-03`, `RF-04` |
+| **DT-14** | **Scope and self-permission edits** | action | Writes by the agent to `.aisme/**`, `.claude/settings*.json`, `.mcp.json`, the permission sections of `CLAUDE.md`, `~/.claude.json`; or a `scope.toml` that would widen scope | kernel | `escalate`; `.aisme/**` is `SELF_PROTECTION` | A human edits through the UI or CLI, never through a session lineage (`F7.PS.08`) | `RF-24` / `BN-16` |
+| **DT-15** | **Unattributed AI stream, sub-agent lateral** | action × session | A new TLS or QUIC flow to a catalogued provider from a process **outside any session lineage** → a discovery candidate and a `warn`. A child of a session that opens its own provider flow inherits the session and its taint by cgroup | kernel + tunnel | `warn` | `aisme run` lineage makes this exact; heuristic discovery stays a suggestion (`H-18`) | — |
+
+### G.2 New red-flag classes
+
+`RF-17`…`RF-24` are defined in Annex C. `RF-09` is rewritten to the `DT-02` predicate, `RF-07` gains `DT-07`'s targets, and `RF-03`/`RF-04` gain `DT-13`'s forms. **Every new class ships with a benign twin** in `tests/corpus/benign/` (`BN-11`…`BN-16`): a detection without its twin is an untested false-positive risk.
+
+### G.3 Mapping to OWASP Top 10 for Agentic Applications
+
+For compliance conversations, not for design. The design comes from the threat model.
+
+| OWASP | Detectors |
+|---|---|
+| Agent goal hijack | `DT-02`, `DT-03` |
+| Tool misuse | `DT-04`, `DT-13` |
+| Identity and privilege abuse | `DT-05`, `DT-14` |
+| Supply chain | `DT-03`, `RF-12` |
+| Memory / context poisoning | `DT-02`, `DT-03` |
+| Insecure inter-agent communication | `DT-15` |
+| Rogue agent behaviour | `DT-09` posture, `DT-07` |
+
+### G.4 Relationship to the agent's own sandbox
+
+Coding agents increasingly ship their own sandbox and allow/deny rules. Those are **inside the agent's trust domain**: configured by files the agent can read and write (`DT-14`), usually scoped to one tool, and escapable — a published case had an agent reach a denied binary through `/proc/self/root`, which its own sandbox caught but its denylist did not.
+
+AISME sits **outside**, at the operating system. It sees that escape as `DT-05`, and it is not configurable by the agent. The two are complementary and the product must say so: **AISME is not a replacement for an agent's sandbox, and an agent's sandbox is not a replacement for AISME.** Neither claim survives contact with a determined agent alone.
+
+---
+
+*End of document. Findings `H-01`…`H-19` in Part II and the invariants in `docs/ai/invariants.md` take precedence over any other material in this repository, including the original research in `docs/research/`.*

@@ -2379,6 +2379,22 @@ The detection quality of the mobile engine is only as good as its corpus. This i
 
 ---
 
+### 4.13 Detector tests (Annex G)
+
+§4.12 remains the gate and cadence summary; this section is the detector suite it runs. **One row per detector, plus its benign twin.** A detector that fires on its scenario but is never checked against its twin is an untested false-positive risk, and `I-15` weights the two equally.
+
+| ID | Test | Pass |
+|---|---|---|
+| `T4.13.01` | **Determinism** | The same event sequence produces identical findings and an identical `DT-09` score on `x86_64`, `aarch64-linux-android` and `aarch64-apple-ios` |
+| `T4.13.02` | `DT-02` ordering | The same input and action in the **reverse** order produce no finding — the join is ordered, not coincidental |
+| `T4.13.03` | `DT-05` target identity | Three path spellings of one inode after a deny produce exactly **one** finding |
+| `T4.13.04` | `DT-01` provenance negative | A random high-entropy string in a prompt, with no file provenance, produces **no** finding |
+| `T4.13.05` | `DT-03` rug pull | A description changed after approval escalates; a version bump the server declares warns |
+| `T4.13.06` | `DT-06` diff-awareness | Adding a non-executing key to `package.json` warns at most; adding `postinstall` escalates |
+| `T4.13.07` | **`RF-17` suppression does not blind** | A suppression rule matching a benign-looking pattern, with an exfiltration hidden inside it: the event is in the WAL with `suppressed_by`, its Merkle inclusion proof is valid, the verdict is identical to the un-suppressed run, and **zero** notifications are emitted. Plus the compile-time negative: a suppression targeting an `I-05` group or a `CRITICAL` verdict **fails to compile** |
+| `T4.13.08` | Twin silence | Every `BN-11`…`BN-16` twin produces no finding above `warn`, and none produces a block |
+| `T4.13.09` | Signed weights | A detector weight file with a broken signature is refused; the detector runs on the last-good weights and the refusal is a security event |
+
 ---
 
 ## Part V — Documentation and deployment
@@ -2836,7 +2852,7 @@ Collected because they are the specific ways this project would degrade:
 | Weakening the benign corpus to ship | False positives feel less urgent than features | `I-15`; zero-block gate |
 | Marking a phase done without running its gate | The code works, so it feels done | §7.7 |
 | Collapsing platform traits because there is one implementation | Looks like dead abstraction | `ADR-02` reversibility depends on them |
-| Summarizing test output instead of showing it | Feels tidier | §7.8 |
+| Summarizing test output instead of showing it | Feels tidier | §7.7; `AGENTS.md` §3 |
 | Silently narrowing scope on hitting a platform limit | Feels pragmatic | `I-16`, `I-19`: document and degrade explicitly |
 
 ---

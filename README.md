@@ -4,7 +4,7 @@ Kernel-level observability and containment for autonomous AI coding agents.
 
 AISME watches what an AI agent *says it is going to do* and what it *actually does to your machine*, links the two causally, and stops the operations that do not match. It runs on Linux workstations from Ring-0 — including **Windows via WSL2** — and on Android and iOS through the **AI Sentinel** app.
 
-> **Status: pre-implementation.** The architecture and implementation plan are complete through Part IV; no product code has been written yet. See [docs/01_phase5_implementation_plan.md](docs/01_phase5_implementation_plan.md).
+> **Status: pre-implementation.** Architecture and implementation plan are complete (Parts 0–VIII, Annexes A–G) and have been through a full challenge review; no product code has been written yet. See [the plan](docs/01_phase5_implementation_plan.md) and [the review](docs/02_challenge_ampliacion_sistema.md).
 
 ---
 
@@ -21,8 +21,8 @@ AISME adds that representation.
 | **Semantic capture** | Extracts prompts, chain-of-thought and tool calls before TLS encryption — no MITM proxy, no certificate installation, no modification of the observed process |
 | **Kernel telemetry** | eBPF records every file, process and network operation the agent's process tree performs. On Windows this runs inside WSL2, which is a real Linux kernel |
 | **Causal correlation** | Binds declared intent to physical mutation with measurable precision, producing a provenance DAG |
-| **Synchronous containment** | Blocks operations at the kernel boundary before they reach hardware — with a permission model that asks rather than silently denying |
-| **Tamper-evident forensics** | Merkle-chained, hardware-signed audit log with externally anchored roots |
+| **Containment that stays liveable** | Blocks at the kernel boundary before hardware is touched. Outside the workspace it **asks** rather than silently denying; inside it, it **warns and learns** — suppression rules absorb known-benign patterns so the guardrail stays quiet on legitimate work, and a suppressed event is still recorded and still enforced |
+| **Tamper-evident forensics** | Merkle-chained audit log, signed by a hardware key where one exists and by a software key otherwise — the record says which — with externally anchored roots |
 | **Mobile detection** | AI Sentinel detects and blocks AI-agent exfiltration on Android and iOS at the network layer, with no root and no MDM required |
 
 ## Design commitments
@@ -66,6 +66,7 @@ tests/         Fixtures, labelled corpora, adversarial scenarios
 | Document | Purpose |
 |---|---|
 | [docs/01_phase5_implementation_plan.md](docs/01_phase5_implementation_plan.md) | The definitive plan. Start here |
+| [docs/02_challenge_ampliacion_sistema.md](docs/02_challenge_ampliacion_sistema.md) | Challenge review of the whole system: 209 findings, unapplied patches, owner decisions |
 | [docs/ai/AGENTS.md](docs/ai/AGENTS.md) | Working contract for development LLMs |
 | [docs/ai/STATE.md](docs/ai/STATE.md) | Live project state — what is done, what is next |
 | [docs/ai/invariants.md](docs/ai/invariants.md) | Non-negotiable constraints |
@@ -75,13 +76,15 @@ tests/         Fixtures, labelled corpora, adversarial scenarios
 
 ## Naming
 
-- **AISME** — the system as a whole, and the workstation engine (Linux + Windows).
+- **AISME** — the system as a whole, and the workstation engine (Linux, including Windows through WSL2).
 - **AI Sentinel** — the Android and iOS application.
 - **AI Sentinel SDK** — the embeddable library for third-party AI applications.
 
 ## Scope and honesty
 
-AISME's workstation engine enforces from Ring-0 on Linux, and on Windows through WSL2 — a real Linux kernel, so the engine runs unmodified. **The boundary: agents running as native Windows processes are outside the WSL2 VM and are not covered.** A native Windows driver was specified and reviewed but deferred, because distributing a kernel driver requires an EV certificate and Microsoft Partner Center attestation that Azure Trusted Signing cannot substitute — a commercial gate, not a technical one. See [ADR-02](docs/adr/02_drop-windows-kernel-driver.md).
+AISME's workstation engine enforces from Ring-0 on Linux, and on Windows through WSL2 — a real Linux kernel, so the engine runs unmodified. **Agents running as native Windows processes are outside the WSL2 VM and are not covered.** Native Windows kernel enforcement is deferred; the reasoning and the retained specification are in [ADR-02](docs/adr/02_drop-windows-kernel-driver.md) and plan Annex F.
+
+WSL2 exposes no TPM, so on that platform the forensic chain is signed with a software key and its non-repudiation rests on external root anchoring, which is enabled by default there. Every record states which key signed it.
 
 On mobile, AISME enforces at the network and tool-call layers, which is what the platforms permit — synchronous, pre-egress, and sufficient for the exfiltration threat, but not equivalent to kernel enforcement for file and process activity.
 

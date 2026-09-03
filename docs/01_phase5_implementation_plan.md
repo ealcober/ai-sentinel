@@ -1236,7 +1236,41 @@ What this buys, concretely:
 | **Rework collapses** | Interface defects surface while there is almost no code to change |
 | **The budget gates start measuring something real in week 4.5** | Rather than measuring stubs until week 10 |
 
-**Interface freeze is a milestone, not an event.** At the end of F1 the L1 traits are frozen; changing one after that requires an ADR. This is what makes four parallel tracks safe — every track codes against a contract that cannot move under it.
+**Interface freeze is a milestone, not an event.** At the end of F1 the L1 traits are frozen; changing one after that requires an ADR. This is what makes parallel tracks safe — every track codes against a contract that cannot move under it.
+
+**But "the interfaces" is more than the traits.** Four other things cross track boundaries and would break a parallel track just as thoroughly. The freeze is therefore a **list with an owning gate per item**:
+
+| Frozen artefact | Frozen at | Consumed by |
+|---|---|---|
+| The §3.2 trait catalogue | GATE F1 | every adapter |
+| The `EventKind` / `EventPayload` taxonomy (§F1.1.1) | GATE F1 | F3, F4, F5, F9, F10 |
+| The `CompiledPolicy` IR and the AISME-PL grammar (Annex B §B.0) | GATE F1 | F3, F7, F10 |
+| The WAL segment format | GATE F1 | `forensicd`, F5 |
+| The `RawEvent` layout | GATE F1 | the BPF programs |
+| **The control-plane protocol (Annex I)** | **GATE F8a** | F11, `aisme-uiagent`, the CLI |
+| **The SDK public API** | **GATE F9** | F10 and third parties |
+
+#### 3.7.1 Phase contracts — Entry and Exit
+
+Parallelism needs contracts in both directions, not only a frozen middle. **Entry** is what a phase may assume exists; **Exit** is what it hands others beyond its gate passing. `verify-docs` asserts every Entry cites a task that exists and **every Exit artefact appears in at least one other phase's Entry** — an exit nobody consumes is dead work or a missing dependency, and both are worth a question.
+
+| Phase | Entry | Exit |
+|---|---|---|
+| F0 | — | Gates green; `layers.toml`; VM matrix with real tier values; the reference trace (`F0.ASSET.02`); the corpus skeleton |
+| F1 | F0 | **The frozen set** (five items above); `MockSensor`/`NullEnforcer`/`PolicyAdjudicator`; the WAL format; `agentsim` replay |
+| F2 | GATE F1 | A running product; seam evidence; a real budget baseline; `TerminalAdjudicator` |
+| F3 | F2; `F0.VER.04` and `F0.VER.16` answered **[BLOCKING]** | BPF programs; Landlock and cgroup backends; `/mnt/*` canonicalization; measured tier behaviour |
+| F4 | F2; `F1.ON.06` (`ToolResult`) | The capture ladder; **measured** per-tier coverage (`F4.CO.05`) replacing H-07's estimates; the offset manifest format |
+| F5 | F3 or `MockSensor`; F4 or the cooperative tier alone | The causal graph; the detector runtime; the Merkle chain and `key_hw`; measured correlation precision |
+| F6 | F5's graph; F4's semantic events | **The compressed-context format, frozen for F10**; the Observer client; the IRR harness |
+| F7 | F1's compiler; F5's detectors; F3's backends | The shipped default policy; the permission surface; learning-mode reports |
+| F8a | F1's `aisme-proto` only | **The control-plane protocol, frozen for F11**; shell, timeline, graph, CLI |
+| F8b | F7; F8a | The four-option modal; `aisme-uiagent`; grant and suppression management |
+| F9 | GATE F1 | **The SDK API, frozen for F10**; the conformance suite; the published ontology spec |
+| F10 | F9's SDK; F1's mobile policy backend; F6's context format | `sentinel-core`; the flow corpus and its generator; measured classifier numbers |
+| F11 | F8a's protocol; F10's engine | Pairing; the blind relay; the mobile app |
+
+**A track may start against mocks** — that is what `MockSensor`, `NullEnforcer` and `PolicyAdjudicator` are for, and it is how five tracks run in parallel at all. It must then **declare in `STATE.md` which Entry condition is mocked**, and it may not close its gate on a mock unless the gate itself is defined to run on mocks (F1's and F2's are). Otherwise a phase can report done against something that was never there.
 
 ---
 
@@ -1315,7 +1349,7 @@ What this buys, concretely:
 | `F0.ASSET.01` | Corpus manifest format (§4.14), the `verify-docs` hash check, and the empty corpus directories with their licences | A gate can name the corpus version it certified |
 | `F0.ASSET.02` | **Record the reference trace**: a real Claude Code session on this repository — an actual working session, not a script — captured with `aisme run` in observe-only mode into `tests/fixtures/reference-trace/`, with a `manifest.toml` carrying its hash, the agent and model, the repository commit and the wall-clock duration | The CPU gate and the correlation gate get one fixed, hashed input. Recorded in F0, before enforcement exists, so recording it perturbs nothing |
 | `F0.SEC.01` | Threat model (`docs/security/01_threat-model.md`): assets, **ranked adversaries A1–A5 with A4 and A5 explicitly out of scope for prevention**, trust boundaries, attack surface, collected non-goals, and the OWASP and sandbox mappings | Reviewed. `verify-docs` asserts every `[CUT]` marker and declared anti-goal appears in the non-goals section |
-| `F0.DOC.01` | Write the **ten** seed memories listed in §7.4 into `docs/ai/memory/` | Ten files, each citing its source (plan section or ADR) |
+| `F0.DOC.01` | Write the **eleven** seed memories of §7.4 into `docs/ai/memory/`, transcribing the fact, why it matters and the source from that table | Eleven files with the §7.4 frontmatter and a non-empty source |
 | `F0.VER.01`…`F0.VER.20` | The verification backlog — **see §F0.4**. Four are `[BLOCKING]` and run in week 1 | **The register is empty at GATE F0**: every row has a recorded outcome. An unverified claim becomes a measured fact or is withdrawn |
 
 #### F0.4 Verification backlog
@@ -1349,7 +1383,7 @@ cargo xtask vm up ubuntu-24.04 && cargo xtask vm up wsl2-ubuntu-24.04
 cargo xtask vm probe --all      # reports the tier and Landlock ABI per kernel
 test -f docs/ai/AGENTS.md docs/ai/STATE.md docs/ai/invariants.md docs/adr/00_template.md
 test -f docs/ai/memory/wsl2-capabilities.md
-test $(ls docs/ai/memory/*.md | wc -l) -ge 10           # F0.DOC.01
+test $(ls docs/ai/memory/*.md | wc -l) -ge 11           # F0.DOC.01
 grep -q "read-only" docs/ai/invariants.md               # H-06 anti-goal recorded
 ```
 
@@ -2869,6 +2903,7 @@ What belongs here is the *reasoning*: the protocol requires a read phase (rules 
 ## Done                                    ← table: item → where
 ## Next up                                 ← ordered, with task IDs
 ## Blocked                                 ← blocker → what would unblock it
+## Mocked entries                          ← only when a track started against a mock (§3.7.1)
 ## Open decisions needing an ADR           ← question → current leaning
 ## Notes for whoever picks this up         ← traps, context, warnings
 ```
@@ -2904,19 +2939,21 @@ Related: [[other-memory-slug]]
 
 **Seed memories this project should already have** (write these in F0):
 
-| Slug | Fact |
-|---|---|
-| `ev-cert-windows-only` | Azure Trusted Signing cannot substitute for an EV cert on kernel drivers; Partner Center requires one. Source of `ADR-02` |
-| `wsl2-ebpf-support` | WSL2 ships BTF; BPF-LSM needs `kernelCommandLine` in `.wslconfig`; `/mnt/*` is 9p/virtiofs with different path semantics |
-| `landlock-l2-file-deny` | Landlock gives in-kernel, inheritable, monotonic file deny without BPF-LSM and without a reboot. It is what makes L2 a real tier |
-| `cgroup-connect-l2-net-deny` | `BPF_CGROUP_INET4/6_CONNECT` denies egress in kernel with cgroup v2 and no `lsm=` change — Network Slam at L2, and TOCTOU-free where seccomp is not |
-| `hardware-keys-are-p256` | Commodity TPM 2.0, iOS Secure Enclave and Android StrongBox offer non-exportable P-256, not Ed25519. Noise uses X25519, so a hardware key cannot be a Noise static |
-| `ios-app-groups-same-team` | App Groups are scoped to one developer team: a third-party app can never share ours. Cross-vendor IPC on iOS is loopback or nothing |
-| `wsl2-has-no-tpm` | No TPM device under WSL2, so Windows-via-WSL2 forensics are software-signed and rely on external root anchoring |
-| `ios-extension-memory-ceiling` | `NEPacketTunnelProvider` is OS-killed near 50 MB; hard 45 MB budget |
-| `android-full-screen-intent-restricted` | Android 14 restricts `USE_FULL_SCREEN_INTENT` to calling/alarm apps; use heads-up notifications with actions |
-| `bpf-probe-write-user-is-experimental` | Why `H-05` was cut, in mechanical terms. The helper is documented as experimental and warns in the kernel log; whether it sets a taint flag is a measurement, not an assumption |
-| `seccomp-unotify-toctou` | Never make a security decision by re-reading user memory from a notification. At L3 the LSM-resolved `struct file` is the path of record; at L2 the supervisor resolves the path and hands the target the fd with `ADDFD` |
+Each row below is written so an F0 session **transcribes** rather than reconstructs: the fact, why it matters, and where its reasoning lives. Eleven, not ten — the WSL2 seed carried two facts with two different verification tasks, and a reader looking for one should not have to find the other.
+
+| Slug | Fact | Why it matters | Source |
+|---|---|---|---|
+| `ev-cert-windows-only` | Azure Trusted Signing cannot substitute for an EV certificate on kernel drivers; Partner Center requires one before any attestation signing, and hardware-token storage is mandatory for OV too | It is the whole reason Windows is served by WSL2 rather than a driver | `ADR-02` |
+| `wsl2-capabilities` | Stock WSL2 ships BTF; BPF-LSM needs `kernelCommandLine` in `.wslconfig`; `/mnt/*` is 9p/virtiofs with different inode and rename semantics; systemd is opt-in | It decides the tier of the platform most Windows developers use | §2.16.1, `F0.VER.04` |
+| `wsl2-has-no-tpm` | No TPM device under WSL2 | The forensic chain is software-signed for Windows users, and anchoring is what carries non-repudiation there | R-18, `F0.VER.18` |
+| `landlock-l2-file-deny` | Landlock gives in-kernel, inherited, monotonic path deny with no reboot and no BPF-LSM | It is what makes L2 a real tier instead of a seccomp trap storm under `npm ci` | §2.2.1 |
+| `cgroup-connect-l2-net-deny` | `BPF_CGROUP_INET4/6_CONNECT` denies egress in kernel with cgroup v2 and no `lsm=` change, and sees the address in kernel | Network Slam at L2 is T0 and TOCTOU-free; seccomp would be neither | §2.2.1, `F3.EN.10` |
+| `hardware-keys-are-p256` | Commodity TPM 2.0, Secure Enclave and StrongBox offer non-exportable **P-256**, not Ed25519; Noise DH is X25519 | A hardware key cannot be a Noise static. The hardware key signs the *verdict*; a software key protects the *channel* | H-17, §2.20.6 |
+| `ios-app-groups-same-team` | App Groups are scoped to one developer team | A third-party app can never join ours, so cross-vendor IPC on iOS is loopback or nothing | `F9.SDK.05` |
+| `ios-extension-memory-ceiling` | `NEPacketTunnelProvider` is OS-killed near 50 MB | The flow table is the main consumer, and the forensic store must never live in the extension | §2.20.7, `budgets.toml` |
+| `android-full-screen-intent-restricted` | Android 14 restricts `USE_FULL_SCREEN_INTENT` to calling and alarm apps | Mobile prompts are heads-up notifications with action buttons; asking for the entitlement invites review rejection | `01_permission-model.md` §7.4 |
+| `seccomp-unotify-toctou` | Never decide from user memory read in a notification. At L3 the LSM-resolved `struct file` is the path of record; at L2 the supervisor resolves the path and hands the target the fd with `ADDFD` | It is the difference between an enforcement point and a race | H-01, `F3.EN.12` |
+| `bpf-probe-write-user-is-experimental` | Documented as experimental; warns in the kernel log | Using it to hide from a monitored process is what would make the product a rootkit and end the compliance story | H-05 |
 
 ### 7.5 ADR discipline
 

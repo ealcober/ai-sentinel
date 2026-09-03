@@ -583,7 +583,7 @@ Concretely, F10 (mobile engine, 4 weeks, the longest phase) consumes: the ontolo
 
 No question for the owner.
 
-**3. Implementation.** Every phase table gains a two-line header immediately under its objective:
+**3. Implementation.** *(Applied differently from this specification, deliberately: the contracts went into one table in §3.7.1 rather than twelve per-phase headers, because a fact with one home cannot drift and `verify-docs` can check a table it can find. The content is unchanged.)* Every phase gains an Entry and an Exit:
 
 > **Entry** — what must exist and be frozen before this phase starts, by task ID.
 > **Exit** — what this phase hands to others, by artefact, beyond its gate passing.

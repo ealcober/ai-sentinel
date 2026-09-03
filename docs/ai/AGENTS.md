@@ -41,6 +41,7 @@ A task is done when **all** of these hold. Not four out of five.
 - [ ] Relevant invariants (`docs/ai/invariants.md`) verified, not assumed.
 - [ ] Budget gate passes if the task touches `agentd`, `forensicd`, the BPF programs, or a mobile sensor (`sentinel-core` or a platform shim).
 - [ ] **If the task touches an architectural boundary** (ADR-01 decision 3): the relevant ADR was re-read and is still true, or a superseding ADR was written.
+- [ ] **If the phase started against a mocked entry condition** (§3.7.1), the gate output says which.
 - [ ] The phase gate command output is **shown**, not summarized.
 - [ ] `STATE.md` updated.
 

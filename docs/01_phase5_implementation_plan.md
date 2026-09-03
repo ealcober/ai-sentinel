@@ -1993,8 +1993,8 @@ Guiding principle: **a security tool that has not been tested under adversarial 
 | L0 Unit | Pure functions: policy compiler, path canonicalization, taint algebra, Merkle, flow classifier | Host, no privileges | Every commit |
 | L1 Property | Invariants over generated inputs (`proptest`): canonicalization idempotence, trie ≡ linear-scan reference, taint monotonicity | Host | Every commit |
 | L2 Verifier | Every eBPF program loads on every matrix kernel | `virtme-ng` VMs | Every commit |
-| L3 Component | One subsystem against a mock kernel source / mock driver | Host + VM | Every commit |
-| L4 Integration | Real kernel, real driver, real agent simulator | Snapshot VMs | Every PR |
+| L3 Component | One subsystem against mock adapters (`MockSensor`, `NullEnforcer`, `PolicyAdjudicator`) | Host + VM | Every commit |
+| L4 Integration | Real kernel, real adapters, real agent simulator — **at tier L2 and at tier L3** | Snapshot VMs | Before merging a branch |
 | L5 System | Full stack, all platforms, reference workload | Dedicated hardware | Nightly |
 | L6 Adversarial | Red team scenarios + benign corpus | Isolated VM network | Nightly |
 | L7 Soak | 72 h continuous, budget certification | Dedicated hardware | Weekly + pre-release |
@@ -2012,6 +2012,8 @@ panic_on_warn=1 oops=panic lockdep.prove_locking=1 slub_debug=FZP page_poison=1
 kasan.fault=panic lsm=lockdown,capability,landlock,yama,apparmor,bpf
 ```
 
+**Two boot profiles, and every §4.2 test runs under both.** The flags above are the **L3** profile. The **L2** profile is identical with `bpf` removed from `lsm=`, leaving Landlock present — that is the tier most users run and the WSL2 default, and with a single profile it would never have been booted as itself. Each test asserts the outcome *expected at that tier*, not merely that it passes.
+
 | ID | Test | Method | Pass criterion |
 |---|---|---|---|
 | `T4.2.01` | Verifier acceptance | Load every program on every matrix kernel | Loads, or degrades with a *specific, expected* capability error — never a generic failure |
@@ -2027,6 +2029,10 @@ kasan.fault=panic lsm=lockdown,capability,landlock,yama,apparmor,bpf
 | `T4.2.11` | `RLIMIT_MEMLOCK` exhaustion | Set a low limit | Clear actionable error, graceful degradation, no partial-attach state |
 | `T4.2.12` | Fuzzing the user-space parser | `cargo-fuzz` on the ring-buffer decode path with malformed/hostile event bytes | No panic, no OOB, no unbounded allocation over 24 h |
 | `T4.2.13` | Concurrent policy publication | Publish 10k policies/s while enforcement runs | No torn reads; generation counter monotonic; no decision made from a half-published policy |
+| `T4.2.14` | **Landlock semantics** | Ruleset applied pre-`exec`, inherited across `execve`, child attempts to relax it; ABI-gated features on an older kernel | Monotonic — a child can only narrow. Unavailable features skipped with a reported reason, never silently |
+| `T4.2.15` | **cgroup connect hook without BPF-LSM** | Attach on a kernel with `bpf` absent from the LSM list; `connect` to a non-allowlisted host from the session cgroup, and from a process outside it | `EPERM` for the session, untouched outside it (`I-14`), **zero seccomp notifications** (`R1-16`) |
+| `T4.2.16` | **ADDFD closes the L2 TOCTOU** | A racing thread swaps a symlink between supervisor inspection and target open | The target receives the fd of the inspected file, never the swapped one |
+| `T4.2.17` | **Landlock deny is recorded honestly** | Deny on a kernel below 6.15 and on 6.15+ | Below: WAL record carries `inferred_from = sys_exit`. Above: the audit record. A deny we inferred is never presented as one we observed (`I-17`, `R1-14`) |
 
 **The `T4.2.06` static gate is the mechanical enforcement of H-01.** It is a CI script that greps the compiled BTF/BPF for forbidden helper IDs in programs attached to enforcement hooks. It exists specifically so that no future contributor reintroduces the FUSE-RPC design by accident.
 
@@ -2079,7 +2085,7 @@ This is a **certification protocol**, not a smoke test. It produces a signed rep
 | `T4.4.04` | Fragmentation | `mimalloc` stats at 0 h / 24 h / 72 h | Committed-vs-used ratio < 1.4 at 72 h |
 | `T4.4.05` | Burst resilience | 200k events/s for 60 s | RSS peak < 50 MB; drops counted; recovery to baseline within 30 s |
 | `T4.4.06` | BPF map accounting | `bpftool map show` | ≤ 12 MB, reported separately from RSS |
-| `T4.4.07` | Driver non-paged pool | `poolmon` under IRP storm | ≤ 8 MB |
+| `T4.4.07` | Driver non-paged pool `[POST — Annex F]` | `poolmon` under IRP storm | ≤ 8 MB |
 | `T4.4.08` | **iOS extension ceiling** | Instruments memory profile under sustained traffic | < 45 MB p100; **zero OS terminations over 24 h** |
 | `T4.4.09` | Android low-memory device | 3 GB RAM device, memory pressure | No `onTrimMemory` kills; service survives |
 
@@ -2091,16 +2097,17 @@ Protocol, executed exactly as written (this is what makes "<3%" a reproducible c
 
 1. Provision a clean VM (8 vCPU / 16 GB / NVMe), pinned CPU frequency governor (`performance`), turbo disabled, no other tenants.
 2. Run the **reference workload** (§2.22) three times with AISME fully stopped and unloaded. Record total system CPU-seconds and wall-clock per sub-task.
-3. Restore the snapshot. Install AISME at tier L3 (Linux) / driver loaded (Windows). Run three times.
+3. Restore the snapshot. Install AISME at **tier L2**; run three times. Restore; install at **tier L3**; run three times.
 4. Compute `Δ = (median_with − median_without) / median_without` for both CPU-seconds and each sub-task's wall clock.
-5. **Pass: `Δ_cpu ≤ 3.0%` and `Δ_wallclock(build) ≤ 4.0%`.** Report p50/p95/p99 of T0 latency alongside.
+5. **Pass at both tiers: `Δ_cpu ≤ 3.0%` and `Δ_wallclock(build) ≤ 4.0%`.** Report p50/p95/p99 of T0 latency alongside, per tier. A CPU figure without its tier is not a figure — and L2, the tier most users run, is the one where a seccomp-heavy design would fail.
 
 | ID | Test | Pass |
 |---|---|---|
 | `T4.4.10` | Aggregate CPU overhead | ≤ 3.0% |
 | `T4.4.11` | Idle CPU (no agent session) | ≤ 0.3% |
 | `T4.4.12` | Build wall-clock overhead | ≤ 4.0% |
-| `T4.4.13` | T0 latency distribution | p99 ≤ 15 µs, p999 ≤ 50 µs |
+| `T4.4.13` | T0 latency distribution, L3 | p99 ≤ 15 µs, p999 ≤ 50 µs |
+| `T4.4.17` | **T0 latency distribution, L2** | Landlock and cgroup-connect deny p99 ≤ 20 µs; escalate round trip p99 ≤ 1 ms |
 | `T4.4.14` | Non-session process overhead | ≤ 0.5% — processes outside the AI session must be effectively free (validates the in-kernel PID filter) |
 | `T4.4.15` | Sentinel network throughput | ≥ 300 Mbps sustained through the tunnel; added latency ≤ 2 ms |
 | `T4.4.16` | Mobile battery | ≤ 6%/24 h with tunnel active; measured on-device over 3 × 24 h |
@@ -2121,7 +2128,7 @@ The hard part is having *deterministic, reproducible* targets. We build them rat
 | `fx-static-boringssl` | **Bun/Node-style monolith**: statically linked BoringSSL, `-O2`, symbols stripped, sections merged | Built in CI from pinned BoringSSL source; **this is the F4 tier-D target** |
 | `fx-static-stripped-pgo` | Same but with PGO + identical-code-folding — the worst case for prologue heuristics | Deliberately adversarial to our own scanner |
 | `fx-electron-like` | Multi-process, renderer/main split, SSL in the main process | |
-| `fx-schannel` | Windows `EncryptMessage`/`DecryptMessage` via SSPI | Small C client |
+| `fx-schannel` `[POST]` | Windows `EncryptMessage`/`DecryptMessage` via SSPI | Small C client |
 | `fx-cooperative` | Emits JSONL transcripts like Claude Code | Simulates tier A |
 | `fx-sse-server` | Local TLS server streaming SSE with known token content | Ground truth for capture |
 
@@ -2133,12 +2140,16 @@ The hard part is having *deterministic, reproducible* targets. We build them rat
 | `T4.5.04` | Tier D capture | Heuristic scanner resolves `fx-static-boringssl`; **allowed to fail on `fx-static-stripped-pgo`, but must fail *cleanly*** |
 | `T4.5.05` | **Self-test rejects bad offsets** | Inject a deliberately wrong offset → self-test fails → offset discarded → `UNRESOLVED`. **No crash of the target process.** |
 | `T4.5.06` | **Target process integrity** | Compare the target's memory pages and TLS behaviour before/after attach | **Byte-identical. This is the mechanical proof of the H-06 read-only invariant.** |
-| `T4.5.07` | Schannel capture | `fx-schannel` plaintext matches ground truth; `SecBufferDesc` walked correctly |
+| `T4.5.07` | Schannel capture `[POST — Annex F]` | `fx-schannel` plaintext matches ground truth; `SecBufferDesc` walked correctly |
 | `T4.5.08` | SSE reassembly | Fragmented/interleaved streams reassembled in order; no cross-stream contamination under 50 concurrent streams |
 | `T4.5.09` | **Redaction** | Fixture sends an API key and a JWT; neither appears in the WAL, the forensic store, or any OTLP export |
 | `T4.5.10` | Graceful degradation | All resolution tiers disabled → kernel layer at 100%, semantic layer off, user informed |
 | `T4.5.11` | Scanner sandbox | Feed the scanner a malformed/hostile ELF | Sacrificial process dies within its time limit; `agentd` unaffected |
 | `T4.5.12` | Version drift | Rebuild `fx-static-boringssl` with a new compiler → old cached offset must be invalidated by Build-ID change, not silently misused |
+| `T4.5.13` | **Tier-A key-log capture** | `aisme run -- node` against `fx-sse-server`: plaintext captured, and `bpftool prog list` shows **no AISME uprobes attached** |
+| `T4.5.14` | **Key material never on disk** | Filesystem search after `T4.5.13` finds no file containing `CLIENT_RANDOM` |
+| `T4.5.15` | Observe-with-validation | A tier-D offset with no canary, deliberately wrong → detached within N captures, `UNRESOLVED` emitted, target unharmed |
+| `T4.5.16` | **`DT-01` precedes redaction** | Run the RF-18 fixture with the stages in the correct order and reversed | Finding present in the correct order; **the reversed order must fail the test** |
 
 `T4.5.06` is the most important test in this section. It is the automated guarantee that AISME never modifies an observed process — the invariant that H-05 and H-06 exist to protect.
 
@@ -2158,7 +2169,7 @@ The problem: correlation accuracy is normally unmeasurable because you do not kn
 | `T4.6.04` | **Decoy resistance** | Simulator performs unrelated syscalls interleaved with the real ones | No false linkage |
 | `T4.6.05` | Concurrent sessions | 5 simultaneous agents | Zero cross-session attribution errors |
 | `T4.6.06` | Clock skew | Sources with 50 ms skew | Lamport ordering still correct |
-| `T4.6.07` | Symlink/relative paths | `../`, symlink chains, bind mounts, Windows junctions and 8.3 short names | Canonicalization correct on all |
+| `T4.6.07` | Symlink/relative paths | `../`, symlink chains, bind mounts, **`/mnt/*` (9p/virtiofs under WSL2)** | Canonicalization correct on all |
 | `T4.6.08` | Cross-device sessions | Workstation + phone in one `session_id` | Unified graph, correct ordering |
 
 ---
@@ -2167,7 +2178,7 @@ The problem: correlation accuracy is normally unmeasurable because you do not kn
 
 Turns H-10's claim into a gate.
 
-**Corpus.** 120 labelled scenarios: 60 malicious (Annex C), 60 benign-but-suspicious-looking (the hard negatives — a legitimate refactor touching 100 files, a legitimate deploy reading credentials, a legitimate dependency install reaching the network).
+**Corpus.** ≥ 60 malicious instances across the 24 Annex C classes, and ≥ 60 hard negatives **including every benign twin** (the benign-but-suspicious-looking cases — a legitimate refactor touching 100 files, a legitimate deploy reading credentials, a legitimate dependency install reaching the network).
 
 **Protocol.** For each scenario, run the Observer LLM twice: once with the full uncompressed context, once with the compressed context. Compare detection outcomes.
 
@@ -2176,7 +2187,7 @@ Turns H-10's claim into a gate.
 | `T4.7.01` | Token reduction | ≥ 60% (target 85%) |
 | `T4.7.02` | **IRR** = recall(compressed)/recall(full) | ≥ 0.85 |
 | `T4.7.03` | Absolute precision on compressed context | ≥ 0.90 |
-| `T4.7.04` | Anchor inclusion guarantee | 100% of taint≠0 and blocked events survive compression — verified structurally, not statistically |
+| `T4.7.04` | Anchor inclusion guarantee | 100% of taint≠0, blocked, escalated, **finding-bearing and suppressed** events survive compression — verified structurally, not statistically (`I-26`) |
 | `T4.7.05` | Determinism | Same input → byte-identical compressed output across 100 runs |
 | `T4.7.06` | Template miner bounds | Cluster count and tree depth stay within limits on a 10M-event stream |
 | `T4.7.07` | Adversarial log flooding | Attacker emits 1M noise events to push a real event out of the anchor set | Real event still anchored (this is a genuine attack on the compressor and must be tested) |
@@ -2214,8 +2225,14 @@ Methodology notes that belong to testing rather than to the catalogue:
 | `BN-08` | Mobile: normal app usage — browsing, streaming, banking app, messaging | Zero blocks; zero false AI-inference classifications |
 | `BN-09` | Mobile: legitimate AI app (ChatGPT/Claude mobile) in normal use | Detected as AI session, **not blocked** |
 | `BN-10` | System updates, antivirus scans, backup software | Unaffected (non-session processes) |
+| `BN-11` | **Twin of RF-18**: `.env.example` with placeholder values quoted in a prompt | No finding — `DT-01` matches provenance, not entropy |
+| `BN-12` | **Twin of RF-19**: an MCP server declares a version bump and changes its tool descriptions with it | `warn`, never `escalate` |
+| `BN-13` | **Twin of RF-20**: an agent retries after a transient failure (network flake, lock contention) | No finding — the earlier outcome was not a deny |
+| `BN-14` | **Twin of RF-21**: a developer adds a `test` script to `package.json` | `warn` at most; only an *executing* key escalates |
+| `BN-15` | **Twin of RF-23**: a long agent turn with no covering ToolCall because the tool call is still open | No finding — the window has not closed |
+| `BN-16` | **Twin of RF-24**: the user edits `.aisme/scope.toml` themselves through the CLI | No finding — a human principal, not a session lineage |
 
-**Gate: 0 blocks and ≤ 2 escalations across the entire benign corpus.** Escalations above that threshold indicate a policy that will generate alert fatigue.
+**Gate: 0 blocks, ≤ 2 escalations, ≤ 3 prompts and ≤ 30 warns per reference-workload day across the entire benign corpus.** Escalations above that threshold indicate a policy that will generate alert fatigue; so does a warn budget quietly blown.
 
 ---
 
@@ -2223,7 +2240,7 @@ Methodology notes that belong to testing rather than to the catalogue:
 
 | ID | Fault | Expected behaviour |
 |---|---|---|
-| `T4.9.01` | `kill -9 agentd` mid-verdict | seccomp: `ENOSYS`; minifilter: timeout → fail policy. No hang anywhere |
+| `T4.9.01` | `kill -9 agentd` mid-verdict | seccomp: `ENOSYS`; Landlock and cgroup denies persist. No hang anywhere |
 | `T4.9.02` | `kill -9 forensicd` | `agentd` unaffected; WAL grows; resumes by offset on restart; zero event loss |
 | `T4.9.03` | Disk full | WAL write fails gracefully; oldest segments rotated per retention; loud alert; enforcement unaffected |
 | `T4.9.04` | WAL corruption | Corrupt segment detected by checksum, quarantined, replay continues from the next valid record |
@@ -2237,6 +2254,10 @@ Methodology notes that belong to testing rather than to the catalogue:
 | `T4.9.12` | Network partition mid-adjudication | Remote channel times out at 3 s → `DENY` (§2.20.5); no indefinite freeze |
 | `T4.9.13` | Two adjudicators answer simultaneously (desktop + phone) | First valid verdict wins; second is idempotently ignored; both recorded |
 | `T4.9.14` | Sentinel tunnel dropped by the OS | Auto-reconnect; gap recorded honestly in the forensic log as a coverage gap |
+| `T4.9.15` | **`aisme-uiagent` killed mid-prompt** | The escalation resolves to the policy default within the channel budget; `local_ui_attached = false` emitted |
+| `T4.9.16` | **`agentd` restart window** | T0 denies continue (pinned maps at L3, Landlock at L2); escalate-class syscalls fail closed; the gap is written to the WAL on restart (`I-17`) |
+| `T4.9.17` | **Landlock absent at runtime** | Tier reported as `L2-`; the installer and the UI say so; the seccomp-only shape with its trap-volume caveat |
+| `T4.9.18` | **cgroup v1 host** | Freezer unavailable → T2 degrades to timeout-deny; stated in the capability banner, never silent |
 
 `T4.9.14` matters for integrity: **a coverage gap must appear in the forensic record as a gap.** Silently continuing implies observation that did not happen.
 
@@ -2250,7 +2271,7 @@ Methodology notes that belong to testing rather than to the catalogue:
 | `T4.10.02` | Pairing replay | Reused pairing secret rejected; TTL enforced |
 | `T4.10.03` | **Relay blindness** | Memory + disk dump of the relay during 1,000 messages contains **zero plaintext bytes** |
 | `T4.10.04` | Verdict replay | Reused nonce rejected; 30 s freshness window enforced |
-| `T4.10.05` | **Remote ALLOW without biometric** | Rejected |
+| `T4.10.05` | **Remote ALLOW without a valid hardware P-256 signature** | Rejected, even over a valid Noise session |
 | `T4.10.06` | **Remote ALLOW on CRITICAL class** | Rejected unconditionally (§2.20.6) |
 | `T4.10.07` | Remote DENY path | Works with only a paired device; latency within budget |
 | `T4.10.08` | Compromised phone simulation | Attacker with app access but no biometric cannot authorize anything |
@@ -2258,6 +2279,7 @@ Methodology notes that belong to testing rather than to the catalogue:
 | `T4.10.10` | Push → modal latency | ≤ 5 s p99 from backgrounded state |
 | `T4.10.11` | Revocation | Revoked device immediately loses all capability, offline |
 | `T4.10.12` | Screenshot hardening | `FLAG_SECURE` on Android; obscured snapshot on iOS backgrounding |
+| `T4.10.13` | **Device with no hardware key** | Pairs and can `DENY`; its `ALLOW` is refused with a clear message (`I-06`, `I-16`) |
 
 ---
 
@@ -2283,7 +2305,10 @@ The detection quality of the mobile engine is only as good as its corpus. This i
 | `T4.11.09` | iOS extension memory | < 45 MB p100 over 24 h; zero OS terminations |
 | `T4.11.10` | Tunnel survival | Doze, App Standby, network transitions (Wi-Fi↔5G), airplane mode toggles |
 | `T4.11.11` | SDK veto end-to-end | `DENY` from policy actually prevents the tool call in the host app |
-| `T4.11.12` | SDK forgery | Forged/unsigned SDK events rejected; `uncooperative` signal fires |
+| `T4.11.12` | SDK cross-app forgery | Events signed with another install's key rejected; `uncooperative` signal fires |
+| `T4.11.14` | **SDK consistency** | A hostile fixture host declares silence while S1 observes a provider flow → `aisme.sdk.inconsistent` |
+| `T4.11.15` | **iOS loopback SDK transport** | A second-team fixture app reaches the tunnel's loopback and receives a veto within budget (`R1-17`) |
+| `T4.11.16` | **QUIC degraded confidence** | HTTP/3 inference flows classify with shape-only confidence, never as a hard verdict |
 | `T4.11.13` | Coverage disclosure accuracy | The in-app coverage tier matches the actual runtime capability probe on 6 device configurations |
 
 `T4.11.13` enforces the §2.20.4 product invariant. It is a test that the product does not overstate its own protection.
@@ -2292,13 +2317,17 @@ The detection quality of the mobile engine is only as good as its corpus. This i
 
 ### 4.12 CI gates and platform matrix
 
-**Per-commit (fast, ≤ 10 min):** L0, L1, L2 on kernels 5.15 + 6.8, forbidden-dependency gate, budget gate on synthetic load, clippy/deny.
+**Levels, all run locally** (`I-27`; there is no hosted CI and no workflow triggers on push):
 
-**Per-PR (≤ 60 min):** the above plus L3, L4 on Ubuntu 24.04 + Windows 11, red team smoke subset, benign corpus, `T4.5.06` (target integrity), `T4.7.02` (IRR).
+**`commit` (≤ 10 min)** — what the pre-commit hook runs: L0, L1, L2 on kernels 5.15 + 6.8, forbidden-dependency gate, `verify-layering`, `verify-docs`, budget gate on synthetic load, clippy/deny.
 
-**Nightly:** full kernel matrix, full L5/L6, full flow corpus, Driver Verifier 4 h, fuzzing 8 h.
+**`pr` (≤ 60 min)** — run before merging a branch: the above plus L3, L4 on Ubuntu 24.04 **at L2 and at L3**, WSL2 on the owner's Windows machine, red-team smoke subset, benign corpus, `T4.5.06` (target integrity), `T4.7.02` (IRR).
 
-**Weekly + pre-release:** 72 h soak with full budget certification, signed report to `docs/reports/`, full mobile device farm run.
+**`nightly`** — local scheduler: full kernel matrix, full L5/L6, full flow corpus, full detector corpus with benign twins, fuzzing 8 h.
+
+**`weekly` + pre-release** — dedicated local hardware: 72 h soak with full budget certification at both tiers, signed report to `docs/reports/`, full mobile device run.
+
+`STATE.md` records the date of the last `nightly` and `weekly` run; `verify-docs` warns when they are older than 7 and 14 days, and the release checklist refuses without a fresh weekly report.
 
 **Release blockers — non-negotiable, any one fails the release:**
 
@@ -2310,12 +2339,20 @@ The detection quality of the mobile engine is only as good as its corpus. This i
 ✗ Any red-team scenario not contained
 ✗ IRR < 0.85
 ✗ Correlation precision < 0.95 or recall < 0.90
-✗ Any Driver Verifier defect, SDV defect, or lockdep splat
+✗ Any lockdep splat
 ✗ Any test proving AISME modified an observed process (T4.5.06)
 ✗ Any plaintext byte observable at the relay (T4.10.03)
 ✗ Sentinel classifier precision < 0.95 or video false-positive rate > 1%
 ✗ iOS extension OS-termination in the 24 h run
 ✗ Any capability the UI claims but the device does not have (T4.11.13)
+✗ Any benign-twin false positive
+✗ Prompts > 3/day or warns > 30/day on the reference workload
+✗ RF-17 (suppression must not blind) fails
+✗ Any allow or grant proposal auto-promoted without human approval (F6)
+✗ T0-L2 p99 > 20 µs
+✗ cargo xtask verify-docs fails
+✗ Any block whose key_hw claim does not match its signer
+✗ Any workflow file that triggers on push, pull_request or schedule (I-27)
 ```
 
 **Platform matrix:**

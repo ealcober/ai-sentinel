@@ -1,0 +1,46 @@
+# Crate → architecture layer. This file is the input to `cargo xtask verify-layering`
+# and the source the Cargo.toml comment block is generated from. Rules: plan §3.1.
+#
+#   L0 WIRE      no_std, zero deps, layout-stable; shared with kernel-verified code
+#   L1 CORE      no I/O, no async runtime, no cfg(target_os), no platform crate
+#   L2 ADAPTERS  implement L1 traits; own all platform cfg; no sibling deps
+#   L3 ENGINES   the two daemons; depend on adapters only through L1 traits
+#   L4 EDGES     surfaces: CLI, export, relay, UI, mobile shells, tooling
+#
+# A workspace member missing from this file fails the gate. That is deliberate:
+# a new crate must declare its layer before it can compile.
+
+schema = 1
+
+[crates]
+aisme-ebpf-common = "L0"
+
+aisme-core        = "L1"
+aisme-correlate   = "L1"   # pure graph/taint logic, no I/O — runs in the hot loop
+aisme-compress    = "L1"   # deterministic SAC-lite; no I/O
+aisme-observer    = "L1"   # schema + scoring only; the HTTP client lives in forensicd
+
+aisme-linux       = "L2"
+aisme-tls         = "L2"
+sentinel-core     = "L2"
+aisme-sdkhost     = "L2"
+
+aisme-agentd      = "L3"
+aisme-forensicd   = "L3"
+aisme-loaderd     = "L3"
+
+aisme-cli         = "L4"
+aisme-otel        = "L4"
+aisme-relay       = "L4"
+aisme-proto       = "L4"
+aisme-clientcore  = "L4"
+aisme-agentsim    = "L4"
+xtask             = "L4"
+
+[excluded]
+# Present in the tree, not a workspace member, not layered.
+aisme-windows = "POST — deferred by ADR-02; specification in plan Annex F"
+
+[composition_root]
+# The single module permitted to name concrete adapters and use cfg(target_os).
+path = "crates/aisme-agentd/src/platform"

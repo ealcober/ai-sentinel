@@ -2,30 +2,22 @@
 resolver = "2"
 
 # Members are added as crates are implemented in phase F0 (task F0.REPO.01).
-# The directory skeleton under crates/ already reflects the planned layout;
-# a crate is added here only once it has a real Cargo.toml and compiles.
+# A crate is added here only once it has a real Cargo.toml and compiles.
 #
-# Planned members, grouped by phase:
-#   F1  crates/aisme-core            shared types, ontology, traits, policy IR
-#       crates/aisme-ebpf-common     no_std event structs shared with BPF programs
-#       crates/aisme-agentd          hot-path daemon        (RSS budget: 50 MB)
-#       crates/aisme-loaderd         minimal privileged loader
-#       crates/aisme-proto           control-plane protocol + TS codegen
-#   F2  crates/aisme-ebpf            BPF programs (bpfel-unknown-none)
-#       crates/aisme-linux           Aya loader, seccomp_unotify, cgroup freezer
-#   F3  crates/aisme-windows         FltPort client, shared section, ETW
-#   F4  crates/aisme-tls             capture ladder, offset resolution, SSE reassembly
-#   F5  crates/aisme-correlate       causal graph, taint, Merkle
-#       crates/aisme-forensicd       cold-path daemon: DuckDB, Parquet, export
-#   F6  crates/aisme-compress        SAC-lite pipeline
-#       crates/aisme-observer        Observer LLM client (schema-constrained)
-#       crates/aisme-otel            OTLP export
-#   F8  crates/aisme-cli
-#   F9  crates/aisme-clientcore      shared mobile/desktop client core (uniffi)
-#       crates/aisme-relay           blind store-and-forward relay
-#   F10 crates/sentinel-core         mobile detection engine: flows, classifier
-#   --  crates/aisme-agentsim        agent simulator for the reference workload
-#       xtask                        build/test/certification orchestration
+# The authoritative crate → layer map is `layers.toml`, which `cargo xtask
+# verify-layering` reads. This comment is generated from it and checked against it;
+# do not edit one without the other.
+#
+#   L0  aisme-ebpf-common
+#   L1  aisme-core · aisme-correlate · aisme-compress · aisme-observer
+#   L2  aisme-linux · aisme-tls · sentinel-core · aisme-sdkhost
+#   L3  aisme-agentd (RSS budget 50 MB) · aisme-forensicd · aisme-loaderd
+#   L4  aisme-cli · aisme-otel · aisme-relay · aisme-proto · aisme-clientcore ·
+#       aisme-agentsim · xtask
+#
+# Not a member: crates/aisme-windows ([POST], ADR-02, plan Annex F).
+# Not a crate:  crates/aisme-ebpf is built by `cargo xtask build-ebpf` with its own
+#               pinned nightly (crates/aisme-ebpf/rust-toolchain.toml).
 members = []
 
 [workspace.package]
@@ -36,7 +28,7 @@ rust-version = "1.82"
 
 [workspace.lints.rust]
 unsafe_op_in_unsafe_fn = "deny"
-missing_docs = "warn"
+missing_docs = "warn"   # CI runs with -D warnings, so these are errors at the gate (F0.GATE.02)
 
 [workspace.lints.clippy]
 pedantic = { level = "warn", priority = -1 }

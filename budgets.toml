@@ -20,6 +20,11 @@ rss_mb           = { direction = "min", target = 42,  hard = 50 }
 alloc_hot_loop   = { direction = "min", target = 0,   hard = 0 }     # allocations/sec, steady state
 growth_mb_per_day= { direction = "min", target = 0.0, hard = 0.5 }   # 72 h soak regression slope
 
+[process.agentd.binary]
+# Binary size is a proxy for dependency creep, and dependency creep is how the RAM
+# budget dies. Measured on the stripped release artefact (plan §5.2).
+size_mb          = { direction = "min", target = 10, hard = 12 }
+
 [process.forensicd]
 rss_mb           = { direction = "min", target = 110, hard = 150 }
 
@@ -37,11 +42,6 @@ os_terminations  = { direction = "min", target = 0,  hard = 0 }      # over a 24
 
 [mobile.android_vpnservice]
 rss_mb           = { direction = "min", target = 40, hard = 60 }
-
-[process.agentd.binary]
-# Binary size is a proxy for dependency creep, and dependency creep is how the RAM
-# budget dies. Measured on the stripped release artefact (plan §5.2).
-size_mb          = { direction = "min", target = 10, hard = 12 }
 
 [relay]
 plaintext_bytes  = { direction = "min", target = 0, hard = 0 }   # I-07

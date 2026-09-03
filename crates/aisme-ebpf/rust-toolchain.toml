@@ -1,0 +1,10 @@
+# The eBPF crate is the only part of the workspace that needs nightly: it targets
+# bpfel-unknown-none through -Z build-std=core. Pin the exact nightly and record the
+# Aya version it was validated against, so a future toolchain bump is a deliberate,
+# testable change rather than a silent breakage.
+#
+# TODO(F0.REPO.02): set `channel` to the newest nightly for which the pinned Aya
+# version's build-std path works, and write that Aya version here.
+[toolchain]
+channel    = "nightly"
+components = ["rust-src"]

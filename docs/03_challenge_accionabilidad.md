@@ -27,6 +27,8 @@ Read-only script over `docs/01_phase5_implementation_plan.md`. **Prediction writ
 
 ## Skeleton
 
+**Status 2026-08-17: all 12 points closed.** 35 numbered defects (`D-210`…`D-244`), 2 new unverified claims (`R1-19`, `R1-20`), 1 open owner question (`Q-11`).
+
 | Point | Object | Status |
 |---|---|---|
 | P-35 | **The `xtask` surface** — 77 commands, 5 tasked | **closed** |
@@ -39,8 +41,8 @@ Read-only script over `docs/01_phase5_implementation_plan.md`. **Prediction writ
 | P-42 | The threat model (`F0.SEC.01`) — a named deliverable that does not exist | **closed** |
 | P-43 | The ten seed memories — listed, never written | **closed** |
 | P-44 | The reference workload — the CPU budget rests on a trace nobody recorded | **closed** |
-| P-45 | Phase entry and exit artefacts — what each phase hands the next | pending |
-| P-46 | Final sweep: is every gate command now creatable, and by whom? | pending |
+| P-45 | Phase entry and exit artefacts — what each phase hands the next | **closed** |
+| P-46 | Final sweep: is every gate command now creatable, and by whom? | **closed** |
 
 Report 02's owner questions `Q-01`…`Q-10` are answered and closed; where this report cites one it writes `02:Q-nn`. Any new owner question here starts at **`Q-11`**.
 
@@ -563,4 +565,84 @@ The bootstrapping order matters and is stated: the trace is recorded in **F0**, 
 **5. Documentation.** Plan §2.22 paragraph; F0 and F1 task tables; Part VI tree gains `tests/fixtures/reference-trace/`; the certification report template in `docs/reports/`.
 
 **Closure.** Verified by grepping for any task producing the trace: none. The finding is that the plan's most-quoted number rests on an input it never arranged to create, and the same input is what two other release blockers measure against. D-240 is the subtler half: totals are not a workload, because this system's cost is burst-shaped and a flat replay would pass a gate a real agent fails. Nothing fell. Open: none.
+
+---
+
+### P-45 — Phase handoffs: what each phase hands the next
+
+**1. Challenge.** Every phase has an objective, a task table and a gate. None has an **entry condition** or a stated **exit artefact**. That is fine for a serial plan and it is not fine for this one: §3.7 puts five tracks in parallel after F2, and parallel tracks only work if each knows exactly what it may assume exists and exactly what it must produce for the others.
+
+Concretely, F10 (mobile engine, 4 weeks, the longest phase) consumes: the ontology and traits from F1, the policy compiler and its mobile backend from F1, the SDK from F9, the detector functions from F1 and the compressed-context format from F6. If any of those arrives in a different shape than F10 assumed, four weeks of parallel work absorbs the mismatch. The interface freeze (GATE F1) protects the *traits*; nothing protects the rest.
+
+**2. Verification.**
+
+- **D-241** No phase states its entry conditions. *Damage today*: none. *Open path*: a track starts against an assumption, and the mismatch surfaces at integration — which is exactly the failure mode the walking skeleton was adopted to eliminate, reintroduced one level up. *Bias*: **optimistic** — the schedule's parallelism is asserted without the contracts that make it safe → urgent for the schedule, which is now 11.5 weeks on the strength of that parallelism.
+- **D-242** No phase states its exit artefacts beyond "the gate passes". A gate proves a property; it does not enumerate what the phase *produced* for others to build on. F1's gate proves zero allocations and a deterministic compiler; it does not say "F1 hands over: the frozen trait file, the `EventKind` taxonomy, the compiled-policy IR, `MockSensor`". *Bias*: neutral, but it is what an entry condition would reference.
+- **D-243** **The interface freeze covers traits and not formats.** GATE F1 freezes §3.2's traits by ADR. But four other things F1 produces are consumed across track boundaries and are not frozen: the `EventKind` taxonomy (P-36), the `CompiledPolicy` IR, the WAL segment format, and the control-plane protocol (P-38, produced by F8a and consumed by F11). A silent change to any of those breaks a parallel track just as thoroughly as a trait signature change. *Bias*: **optimistic** — "the interfaces are frozen" is believed to cover more than it does → urgent, and it is a one-line fix to the freeze definition.
+- Verified sound: the gates themselves; the track assignment in the phase table; the dependency diagram (which is correct, just not contractual).
+
+No question for the owner.
+
+**3. Implementation.** Every phase table gains a two-line header immediately under its objective:
+
+> **Entry** — what must exist and be frozen before this phase starts, by task ID.
+> **Exit** — what this phase hands to others, by artefact, beyond its gate passing.
+
+Filled in for all twelve. The load-bearing ones:
+
+| Phase | Entry | Exit |
+|---|---|---|
+| F1 | F0's gates green; `layers.toml`; the trace (`F0.ASSET.02`) | **The frozen set** (see below); `MockSensor`/`NullEnforcer`/`PolicyAdjudicator`; the WAL format; `aisme-agentsim` replay |
+| F2 | GATE F1 (the freeze) | A running product; the seam evidence; a real budget baseline; the terminal adjudicator |
+| F3 | F2; `F0.VER.04` and `F0.VER.16` answered **[BLOCKING]** | The BPF programs; Landlock and cgroup backends; the tier probe's real values; `/mnt/*` canonicalization |
+| F4 | F2; `F1.ON.06` (`ToolResult`) | The capture ladder; measured per-tier coverage (`F4.CO.05`) replacing H-07's estimates; the offset manifest format |
+| F5 | F3 or `MockSensor`; F4 or the cooperative tier alone | The causal graph; the detector runtime; the Merkle chain and `key_hw`; the correlation harness's measured precision |
+| F6 | F5's graph; F4's semantic events | The compressed-context format **(frozen for F10)**; the Observer client; the IRR harness |
+| F7 | F1's compiler; F5's detectors; F3's backends | The shipped default policy; the permission surface; learning-mode reports |
+| F8a | F1's `aisme-proto` only | **The control-plane protocol, frozen for F11**; the shell, timeline and graph views; the CLI |
+| F9 | GATE F1 | The SDK API **frozen for F10**; the conformance suite; the published ontology spec |
+| F10 | F9's SDK; F1's mobile policy backend; F6's context format | `sentinel-core`; the flow corpus and generator; the classifier's measured numbers |
+| F11 | F8a's protocol; F10's engine | The paired-device flow; the blind relay; the mobile app |
+
+**D-243's fix — the freeze is a list, not a layer.** GATE F1's freeze paragraph becomes: *after this gate, an ADR is required to change any of* — (1) the §3.2 traits, (2) the `EventKind`/`EventPayload` taxonomy (§F1.1.1), (3) the `CompiledPolicy` IR and the AISME-PL grammar (Annex B §B.0), (4) the WAL segment format, (5) the `RawEvent` layout. Two more freeze at their producing gate rather than at F1, because they are produced later: (6) **the control-plane protocol at GATE F8a** — F11 codes against it — and (7) **the SDK public API at GATE F9** — F10 and third parties code against it. Each is named in its phase's Exit row, so "frozen" always has an owner and a date.
+
+**4. Tests.** **New** — `verify-docs` asserts every phase has an Entry and an Exit row, that every task ID cited in an Entry exists, and that **every artefact named in an Exit appears in at least one other phase's Entry** — an exit nobody consumes is either dead work or a missing dependency, and both are worth a question. **New** — the freeze list is machine-checkable: each frozen item names a file or section, and `verify-docs` fails if one is missing.
+
+**5. Documentation.** Twelve phase headers; GATE F1's freeze paragraph; GATE F8a and GATE F9 gain their freeze lines; §3.7 gains one sentence noting that parallelism rests on Entry/Exit contracts, not only on the trait freeze.
+
+**Closure.** Verified by reading all twelve phase openings: objective, tasks, gate, and no contract in either direction. D-243 is the one with teeth — "the interfaces are frozen" is believed to mean more than it says, and the four unfrozen cross-track formats (event taxonomy, policy IR, WAL, protocol) would each break a parallel track exactly as badly as a trait change. Nothing fell. Open: none.
+
+---
+
+### P-46 — Final sweep: is every gate command now creatable, and by whom?
+
+**1. Challenge.** This point exists to check the report against its own question. Report 03 asked: *if an implementer opens F0 tomorrow and works straight through, where do they stop?* Eleven points have named eleven places. This one asks whether anything remains.
+
+**2. Verification.** Re-running the baseline measurement against the plan **as report 03 will leave it**:
+
+| # | Check | Before | After the patches | Closed by |
+|---|---|---|---|---|
+| A1/A3 | `xtask` commands with no creating task | 72 of 77 | **0** — Annex H maps every command to a task; F0 creates all 77 stubs | P-35 |
+| A9 | `EventKind` variants enumerated | 0 | **~50 across 10 reserved ranges** | P-36 |
+| A10 | AISME-PL grammar | absent | EBNF + key inventory + backend matrix + precedence | P-37 |
+| A8 | Protocol methods specified | 0 of 6 | **12 methods** with params, results, authorization, errors | P-38 |
+| A7 | Corpora with a format | 1 of 5 | **5 of 5**, each with a manifest; fixtures with contracts | P-39 |
+| — | R1 register as plan rows | 1 row for 18 | **20 rows**, 4 marked blocking, each with both outcomes | P-40 |
+| — | ADRs cited but absent | 2 | 0 | P-41 |
+| — | Threat model | absent | 6 sections | P-42 |
+| — | Seed memories written | 0 of 10 | 11 specified for transcription | P-43 |
+| — | Reference trace | absent | recorded in F0, hashed, replayed with timing | P-44 |
+| — | Phase entry/exit contracts | 0 of 12 | 12, plus a 7-item freeze list with owners | P-45 |
+
+**What remains, honestly.** Three things are specified and not yet *built*, and they are correctly F0/F1 work rather than planning gaps: the 77 command stubs, the reference trace, and the eleven memories. Two are owner decisions already taken. **One question is open** (`Q-11`, rule precedence) and its default is stated and safe.
+
+- **D-244** One residual gap this sweep found: **the plan still has no statement of what a phase does when its entry condition is unmet.** P-45 gives every phase an Entry row; nothing says whether a track may start anyway against mocks. The answer follows from the architecture and should be written once: **yes, and that is the point of `MockSensor`/`NullEnforcer`/`PolicyAdjudicator`** — a track may start against mocks and must then declare, in `STATE.md`, which of its Entry conditions is mocked. A phase may not *close its gate* with a mocked entry unless its gate explicitly runs on mocks (as F1's and F2's do). *Bias*: neutral; it prevents both "we can't start" and "we finished against a mock". *Falsified by*: a phase closing a gate that needed a real dependency it never had.
+
+**3. Implementation.** §3.7 gains a short paragraph stating the mock rule above, and `AGENTS.md` §2's definition of done gains one item: *if the task's phase started against a mocked entry condition, the gate output must say which.* `STATE.md`'s structure (§7.3) gains a `## Mocked entries` heading, used only when one is in force.
+
+**4. Tests.** **New** — `verify-docs` warns when `STATE.md` declares a mocked entry and the corresponding phase gate is recorded as passed. It cannot be an error (F1 and F2 legitimately pass on mocks), so it is a warning that names the phase and asks for a sentence.
+
+**5. Documentation.** §3.7 paragraph; `AGENTS.md` §2; plan §7.3's `STATE.md` structure.
+
+**Closure.** The sweep confirms the eleven points close the eleven gaps the baseline found, and it found one more (D-244) — a rule the architecture already implies and nobody had written. **The plan is now executable end to end**: every gate command exists from F0, every type has values, every language has a grammar, every protocol has shapes, every corpus has a format, every named deliverable has a task, and every phase states what it assumes and what it hands on. What is left is building it. Nothing fell. Open: `Q-11` only.
 

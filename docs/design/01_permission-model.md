@@ -67,7 +67,7 @@ Deliberately small. Each maps to enforcement hooks already in the plan.
 
 Three groups are **never promptable** (`SYSTEM_CONFIG`, `FILELESS_EXECUTE`, `SELF_PROTECTION`). This is deliberate: a prompt is an attack surface. If an agent under prompt injection can get a tired user to click "Allow" on "modify /etc/shadow", the whole architecture is decorative. Those require an explicit, out-of-band policy change in settings — never a modal in the flow of work. They are also **never suppressible** (`I-26`).
 
-## 4.1 Verdicts
+### 4.1 Verdicts
 
 Four verdicts, defined by two independent bits: *does it block?* and *does the user see it now?*
 
@@ -111,7 +111,7 @@ Prompt options, in the order they should appear:
 
 **The rationale line is the differentiator.** We show the agent's own declared intent, taken from the Chain-of-Thought captured in F4/F9 — and if the declared intent and the attempted action diverge, the prompt says so and the risk score reflects it. That is the "causal disparity" detection from the research, surfaced at exactly the moment it is useful.
 
-## 5.1 Suppression rules
+### 5.1 Suppression rules
 
 A grant changes **enforcement**. A suppression rule changes **notification**. They are different objects and the UI never conflates them.
 

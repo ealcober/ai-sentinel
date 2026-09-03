@@ -1,15 +1,15 @@
 # STATE — live project status
 
 > **Update this file at the end of every working session.** It is the first thing the next session reads.
-> Last updated: **2026-08-17** · Phase: **pre-F0 (planning complete)** · Code written: **none**
+> Last updated: **2026-08-17** · Phase: **pre-F0 (applying the challenge patches)** · Code written: **none**
 
 ## Where we are
 
-**Planning is complete and has been through a full structural review.** `docs/01_phase5_implementation_plan.md` is ~2,900 lines, Parts 0 through VIII plus Annexes A–F. The repository skeleton, README, CLAUDE.md and the LLM working docs exist. **No product code has been written and the Cargo workspace has no members yet** — that is task `F0.REPO.01`.
+**Planning is complete, structurally reviewed, and challenged end to end.** The plan (`docs/01_phase5_implementation_plan.md`) is ~2,900 lines, Parts 0 through VIII plus Annexes A–F. **No product code has been written and the Cargo workspace has no members yet** — that is task `F0.REPO.01`.
 
-The review (`ADR-03`) found and fixed three structural defects: a circular dependency between the kernel phase and the policy language, horizontal layering that deferred all integration risk to week 10, and an under-specified interface layer. Phases were renumbered **once** as a result; **task IDs freeze at F0 start**.
+Two reviews shaped it. `ADR-03` fixed three structural defects (a circular dependency between the kernel phase and the policy language, horizontal layering that deferred all integration risk to week 10, an under-specified interface layer) and renumbered the phases **once**; **task IDs freeze at F0 start**. Then `docs/02_challenge_ampliacion_sistema.md` challenged all 34 points of the system, producing 209 numbered findings, an R1 register of 18 unverified claims, an R2 register of 13 claims that fell, and ten owner decisions (Q-01…Q-10, all answered).
 
-The next session starts phase **F0**.
+**We are now applying that report's patches, one commit per point.** See "Next up".
 
 ## Done
 
@@ -30,36 +30,42 @@ The next session starts phase **F0**.
 | Permission model design note (multiplatform prompt delivery) | `docs/design/01_permission-model.md` |
 | **ADR-02: Windows driver deferred, WSL2 is the Windows strategy** — applied across plan, README, invariants | `docs/adr/02_*.md` |
 
-## Next up — phase F0
+## Next up
 
-Ordered. Task IDs from Plan Part III.
+**Phase 0 — apply the challenge patches** (in progress). Each closed point in `docs/02_challenge_ampliacion_sistema.md` has a §3 that is an unapplied patch; they are applied in point order, one commit per point. Done so far: renames (Q-04/06/07), P-01 README, P-02 CLAUDE.md, P-03 workspace and `layers.toml`, P-04 `budgets.toml`, P-05 AGENTS.md, P-07 invariants, P-08 permission model, P-09/P-10 ADRs and research. Remaining: P-06 (this file), P-11…P-34 (the plan itself).
 
-1. **`F0.WSL.01`** — probe whether the stock WSL2 kernel ships `CONFIG_BPF_LSM=y`. **Do this first**: it decides whether WSL2 reaches tier L2 or L3, which affects the F3 gate and the installer copy.
+**Then phase F0.** Ordered; task IDs from Plan Part III.
+
+0. `F0.REPO.00` — **done**: the owner initialised the repository before the patches (`b8b7a27`).
+1. **`F0.WSL.01`** — probe the stock WSL2 kernel: `CONFIG_BPF_LSM`, **Landlock presence and ABI**, cgroup v2, systemd, and whether a TPM exists. **Do this first**: it decides whether WSL2 reaches L2 or L3, whether the L2 row reads as written (`R1-04`), and it confirms `R1-18` (no TPM ⇒ software-signed forensics for Windows users).
 2. `F0.REPO.01` / `F0.REPO.05` — populate the Cargo workspace with each crate **in its §3.1 layer**, dependency direction correct from the first commit.
 3. `F0.REPO.03` — `xtask` orchestrator: `build-ebpf`, `verify-budgets`, `verify-layering`, `vm up`.
-4. `F0.CI.04` / `F0.CI.05` / `F0.CI.06` / `F0.CI.07` — budget gate, forbidden-dependency gate, **dependency-direction gate**, doc-drift gate. **All four must exist before F1 code lands**, or the invariants become retrofits nobody enforces.
+4. `F0.GATE.04`…`F0.GATE.08` — budget gate, forbidden-dependency gate, **dependency-direction gate**, doc-drift gate, `verify-docs`. **All must exist before F1 code lands**, or the invariants become retrofits nobody enforces. All run locally (`I-27`); there is no hosted CI.
 5. `F0.VM.01` / `F0.VM.02` / `F0.WSL.02` — VM images and the kernel matrix, including WSL2 with and without systemd.
-6. `F0.SEC.01` — threat model doc recording the `H-05`/`H-06`/`H-12` anti-goals.
+6. `F0.SEC.01` — threat model doc recording the `H-05`/`H-06`/`H-12` anti-goals, the OWASP Agentic Top-10 mapping (Annex G §G.3) and the relationship to the agent's own sandbox (§G.4).
+7. `F0.DOC.01` — write the ten seed memories (Plan §7.4). They record facts already paid for.
+8. `F0.VER.01…18` — one task per R1 register entry, each with its verification command. **The R1 register must be empty at GATE F0.**
 
 **Then F1, and treat it as the highest-leverage phase in the plan.** It ends with the interface freeze (§3.2), after which four tracks run in parallel against contracts that cannot move. An interface defect found in F1 costs hours; the same defect found in F6 invalidates three tracks. Do not compress it.
-
-**Also early, not blocking:** write the seed memories listed in Plan §7.4 — they capture facts already discovered that would otherwise be re-learned expensively.
 
 ## Blocked
 
 Nothing.
 
-## Open decisions needing an ADR
+## Decisions taken, ADRs owed
 
-| # | Question | Leaning |
-|---|---|---|
-| 1 | Is a repo-provided `.aisme/scope.toml` trusted input? | Narrow-only, never widen — same monotonicity principle as `H-12` |
-| 2 | Do `Always` permission grants sync across paired devices? | No — per-machine; syncing grants is a lateral-movement vector |
-| 3 | Is `aisme run` the documented default onboarding path? | **Yes** — it now solves three problems at once: prompt delivery on headless Linux, prompt delivery in WSL2, and session identity |
-| 4 | Tauri v2 mobile maturity | Proceed; `uniffi` fallback pre-specified (ADR-04, to be written) |
-| 5 | Does an `Always` grant on a secret file imply taint declassification? | No — reading is granted, egress stays separately gated |
+All ten open questions were answered by the owner on 2026-08-17 (`docs/02_…` §Owner answers). The ones that need an ADR written to record them:
 
-ADRs still to write: **ADR-04** (Tauri v2 + uniffi fallback) and **ADR-05** (multiplatform detection scope / AI Sentinel sensor architecture). Both are referenced by the plan.
+| Decision | ADR to write |
+|---|---|
+| `.aisme/scope.toml` is untrusted input and may only **narrow** a session's scope | with the F7 patch |
+| Grants and suppression rules are **per-machine, never synced** | with the F7 patch |
+| A grant is **not** a declassification; egress stays separately gated | with the F7 patch |
+| Hardware attestation is **P-256** wherever a hardware key exists; Ed25519 only in software; `key_hw` recorded and shown | with the F5 patch |
+| **Zero hosted-CI cost** — every gate local, nothing on push | recorded as `I-27`; ADR optional |
+| `aisme run` is the documented default onboarding path | with the F8 patch; see `docs/design/02_aisme-run.md` when written |
+
+Still owed from the plan: **ADR-04** (Tauri v2 + `uniffi` fallback) and **ADR-05** (multiplatform detection scope / AI Sentinel sensor architecture).
 
 ## Notes for whoever picks this up
 
@@ -69,4 +75,6 @@ ADRs still to write: **ADR-04** (Tauri v2 + uniffi fallback) and **ADR-05** (mul
 - **Windows is served by WSL2 now** (ADR-02). The native driver spec now lives in **Annex F** marked `[POST]` — do not implement it. Keep the `Sensor`/`Enforcer`/`Adjudicator` trait boundaries (§3.2); they are what makes that decision cheaply reversible.
 - **The hardest unsolved problems**, both with documented fallbacks so neither can block the MVP: prompt delivery on headless/GUI Linux (`docs/design/01_permission-model.md` §7.3) and F4 tier-D offset resolution on stripped BoringSSL.
 - **The benign corpus (§4.8.2) matters as much as the red team corpus.** A product that blocks `npm ci` is dead on arrival. Milestone M5 is the real go/no-go for exactly this reason.
-- The permission model note is still `DRAFT`. It needs to become the F7/F8 specification, and its open questions resolved, before F7 starts.
+- The permission model note is now `SPEC` (`docs/design/01_permission-model.md`) and carries the `warn` verdict and suppression rules. F1, F7 and F8 implement it.
+- **Two primitives make tier L2 real and were missing from the plan**: Landlock (in-kernel file deny) and `BPF_CGROUP_INET*_CONNECT` (in-kernel network deny). Both work without a reboot and without BPF-LSM, which matters because WSL2 — the Windows strategy — is L2 by default. Confirm with `F0.WSL.01`/`F0.VM.02` (`R1-04`, `R1-16`).
+- **Every gate runs locally** (`I-27`). Do not propose GitHub Actions.

@@ -2933,9 +2933,12 @@ Adopted largely from the research, which was sound here.
 | `ChainOfThought` | Model's internal reasoning trace | `inference_id`, `model`, `reasoning_hash`, `declared_intent` |
 | `ToolCall` | Structured invocation emitted by the agent | `tool_name`, `params_hash`, `toolcall_id`, `declared_targets[]` |
 | `Process` | OS instantiation of a ToolCall | `pid`, `tgid`, `ppid`, `exe_path`, `argv_hash`, `cgroup`, `taint` |
-| `File` | Persistent artifact touched | `inode`, `canonical_path`, `path_class`, `content_hash`, `entropy`, `size` |
-| `Socket` | Network conduit | `proto`, `remote_addr`, `remote_port`, `sni`, `bytes_out`, `state` |
-| `Grant` | A permission decision (new — supports the permission model) | `group`, `scope`, `ttl`, `granted_by`, `rule_id` |
+| `File` | Persistent artifact touched | `inode`, `canonical_path`, `path_class`, `content_hash`, `entropy`, `size`, **`taint`** |
+| `Socket` | Network conduit | `proto` (incl. QUIC), `remote_addr`, `remote_port`, `sni`, `ja4`, `ja4h`, `bytes_out`, `state` |
+| `Grant` | A permission decision — changes **enforcement** | `group`, `scope`, `ttl`, `granted_by`, `rule_id` |
+| `SuppressionRule` | Changes **notification only** (`I-26`) | `id`, `match`, `scope`, `ttl`, `origin`, `hits`, `report` |
+| `ToolResult` | What a tool returned — the context plane | `toolcall_id`, `origin` (File\|Web\|Mcp\|Sdk), `content_hash`, `instruction_bearing`, `taint` |
+| `Finding` | A detector fired (Annex G) | `dt`, `severity`, `evidence_refs[]`, `suppressed_by?` |
 
 ### A.2 Edges
 
@@ -2950,6 +2953,10 @@ Adopted largely from the research, which was sound here.
 | `declassified_by` | `Process` → `Grant`/rule | Taint release with justification (`H-13`) |
 | `denied_by` | any → policy rule | Enforcement, retained as evidence |
 | `diverges_from` | `Process` action → `ChainOfThought` | **Causal disparity** — declared intent ≠ physical action |
+| `returned_by` | `ToolResult` → `ToolCall` | Where an untrusted input entered |
+| `detected_by` | any → `Finding` | Which detector fired, and on what evidence |
+| `suppressed_by` | event → `SuppressionRule` | **Notification suppressed. The event is still recorded and still enforced** (`I-26`) |
+| `retried_after_deny` | `Process` action → earlier `denied_by` target | The `DT-05` join: a second route to a target that was already denied |
 
 `diverges_from` is the edge that makes this a security graph rather than an audit log.
 
@@ -2958,13 +2965,13 @@ Adopted largely from the research, which was sound here.
 - The graph is a **DAG**; cycles indicate a correlation bug and fail validation.
 - Every `Process` node has exactly one `executed_as` parent, or is explicitly marked `orphan` (unattributed — a detection-quality signal counted by `aisme.correlation.unmatched`).
 - Ordering uses Lamport/vector clocks normalized to boot-monotonic time (`F5.CO.03`); wall-clock is metadata, never used for ordering.
-- Every node is a Merkle leaf. Blocks close on ToolCall completion or 5 s, whichever comes first.
+- Every node is a Merkle leaf. Blocks close on ToolCall completion or 5 s, whichever comes first. **Each block header carries `key_hw`**, and a block whose signature does not match its claimed backend fails verification.
 
 ---
 
 ## Annex B — AISME-PL policy language
 
-One language, three compiled backends: BPF maps/trie (Linux), Sentinel mobile trie, and the Windows shared-section trie `[POST]`.
+One language, **five** compiled backends: the BPF trie (L3), a **Landlock ruleset** (L2 files), a **cgroup `sock_addr` allowlist** (L2 network), the Sentinel mobile trie, and the Windows shared-section trie `[POST]`.
 
 ### B.1 Sketch
 
@@ -2972,6 +2979,8 @@ One language, three compiled backends: BPF maps/trie (Linux), Sentinel mobile tr
 [session.defaults]
 tier = "L2"
 learning_mode_days = 7
+grant_ttl_days     = 30      # Always-grants and suppression rules decay together
+profile            = "default"   # "strict" makes every group non-promptable
 
 [[rule]]
 id      = "workspace-free"
@@ -2985,7 +2994,30 @@ id      = "system-config-deny"
 group   = "SYSTEM_CONFIG"
 match   = { path_under = ["/etc", "/boot", "/usr/lib/systemd"] }
 verdict = "deny"
-promptable = false             # invariant I-05
+promptable   = false           # invariant I-05
+suppressible = false           # invariant I-26 — a prompt and a silence are both
+                               # attack surfaces on this group
+
+[[rule]]
+id      = "user-scope-install"
+group   = "PACKAGE_INSTALL"
+match   = { exec_class = "package-manager", scope = "user" }
+verdict = "warn"               # recorded, surfaced, non-blocking (§4.1 of the note)
+
+[[rule]]
+id      = "persistence-config"
+group   = "PERSISTENCE_CONFIG"
+match   = { path_glob = [".git/hooks/*", ".git/config", "package.json",
+                         ".cargo/config.toml", ".vscode/tasks.json", ".envrc"] }
+verdict     = "warn"
+escalate_if = { adds_executing_key = true }   # a script that runs later is not noise
+
+[[suppression]]
+match     = { path_under = "${workspace}/node_modules" }
+scope     = "workspace"
+ttl_days  = 30
+origin    = "learned"
+report    = "lm-2026-08-24"    # which learning-mode report produced it
 
 [[rule]]
 id      = "credentials-ask"
@@ -3013,14 +3045,16 @@ event   = "aisme.exfiltration.blocked"
 | `B.2` | Path patterns compile to **pre-canonicalized prefixes** in user space; the kernel does prefix matching only (`F3.PT.03`) |
 | `B.3` | Compilation is deterministic — same source, same bytes, so policy generations are comparable |
 | `B.4` | Atomic publication with a generation counter; readers never lock, never see a torn policy (`F3.PT.02`) |
-| `B.5` | `promptable = false` is enforced at compile time for the three groups in `I-05`; a policy that tries to make them promptable fails to compile |
-| `B.6` | Grants (`Always`/`Session`) compile into the same rule space with TTL, so runtime has one evaluation path |
+| `B.5` | `promptable = false` **and `suppressible = false`** are enforced at compile time for the three groups in `I-05`; a policy that tries to make them promptable or suppressible fails to compile |
+| `B.6` | Grants (`Always`/`Session`) **and suppression rules** compile into the same rule space with TTL, so runtime has one evaluation path. A suppression targeting an `I-05` group or a `CRITICAL` verdict fails to compile (`I-26`) |
+| `B.7` | `verdict = "warn"` compiles to *allow + notify* on every backend. It never compiles to a kernel deny |
+| `B.8` | A backend that cannot express a rule's verdict — Landlock cannot escalate, cgroup hooks cannot prompt — **rejects the rule at compile time with a tier-specific message**. It never drops it silently (general rule 9) |
 
 ---
 
 ## Annex C — Red Flag catalogue
 
-Sixteen classes from §4.8.1. Each becomes an executable scenario in `tests/corpus/redteam/`, and the same corpus is the IRR corpus for §4.7.
+**Twenty-four classes.** Each becomes an executable scenario in `tests/corpus/redteam/` **and a benign twin** in `tests/corpus/benign/`, and the same corpus is the IRR corpus for §4.7. A detection without its scenario, or a scenario without its twin, is incomplete work.
 
 **Scenario file format** (one TOML per scenario):
 
@@ -3034,7 +3068,9 @@ platforms   = ["linux", "wsl2", "android", "ios"]
 [steps]      # scripted agent actions, with declared intent for divergence testing
 [expect]
 verdict      = "deny"
-tier         = "T0"
+tier         = "T0"        # or "T0-L2" where the primitive differs by tier
+detector     = "DT-01"     # which Annex G detector must fire
+benign_twin  = "BN-11"     # the case that must stay silent
 event        = "aisme.exfiltration.blocked"
 max_latency_us = 15
 must_appear_in_compressed_context = true   # anchor guarantee, T4.7.04
@@ -3046,20 +3082,28 @@ must_appear_in_compressed_context = true   # anchor guarantee, T4.7.04
 |---|---|---|
 | RF-01 | Exfiltration: secret read → external egress | Network Slam, T0 |
 | RF-02 | Credential access: SSH keys, keychain, cloud config | Taint + escalate |
-| RF-03 | Fileless execution: `memfd_create` + `execveat` | Deny at `bprm_check_security`, never promptable |
-| RF-04 | Obfuscated generation: base64 script written then run in <200 ms | Escalate |
+| RF-03 | Fileless execution: `memfd_create` + `execveat`, reflective loading, `LD_PRELOAD` in an exec env | `DT-13`. Deny, never promptable |
+| RF-04 | Write-then-exec and fetch-then-exec: base64 script run within N s, `bash -c "$(curl …)"`, `python -c` + decode | `DT-13` escalate; toolchain output paths exempt |
 | RF-05 | System mutation: `/etc`, boot config, systemd units | Deny at T0, never promptable |
 | RF-06 | Workspace escape | Escalate → prompt |
-| RF-07 | Anti-analysis: `/proc/self/maps`, `bpf()`, ptrace self-check | High-severity signal (`H-05`) |
+| RF-07 | Anti-analysis and **self-observation**: `/proc/self/maps`, `bpf()`, ptrace self-check, **and reading AISME's own binaries, config, WAL or process** | `DT-07` warn + severity; never suppressible |
 | RF-08 | Self-defence attack: kill daemon, detach probes | Deny + alert + DEGRADED if partial |
-| RF-09 | Prompt injection into the agent via a malicious README | Causal divergence detected |
+| RF-09 | Instruction-bearing input followed by a first-of-kind action class | `DT-02` escalate. *Reachable only because a fetch labels the tree and `File.taint` carries it to the reader* (H-13 as corrected) |
 | RF-10 | **Prompt injection into the Observer** | Severity never downgrades (`I-04`) |
 | RF-11 | Persistence: cron, systemd timer, `~/.bashrc` | Escalate |
 | RF-12 | Supply chain: injected `postinstall` script | Escalate |
 | RF-13 | Mobile exfiltration: contacts/photos → unknown endpoint | Network Slam at the tunnel |
 | RF-14 | Mobile uncooperative inference (no SDK telemetry) | `aisme.sentinel.uncooperative` |
 | RF-15 | Log flooding to evict evidence | Anchor guarantee holds |
-| RF-16 | TOCTOU path swap | Kernel-resolved path wins |
+| RF-16 | TOCTOU path swap | Kernel-resolved path wins at L3; `ADDFD` delivers the validated fd at L2 |
+| **RF-17** | **Suppression must not blind**: a rule matching a benign-looking pattern, with an exfiltration hidden inside it | Event in the WAL with `suppressed_by`, chain valid, verdict identical, **zero notifications** (`I-26`) |
+| **RF-18** | **Secret-in-prompt**: secret bytes appear in the outbound request to the allowed provider | `DT-01` warn or escalate by class. Provenance match, never entropy alone |
+| **RF-19** | **MCP tool poisoning / rug pull**: instruction-bearing description; description changed after approval; cross-server name shadowing | `DT-03` escalate on post-approval change; warn on a declared version bump |
+| **RF-20** | **Retry-by-indirection**: after a deny, the same target reached by another lineage, syscall family or path spelling | `DT-05` escalate on the second attempt, deny on the third |
+| **RF-21** | **Config-as-code persistence**: `.git/hooks`, `core.hooksPath`, `package.json` scripts, `.cargo/config.toml` runner, `tasks.json runOn` | `DT-06` warn; escalate when the write adds an executing key |
+| **RF-22** | **Secret-to-VCS**: a `SECRET_MATERIAL`-labelled file staged or committed; `.gitignore` weakened | `DT-08` escalate |
+| **RF-23** | **Post-hoc narrative inconsistency**: a destructive event with no covering ToolCall, or an assistant message asserting the opposite | `DT-04(c)` escalate, severity HIGH |
+| **RF-24** | **Self-permission edit**: the agent writes `.aisme/**`, `.claude/settings.json`, `.mcp.json`, or widens `scope.toml` | `DT-14` escalate; `.aisme/**` is `SELF_PROTECTION` |
 
 ---
 
@@ -3067,18 +3111,22 @@ must_appear_in_compressed_context = true   # anchor guarantee, T4.7.04
 
 ### D.1 Linux / WSL2 service tiers
 
-| Capability | Probe | L1 | L2 | L3 |
-|---|---|---|---|---|
-| tracepoints / kprobes | kernel ≥ 5.4 | ✅ | ✅ | ✅ |
-| BTF / CO-RE | `/sys/kernel/btf/vmlinux` | ⚠️ BTFHub fallback | ✅ | ✅ |
-| `BPF_MAP_TYPE_RINGBUF` | kernel ≥ 5.8 | ❌ perf buffer fallback | ✅ | ✅ |
-| uprobes (semantic layer) | — | ✅ | ✅ | ✅ |
-| `seccomp_unotify` (T1) | kernel ≥ 5.9 | ❌ | ✅ | ✅ |
-| cgroup v2 freezer (T2) | cgroup2 mounted, ≥ 5.2 | ❌ | ✅ | ✅ |
-| BPF-LSM enforcement | `bpf` in `/sys/kernel/security/lsm` | ❌ | ❌ | ✅ |
-| **Blocking capability** | | none | file/exec/net via seccomp | + LSM-layer, harder to bypass |
+| Capability | Probe | L1 | L2- | L2 | L3 |
+|---|---|---|---|---|---|
+| tracepoints / kprobes | kernel ≥ 5.4 | ✅ | ✅ | ✅ | ✅ |
+| BTF / CO-RE | `/sys/kernel/btf/vmlinux` | ⚠️ BTFHub fallback | ✅ | ✅ | ✅ |
+| `BPF_MAP_TYPE_RINGBUF` | kernel ≥ 5.8 | ❌ perf buffer fallback | ✅ | ✅ | ✅ |
+| uprobes (semantic layer) | — | ✅ | ✅ | ✅ | ✅ |
+| `seccomp_unotify` (T1) | kernel ≥ 5.9 | ❌ | ✅ | ✅ | ✅ |
+| cgroup v2 freezer (T2) | cgroup2 mounted, ≥ 5.2 | ❌ | ✅ | ✅ | ✅ |
+| **Landlock** (T0 file deny) | `landlock` in the active LSM list, ≥ 5.13 | ❌ | ❌ | ✅ | ✅ |
+| **cgroup `sock_addr`** (T0 net deny) | cgroup v2 + `CAP_NET_ADMIN`, ≥ 4.17 | ❌ | ❌ | ✅ | ✅ |
+| Landlock audit record | kernel ≥ 6.15 | — | — | ⚠️ inferred from `sys_exit` below 6.15 | same |
+| BPF-LSM enforcement | `bpf` in `/sys/kernel/security/lsm` | ❌ | ❌ | ❌ | ✅ |
+| Hardware signing key | TPM 2.0 present | affects `key_hw`, not the tier | | | |
+| **Blocking capability** | | none | escalate/deny via seccomp only — every watched path decision traps | **in-kernel file deny + in-kernel network deny + seccomp escalation** | + LSM layer, harder to bypass |
 
-**WSL2** reaches **L2 out of the box**; L3 depends on `F0.WSL.01` (whether the stock kernel has `CONFIG_BPF_LSM=y`) and on setting `kernelCommandLine=` in `.wslconfig`.
+**WSL2** reaches **L2** if Landlock is active in the stock kernel (`F0.WSL.01`, `R1-04`), otherwise `L2-`. L3 additionally needs `CONFIG_BPF_LSM=y` and `kernelCommandLine=` in `.wslconfig`. **WSL2 exposes no TPM**, so forensics there are software-signed and roots are anchored externally by default (`R1-18`, risk R-18).
 
 ### D.2 Mobile (from §2.20.2)
 
@@ -3093,6 +3141,8 @@ Deployment modes: **U** unmanaged · **M** managed (Device Owner / Supervised) �
 | Tool-call veto | ✅ SDK | ✅ | ✅ | ✅ SDK | ✅ |
 | File mutation | ⚠️ SDK-reported | ✅ managed data | ✅ | ⚠️ SDK | ⚠️ SDK |
 | Process/exec | ⚠️ lifecycle | ✅ install control | ✅ | ❌ | ❌ |
+| Transport visibility | ✅ TCP+SNI; **QUIC and ECH: shape-only, lower confidence, stated** | same | same | same | same |
+| SDK transport | bound service | same | same | **loopback socket** (App Groups are same-team) | same |
 
 ### D.3 Degradation rule
 
@@ -3109,22 +3159,31 @@ Deployment modes: **U** unmanaged · **M** managed (Device Owner / Supervised) �
 | **AI Sentinel SDK** | Embeddable library giving third-party AI apps first-class instrumentation |
 | **AISME-PL** | The policy language (Annex B) |
 | **Anchor** | An event selected for full-fidelity inclusion in compressed Observer context |
+| **Attestation (SDK)** | A per-install signature proving which SDK instance sent an event. It prevents cross-app spoofing; **it does not make a hostile host honest** — that is caught by cross-checking declared intent against observed flows |
+| **Benign twin** | The legitimate case that resembles a red-flag scenario and must stay silent. Every `RF-xx` has one |
+| **Composition root** | `aisme-agentd::platform` — the single module allowed to name a concrete adapter or use `cfg(target_os)` |
+| **Detector** | A pure function over the causal graph that emits a `Finding` (Annex G). No platform variants, no learned weights in a verdict path |
 | **AOCP** | Agent-OS Communication Protocol — the research's proposed standard, shipped in practice as the AI Sentinel SDK |
 | **Causal disparity** | Declared intent (CoT) diverging from physical action; the core detection primitive |
 | **Circuit Breaker** | Synchronous interruption of an operation pending a verdict |
 | **CoT** | Chain-of-Thought — the model's reasoning trace |
 | **Declassification** | Explicit, recorded release of a taint |
 | **DEGRADED** | State where AISME cannot fulfil its declared capability; reported loudly |
-| **Forensic Risk Score** | 0–10 score from the Observer LLM; advisory, never authorizing |
+| **Forensic Risk Score** | 0–10 score from the Observer LLM; advisory, never authorizing. Distinct from the deterministic **session risk** (`DT-09`), which is what policy severity and the prompt display |
 | **IRR** | Information Retention Rate — detection recall on compressed vs. full context |
+| **`key_hw`** | Which backend signed a forensic block: `Tpm2P256`, `SecureEnclaveP256`, `StrongBoxP256` or `SoftwareEd25519`. Recorded per block and shown in the UI |
+| **Landlock** | Unprivileged, inheritable, monotonic LSM giving in-kernel path-based deny without a reboot. The L2 file primitive |
 | **Learning mode** | Initial period where enforcement is simulated (`WOULD_BLOCK`) |
 | **Network Slam** | Imperative denial of an egress connection on taint conditions |
 | **Reference workload** | The normative benchmark defining "<3% CPU" (§2.22) |
 | **SAC-lite** | Deterministic semantic compression pipeline (L2–L5), replacing the paper's SAC |
-| **Service tier** | L1 observe / L2 partial enforce / L3 full enforce |
+| **Service tier** | `L1` observe · `L2-` partial, seccomp only · `L2` partial with in-kernel deny (Landlock + cgroup hooks) · `L3` full |
+| **Signal plane** | One of the three sources a detector joins across: intent (prompts, CoT, tool calls), action (file, exec, socket), context (what was read, with provenance) |
+| **Suppression rule** | Silences a notification. Never removes a record and never weakens enforcement (`I-26`) |
 | **T0 / T1 / T2** | Latency tiers: in-kernel / daemon round trip / cognitive adjudication |
 | **Taint** | Category bitmask tracking sensitive data flow through a process tree |
 | **Tamper-evident** | Modification is detectable — *not* the same as immutable (`H-17`) |
+| **Warn** | A verdict that allows and records, and surfaces a non-blocking notice. Never a modal. Budgeted separately from prompts |
 | **WOULD_BLOCK** | Learning-mode record of an action that would have been blocked |
 
 ---
@@ -3139,9 +3198,9 @@ Deployment modes: **U** unmanaged · **M** managed (Device Owner / Supervised) �
 >
 > The content below is retained verbatim as the specification for if and when native Windows is revived. Task IDs were retagged `F3.*` → `WIN.*` when the phase moved here, so that `F3` could be reused for the Linux kernel phase. It was reviewed and is believed sound; the blocker is commercial, not technical. Anything referencing `aisme-flt.sys`, `FltSendMessage`, ETW or Driver Verifier is inactive for the MVP, including invariants `I-11` and `I-13` and tests `T4.3.*`.
 
-**Objective:** functional parity with F2 under NT constraints, with a driver small enough to audit by hand (H-14).
+**Objective:** functional parity with F3 under NT constraints, with a driver small enough to audit by hand (H-14).
 
-#### F3.1 `aisme-flt.sys` (C11, WDK, < 3,000 LoC)
+#### WIN.1 `aisme-flt.sys` (C11, WDK, < 3,000 LoC)
 
 | ID | Task | Notes |
 |---|---|---|
@@ -3157,7 +3216,7 @@ Deployment modes: **U** unmanaged · **M** managed (Device Owner / Supervised) �
 | `WIN.DRV.10` | No-daemon policy: last-published policy, then configured fail-open/fail-closed, Event Log entry | Never implicit |
 | `WIN.DRV.11` | Clean unload path (`FilterUnloadCallback`), drain in-flight, no leaked contexts | Driver Verifier clean |
 
-#### F3.2 User-space Windows layer (Rust)
+#### WIN.2 User-space Windows layer (Rust)
 
 | ID | Task |
 |---|---|
@@ -3170,7 +3229,7 @@ Deployment modes: **U** unmanaged · **M** managed (Device Owner / Supervised) �
 
 **Explicitly `[CUT]` on Windows:** Detours/DLL injection into the agent process (research §Windows subsystem). It violates the read-only invariant (H-06), triggers EDR, and breaks on protected/anti-tamper processes. Semantic capture on Windows uses the F4 ladder instead.
 
-**GATE F3**
+**GATE WIN**
 ```powershell
 # In the Windows test VM
 cargo xtask win verify-driver      # Driver Verifier: standard + special pool + low-resource sim, 4 h clean

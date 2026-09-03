@@ -1,7 +1,7 @@
 # Design Note — Session Permission Model ("Android-style permissions for AI agents")
 
-> **Status**: `DRAFT` — captured 2026-08-17, to be developed in the next session.
-> **Owner**: architecture · **Feeds**: Phase F7 (enforcement), F8 (desktop UI), F9/F10 (mobile), Annex B (AISME-PL)
+> **Status**: `SPEC` — this note is the specification F1.PL, F7 and F8 implement.
+> **Owner**: architecture · **Feeds**: F1 (policy grammar, verdict enum), F7 (permission surface), F8 (prompt UI and `aisme-uiagent`), F10/F11 (mobile), plan Annex B and Annex G
 > **Origin**: direct product requirement from the project owner.
 
 ## 1. The requirement
@@ -36,7 +36,7 @@ SessionScope {
   read_extra:       [canonical paths]      // toolchain, caches, ~/.cargo, node_modules
   network_allow:    [domains/CIDRs]        // AI provider, package registries, project hosts
   exec_allow:       [binaries/classes]     // compilers, package managers, git, test runners
-  tool_allow:       [tool names]           // for SDK/tool-call layer (F11)
+  tool_allow:       [tool names]           // for the SDK/tool-call layer (F9)
   device_allow:     [capabilities]         // mobile: camera, contacts, location…
 }
 ```
@@ -46,7 +46,7 @@ Populated from, in precedence order:
 2. **Detection** — inferred from the working directory, VCS root, detected toolchain, and the provider endpoint the agent actually talks to.
 3. **Baseline profile** — shipped defaults per agent type (a coding agent needs a compiler; a chat client does not).
 
-**Open question for the next session:** does a checked-in `.aisme/scope.toml` constitute a trusted input? A malicious repository could ship one that grants itself broad scope. Leaning towards: repo-provided scope files can only ever *narrow* the effective scope, never widen it — the same monotonicity principle used for the Observer LLM in `H-12`. Needs an ADR.
+**Decided (owner, 2026-08-17; ADR to follow with the F7 patch):** a repository-provided `.aisme/scope.toml` is **untrusted input and may only narrow** the effective scope. Any key that would widen it — adding a root, an allowed host, an allowed binary — is ignored and logged as `aisme.scope.widen_attempt` with the repository path. This is the same monotonicity used for the Observer in `H-12`: a cloned malicious repository must not be able to grant itself `~/.ssh`.
 
 ## 4. Permission groups (user-facing taxonomy)
 
@@ -65,7 +65,22 @@ Deliberately small. Each maps to enforcement hooks already in the plan.
 | `SELF_PROTECTION` | Anything targeting AISME itself | `lsm/bpf`, `ptrace`, `task_kill`, `ObRegisterCallbacks` | **Deny** (never ask) |
 | `DEVICE` *(mobile)* | Camera, contacts, location, photos accessed by an AI app | Sentinel SDK + platform | **Ask** |
 
-Three groups are **never promptable** (`SYSTEM_CONFIG`, `FILELESS_EXECUTE`, `SELF_PROTECTION`). This is deliberate: a prompt is an attack surface. If an agent under prompt injection can get a tired user to click "Allow" on "modify /etc/shadow", the whole architecture is decorative. Those require an explicit, out-of-band policy change in settings — never a modal in the flow of work.
+Three groups are **never promptable** (`SYSTEM_CONFIG`, `FILELESS_EXECUTE`, `SELF_PROTECTION`). This is deliberate: a prompt is an attack surface. If an agent under prompt injection can get a tired user to click "Allow" on "modify /etc/shadow", the whole architecture is decorative. Those require an explicit, out-of-band policy change in settings — never a modal in the flow of work. They are also **never suppressible** (`I-26`).
+
+## 4.1 Verdicts
+
+Four verdicts, defined by two independent bits: *does it block?* and *does the user see it now?*
+
+| Verdict | Blocks | User sees it now | Use |
+|---|---|---|---|
+| `allow` | no | no | Inside scope. Recorded, aggregated, silent |
+| **`warn`** | **no** | **yes** | Recorded and surfaced as a non-blocking notice: the session timeline, plus a notification where the channel supports one. **Never a modal.** Coalesced per intent |
+| `escalate` | yes | yes | The prompt of §5. Blocks pending a verdict, within the channel's budget |
+| `deny` | yes | record only | Blocked by policy. Visible in the timeline, not as an interruption |
+
+**`warn` is the verdict that makes deny-by-default liveable.** Without it every "I want to know but not be interrupted" case collapses into either silence or a modal. It counts against a separate budget — `warns_per_day`, target 10, hard 30 — and **not** against `prompts_per_day`, because a warn costs attention but not a decision.
+
+Group defaults gain `warn` where it is the right posture: `PACKAGE_INSTALL` is `warn` for a user-scope install and `ask` for a system-scope one; `NETWORK_EGRESS` is `warn` for a host already seen in this workspace and `ask` the first time.
 
 ## 5. Grant lifecycle
 
@@ -81,7 +96,7 @@ Prompt options, in the order they should appear:
 │    session as handling secrets and restrict outbound network.│
 │                                                              │
 │  [ Deny ]  [ Allow once ]  [ Allow this session ]  [ Always ]│
-│                                            Risk score: 6/10  │
+│                                     Policy severity: HIGH   │
 └──────────────────────────────────────────────────────────────┘
 ```
 
@@ -90,9 +105,30 @@ Prompt options, in the order they should appear:
 - **Allow this session** — until the session ends.
 - **Always** — creates a persisted AISME-PL rule. Must show *exactly* what rule it will create, and must be revocable in one click from the UI.
 
-**Decay (Android auto-revoke analogue):** `Always` grants expire after N days of non-use (default 30) and are re-prompted. Session grants die with the session. This prevents a workstation from accumulating a permission surface nobody remembers approving.
+**Decay (Android auto-revoke analogue):** `Always` grants expire after a period of non-use (`grant_ttl_days`, shipped default 30 — plan Annex B) and are re-prompted. Session grants die with the session. This prevents a workstation from accumulating a permission surface nobody remembers approving.
 
-**The rationale line is the differentiator.** We show the agent's own declared intent, taken from the Chain-of-Thought captured in F4/F11 — and if the declared intent and the attempted action diverge, the prompt says so and the risk score reflects it. That is the "causal disparity" detection from the research, surfaced at exactly the moment it is useful.
+**The score line shows deterministic policy severity, never the Observer's opinion by itself.** The Observer is asynchronous (`H-11`) and may not have answered when the prompt is drawn; when it has answered and has *raised* severity, its reason is appended. A lower Observer score is never displayed (`I-04`) — a prompt that shows "low risk" next to an Allow button is the injection path of `H-12` delivered through the UI.
+
+**The rationale line is the differentiator.** We show the agent's own declared intent, taken from the Chain-of-Thought captured in F4/F9 — and if the declared intent and the attempted action diverge, the prompt says so and the risk score reflects it. That is the "causal disparity" detection from the research, surfaced at exactly the moment it is useful.
+
+## 5.1 Suppression rules
+
+A grant changes **enforcement**. A suppression rule changes **notification**. They are different objects and the UI never conflates them.
+
+```
+SuppressionRule {
+  id, match,                    // same matcher language as grants
+  scope:  Session | Workspace | Machine,
+  ttl,                          // decays like a grant (grant_ttl_days)
+  origin: Learned | Manual | Shipped,
+  hits:   u64,                  // shown in the UI; a rule nobody hits is dead weight
+  report: Option<ReportId>,     // for Learned: which learning-mode report produced it
+}
+```
+
+**The constraint is invariant `I-26`:** a suppression rule silences a `warn` and timeline noise, and nothing else. The suppressed event is still sensed, correlated, written to the WAL, Merkle-chained and exported carrying `suppressed_by = <rule_id>`, and it is enforced exactly as it would be without the rule. A rule that targets an `I-05` group, an `escalate`, a `deny` or a `CRITICAL` verdict **fails to compile**.
+
+*Learned* rules come from the end-of-learning-mode report when the user bulk-accepts a pattern; they carry the report id so a reviewer can see why something went quiet. Every rule is listed in the UI with its hit count and expiry and is revocable in one click. Suppression rules, like grants, are **per-machine and never synced** to paired devices.
 
 ## 6. Prompt fatigue is the primary failure mode
 
@@ -220,19 +256,26 @@ Not in Phase 5, but the shape is known: Endpoint Security framework for enforcem
 |---|---|---|
 | Grant model, decay, persistence | F7 | Extend AISME-PL (Annex B) with grant scope + TTL |
 | Prompt coalescing by intent | F7 | New: intent-grouping layer above the escalation queue |
-| Desktop prompt UI | F8 | `F8.UI.04` already covers the modal; extend to the 4-option grant model |
-| Mobile prompt UI | F9 | Inherits §2.20.5 channel-aware timeouts; remote `Always` should be forbidden |
+| Desktop prompt UI | F8 | `F8.UI.04` extended to the four-option grant model and the policy-severity line |
+| Mobile prompt UI | F11 | Inherits §2.20.5 channel-aware timeouts; remote `Always` is forbidden |
 | Sentinel device permissions | F10 | `DEVICE` group |
-| Tool-call level prompts | F11 | SDK veto is the cleanest prompt point — it has the intent natively |
-| Prompt-per-day budget | Part IV | New CI metric, added to the benign corpus gate |
-| **`aisme-uiagent`** (per-session prompt agent) | F8 | **New component** — see §7.1. Required on Windows, Linux and macOS |
+| Tool-call level prompts | F9 | SDK veto is the cleanest prompt point — it has the intent natively |
+| Prompt-per-day budget | Part IV | New gate metric on the benign corpus, alongside `warns_per_day` |
+| **`warn` verdict** and its budget | F1 (verdict enum), F7 (defaults), F8 (timeline and notices) | New — §4.1 |
+| **Suppression rules** (type, engine, learned-rule generation, UI list) | F1 (type + compile-time constraint), F7 (engine), F8 (UI) | New — §5.1, constrained by `I-26` |
+| **`aisme-uiagent`** (per-session prompt agent) | F8 | **New component** — see §7.1. Required on Linux (MVP); the Windows-native and macOS implementations are `[POST]` with their platforms |
 | Notification channels (toast / freedesktop / UN) | F8, F9 | Per-platform, with capability probing |
 | Terminal prompt in `aisme run` | F8 | Solves headless Linux and gives perfect session identity |
 
-## 9. Open questions for the next session
+## 9. Decisions and remaining questions
 
-1. Trust model for repo-provided `.aisme/scope.toml` (leaning: narrow-only, needs ADR).
-2. Does `Always` sync across paired devices, or is it per-machine? (Leaning: per-machine; syncing grants is a lateral-movement vector.)
-3. Interaction between grants and taint declassification (`H-13`) — is an `Always` grant on `.env` also an implicit declassification? (Leaning: no. Reading is granted; egress remains separately gated.)
-4. Should there be a "paranoid mode" that makes every group non-promptable for regulated environments?
-5. Prompt UX when the agent is running unattended (CI, overnight) — currently falls to policy default; is that enough?
+**Decided by the owner, 2026-08-17:**
+
+1. **`.aisme/scope.toml` is narrow-only.** A repository may restrict a session's scope, never extend it (§3). ADR to be written with the F7 patch.
+2. **Grants and suppression rules are per-machine and never synced** to paired devices. Syncing a permission is a lateral-movement vector.
+3. **A grant is not a declassification.** An `Always` grant on `.env` permits the *read*; egress remains gated by the compound Network Slam condition (`H-13`).
+4. **"Paranoid mode" ships as a policy profile, not a mode**: `profile = "strict"` makes every group non-promptable, and it is one AISME-PL file rather than a code path.
+
+**Still open:**
+
+5. Prompt UX when the agent runs unattended (CI, overnight). It currently falls to the policy default, which is `deny`-on-timeout for escalate-class operations. With `warn` now available, warns are batched into the run report instead of being dropped. Whether that is sufficient for an overnight agent is unproven and needs a real unattended run to answer.

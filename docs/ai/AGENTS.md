@@ -5,13 +5,17 @@ This is the operational protocol. `CLAUDE.md` at the repository root is the shor
 ## 1. Session protocol
 
 ### On start
+
+The canonical list lives in `CLAUDE.md`; it is repeated here verbatim and a gate checks the two agree.
+
 ```
 1. CLAUDE.md                    ← rules and forbidden patterns
-2. docs/ai/STATE.md             ← what is actually done; trust it over assumptions
-3. docs/ai/invariants.md        ← what you may not break
-4. docs/01_phase5_implementation_plan.md  ← find your task by ID
-5. docs/adr/ (relevant only)    ← why things are the way they are
-6. docs/ai/memory/ (skim)       ← durable non-obvious facts
+2. docs/ai/AGENTS.md            ← you are here; the definition of done is §2 below
+3. docs/ai/STATE.md             ← what is actually done; trust it over assumptions
+4. docs/ai/invariants.md        ← what you may not break
+5. docs/01_phase5_implementation_plan.md  ← find your task by ID
+6. docs/adr/ (relevant only)    ← why things are the way they are
+7. docs/ai/memory/ (skim)       ← durable non-obvious facts
 ```
 
 ### During
@@ -35,7 +39,8 @@ A task is done when **all** of these hold. Not four out of five.
 - [ ] Code compiles clean with `clippy -D warnings`.
 - [ ] Tests exist and pass, including at least one negative/adversarial case.
 - [ ] Relevant invariants (`docs/ai/invariants.md`) verified, not assumed.
-- [ ] Budget gate passes if the task touches `agentd`, the driver, or a mobile sensor.
+- [ ] Budget gate passes if the task touches `agentd`, `forensicd`, the BPF programs, or a mobile sensor (`sentinel-core` or a platform shim).
+- [ ] **If the task touches an architectural boundary** (ADR-01 decision 3): the relevant ADR was re-read and is still true, or a superseding ADR was written.
 - [ ] The phase gate command output is **shown**, not summarized.
 - [ ] `STATE.md` updated.
 
@@ -59,16 +64,20 @@ A phase is done when its `GATE F<n>` block passes in full. Code that works but w
 | Loosen a budget to make a test pass | The budget is the product |
 | Delete or renumber a task ID | `I-23` |
 | Weaken the benign corpus gate to ship | `I-15` |
+| Add a workflow that triggers on push, pull request or schedule | `I-27` — this project incurs zero hosted-CI cost |
+| Let a suppression rule remove evidence or weaken enforcement | `I-26` — suppression is notification-only |
 | Commit or push without being asked | Standard |
 
 ## 5. Memory discipline
 
-`docs/ai/memory/` holds **durable, non-obvious facts** — one file per fact, with a short frontmatter block. Write there when you learn something that:
+`docs/ai/memory/` holds **durable, non-obvious facts** — one file per fact, with the frontmatter defined in plan §7.4 (`name`, `description`, `type`). Write there when you learn something that:
 - was expensive to discover (a platform limitation, a kernel behaviour, a toolchain quirk), **and**
 - is not already recorded in the plan, the code, or an ADR, **and**
 - will still be true and relevant in a month.
 
 Do **not** write there: task status (that is `STATE.md`), architectural decisions (those are ADRs), or anything the code already says.
+
+Files in `docs/ai/` are instruction files, referenced by fixed name from `CLAUDE.md`, and are **exempt** from the `NN_` numbering that applies to the rest of `docs/`. A challenge report (`docs/NN_*.md`) is a fourth kind: it holds *what is wrong and what the patch is*, its points are append-only, and it is a proposal until its patches are applied.
 
 ## 6. When to ask the human
 
@@ -81,10 +90,10 @@ Do not ask for permission to do the work you were asked to do. Pick the sensible
 
 ## 7. Domain context you will need
 
-**Latency tiers.** T0 = in-kernel, deterministic, <15 µs p99. T1 = user-space round trip, <1 ms. T2 = frozen process + human/LLM, seconds. Know which tier you are working in; the wrong assumption produces the wrong design.
+**Latency tiers.** T0 = in-kernel, deterministic, <15 µs p99 (L3) / <20 µs (L2). T1 = user-space round trip, <1 ms. T2 = frozen process + human/LLM, seconds. Canonical values in `budgets.toml`. Know which tier you are working in; the wrong assumption produces the wrong design.
 
 **The two-process split.** `agentd` is the hot path with the 50 MB budget; `forensicd` is the cold path with DuckDB, compression and the Observer. Never put cold-path work in `agentd`.
 
-**Platform tiers.** Linux L3 (full enforce, needs BPF-LSM and a reboot), L2 (enforce via `seccomp_unotify`, no reboot), L1 (observe only). The MVP quality target is that **L2 is genuinely useful**, because most users will not reboot.
+**Platform tiers.** Linux L3 (full enforce, needs BPF-LSM and a reboot), **L2** (no reboot: in-kernel file deny via Landlock, in-kernel network deny via cgroup connect hooks, escalation via `seccomp_unotify`), L2- (seccomp only, no Landlock), L1 (observe only). The MVP quality target is that **L2 is genuinely useful**, because most users will not reboot — and WSL2, the Windows strategy, is L2 by default.
 
 **The mobile asymmetry.** Desktop can ask before the fact; mobile denies first and grants retroactively. That is a platform constraint, not a bug — see `docs/design/01_permission-model.md` §7.

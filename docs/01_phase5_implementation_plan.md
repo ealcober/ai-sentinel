@@ -1768,24 +1768,35 @@ cargo xtask test-failsafe                  # kill -9 agentd mid-verdict → defi
 
 ### F8 — Desktop control plane `[MVP]`
 
-| ID | Task |
-|---|---|
-| `F8.API.01` | Control-plane protocol (JSON-RPC over UDS/Named Pipe): `subscribe`, `getSession`, `getGraph`, `respondEscalation`, `setPolicy`, `pairDevice` — **this is the same protocol F9 consumes remotely**, defined once |
-| `F8.API.02` | Protocol schema in one place (`aisme-proto`), codegen for TS types |
-| `F8.UI.01` | Tauri v2 desktop shell + React/TS UI |
-| `F8.UI.02` | Session timeline: CoT overlaid chronologically on syscalls and network |
-| `F8.UI.03` | Causal graph view (DAG) with mutation/read colour differentiation |
-| `F8.UI.04` | **Circuit Breaker modal**: non-disruptive, logically blocking, one-click Allow/Deny, forensic-analyst-grade phrasing |
-| `F8.UI.05` | Semantic flamegraph view |
-| `F8.UI.06` | Learning-mode report and rule-promotion UI |
-| `F8.UI.07` | Capability/degradation banner (L1/L2/L3, `DEGRADED`) |
-| `F8.CLI.01` | `aisme run -- <cmd>` (preferred session registration), `status`, `sessions`, `verify`, `policy`, `pair`, `disable` |
-| `F8.CLI.02` | `top`-like TUI mode for headless use |
-| `F8.A11Y.01` | Accessibility pass: keyboard-only adjudication, screen-reader labels, contrast — the modal is a security control and must be operable by everyone |
+**Split into two tracks** (§3.7): **F8a** runs in parallel from F2 because it depends only on `aisme-proto`; **F8b** runs after F7 because the adjudication surface needs the permission engine. `aisme run` is specified once in `docs/design/02_aisme-run.md` — it is defined across seven tasks in five phases and needs a single owner.
+
+| ID | Track | Task |
+|---|---|---|
+| `F8.API.01` | F8a | Control-plane protocol (JSON-RPC over UDS; Named Pipe `[POST]`): `subscribe`, `getSession`, `getGraph`, `respondEscalation`, `setPolicy`, `pairDevice` — **this is the same protocol F11 consumes remotely**, defined once |
+| `F8.API.02` | F8a | Protocol schema in one place (`aisme-proto`), codegen for TS types |
+| `F8.UI.01` | F8a | Tauri v2 desktop shell + React/TS UI |
+| `F8.UI.02` | F8a | Session timeline: CoT overlaid chronologically on syscalls and network |
+| `F8.UI.03` | F8a | Causal graph view (DAG) with mutation/read colour differentiation |
+| `F8.UI.04` | F8b | **Circuit Breaker modal**: four options (Deny · Allow once · Allow this session · Always), showing exactly the rule an `Always` would create; **policy-severity line, with the Observer's contribution shown only when it raises** (`I-04`); default focus on Deny; timeout = the channel budget |
+| `F8.UI.05` | F8a | Semantic flamegraph view |
+| `F8.UI.06` | F8b | Learning-mode report and rule-promotion UI; bulk-accept produces `Learned` suppression rules carrying the report id |
+| `F8.UI.07` | F8a | Capability/degradation banner (`L1` / `L2-` / `L2` / `L3`, `DEGRADED`), the signing backend (`key_hw`), and the WSL2 coverage boundary — native Windows processes are not covered |
+| `F8.CLI.01` | F8a | CLI surface of `aisme run -- <cmd>` (the documented default onboarding path), plus `status`, `sessions`, `verify`, `policy`, `pair`, `disable`. Behaviour: `docs/design/02_aisme-run.md` |
+| `F8.UA.01` | F8b | **`aisme-uiagent`**: the per-user-session process that owns every prompt, a systemd `--user` unit on Linux, speaking `F8.API.01`. **The engine never draws UI** |
+| `F8.UA.02` | F8b | Notification channel: `org.freedesktop.Notifications` with action buttons, a runtime capability probe for `actions`, and a modal fallback. On Wayland focus cannot be forced, so a modal is always paired with a notification |
+| `F8.UI.08` | F8b | Grants and suppressions management: active rules, origin, hit counts, expiry, one-click revoke. **Listed separately and never conflated** — a grant changes enforcement, a suppression changes notification |
+| `F8.UI.09` | F8b | Warn notices: coalesced per intent, shown in the timeline and as a notification where available. **Never a modal** |
+| `F8.CLI.02` | F8a | `top`-like TUI mode for headless use |
+| `F8.A11Y.01` | F8b | Accessibility pass: keyboard-only adjudication, screen-reader labels, contrast — the modal is a security control and must be operable by everyone |
 
 **GATE F8**
 ```bash
-cargo xtask test-ui-e2e             # Playwright: escalation → modal → deny → syscall denied
+cargo xtask test-ui-e2e             # escalation → four-option modal → deny → syscall denied
+cargo xtask test-ui-e2e --warn      # warn → coalesced notice, zero modals
+cargo xtask test-ui-e2e --suppression-revoke
+cargo xtask test-uiagent-chaos      # kill uiagent mid-prompt → policy default within budget,
+                                    # local_ui_attached = false emitted
+cargo xtask test-observer-score-never-lower
 cargo xtask test-protocol-contract  # TS types and Rust types provably in sync
 cargo xtask test-a11y               # axe-core on all views, 0 critical violations
 ```
@@ -1800,9 +1811,11 @@ cargo xtask test-a11y               # axe-core on all views, 0 critical violatio
 |---|---|---|
 | `F9.SDK.01` | Core SDK in Rust with `uniffi` bindings → Kotlin, Swift; plus TS/JS binding for React Native and Node agents | One implementation |
 | `F9.SDK.02` | Public API: `session_start`, `record_prompt`, `record_cot`, `check_tool_call` (→ verdict), `record_result`, `session_end` | Deliberately small |
-| `F9.SDK.03` | **Synchronous tool-call veto**: `check_tool_call()` returns `ALLOW`/`DENY`/`ESCALATE` within the 50 µs budget for cached policy, escalating asynchronously | The semantic Circuit Breaker |
-| `F9.SDK.04` | Per-install attestation key; all SDK events signed so a hostile app cannot forge benign telemetry | Anti-spoofing |
-| `F9.SDK.05` | Transport to the local Sentinel app (Android: bound service / iOS: App Group + URL scheme), with graceful no-op when Sentinel is absent | The SDK must never break its host app |
+| `F9.SDK.03` | **Synchronous tool-call veto**: `check_tool_call()` returns `ALLOW` / `WARN` / `DENY` / `ESCALATE` within the 50 µs budget for cached policy, escalating asynchronously. `WARN` carries a display payload and never blocks | The semantic Circuit Breaker |
+| `F9.SDK.04` | Per-install attestation key: proves **which SDK instance** emitted an event and prevents cross-app spoofing. **It does not make a hostile host honest** — the host owns the key and can sign whatever it likes; that is `F9.SDK.09`'s job | Anti-spoofing, honestly scoped (`I-16`) |
+| `F9.SDK.09` | Consistency check: SDK-declared network and tool intents versus S1-observed flows for the same app; a mismatch emits `aisme.sdk.inconsistent` | `DT-04` applied to the SDK plane — this is what catches a lying host |
+| `F9.SDK.10` | `record_tool_manifest`: hash and normalized text of tool names, descriptions and schemas at session start and on change | The `DT-03` source: MCP tool poisoning and rug pulls |
+| `F9.SDK.05` | Transport to the local Sentinel app: Android bound service; **iOS loopback socket served by the tunnel extension** — App Groups are scoped to one developer team, so a third-party app cannot join ours, and URL schemes are foreground-only (`R1-17`). Authenticated with the per-install key; graceful no-op when Sentinel is absent | The SDK must never break its host app |
 | `F9.SDK.06` | Fail-open by default with a configurable fail-closed mode for high-assurance deployments | A crashed Sentinel must not brick the host app |
 | `F9.SDK.07` | Desktop parity bindings (Python, Node) so agent frameworks get the same API on workstations | Closes the F4 fragility gap for cooperative apps |
 | `F9.SDK.08` | **`aisme.sentinel.uncooperative` signal**: an app detected by S1 as doing inference but reporting no SDK telemetry is itself a finding | Makes non-adoption visible rather than invisible |
@@ -1813,7 +1826,10 @@ cargo xtask test-a11y               # axe-core on all views, 0 critical violatio
 ```bash
 cargo xtask sdk test-conformance          # reference implementations pass the suite
 cargo xtask sdk test-overhead             # ≤50 µs per tool call, p99 ≤200 µs
-cargo xtask sdk test-forgery              # unsigned/forged SDK events rejected
+cargo xtask sdk test-forgery              # events signed with another install's key rejected
+cargo xtask sdk test-consistency          # hostile fixture: declared silence + observed
+                                          # provider flow → aisme.sdk.inconsistent
+cargo xtask sdk test-warn                 # WARN never blocks, is displayed, is recorded
 cargo xtask sdk test-absent-sentinel      # host app fully functional with Sentinel uninstalled
 cargo xtask sdk test-veto-e2e             # DENY verdict actually prevents the tool call
 ```
@@ -1838,9 +1854,13 @@ cargo xtask sdk test-veto-e2e             # DENY verdict actually prevents the t
 | `F10.CORE.04` | **Traffic-shape classifier**: detects token-streaming (SSE/chunked) by flow shape — long-lived connection, small asymmetric request, many small inbound frames at reading cadence | Catches unknown and self-hosted endpoints the catalogue misses |
 | `F10.CORE.05` | Classifier feature extraction: inter-arrival histogram, frame-size distribution, up/down ratio, connection lifetime, TLS record cadence | All computed incrementally, O(1) per packet, no buffering of payload |
 | `F10.CORE.06` | Classifier model: small decision tree / logistic model with **fixed, inspectable weights** — no black box in a security decision path | Auditable; retrainable offline; ships as signed data |
-| `F10.CORE.07` | Verdict engine reusing **AISME-PL** (F7.PL.01) compiled to a mobile-side trie | One policy language, three backends |
+| `F10.CORE.07` | Verdict engine reusing **AISME-PL** (`F1.PL.01`, backend #4 of `F1.PL.03`) compiled to a mobile-side trie | One policy language, five backends |
 | `F10.CORE.08` | Taint + correlation reuse from `aisme-core` — no fork of the logic | Ontology parity is the point |
 | `F10.CORE.09` | `uniffi` bindings + generated Kotlin/Swift interfaces | Single source of truth for the FFI |
+| `F10.CORE.10` | **QUIC / HTTP-3**: UDP flow-shape features and QUIC-Initial parsing for SNI; the TCP assumption removed from the classifier | `DT-11` |
+| `F10.CORE.11` | **JA4 / JA4H client fingerprints** as features; a signed catalogue of known AI-SDK fingerprints shipped with `F10.CORE.03` | `DT-11` |
+| `F10.CORE.12` | Classifier **confidence and degradation reason** surfaced to the UI: ECH means no SNI, DoH means no DNS name, QUIC means shape-only | `I-16` — never silent false confidence |
+| `F10.T.05` | **Test**: the tunnel never reads a payload byte. Instrumented packet path asserts zero payload accesses over the §4.11 corpus | The privacy invariant, as code. It was referenced by the plan and never defined |
 
 **Privacy invariant for the classifier (non-negotiable, stated in the store listing):** the tunnel inspects **flow metadata only** — destination, SNI, DNS name, sizes and timings. It never decrypts, never inspects payload bytes, and never forwards traffic to any AISME-operated server. The classifier operates entirely on side-channel shape. This must remain true in code, and there is a test that asserts no payload byte is ever read (`F10.T.05`).
 
@@ -1869,13 +1889,14 @@ cargo xtask sdk test-veto-e2e             # DENY verdict actually prevents the t
 | `F10.IOS.05` | `NEFilterDataProvider` with `sourceAppIdentifier` for **per-app attribution** | ⚠️ MDM-gated; the parity unlock on iOS |
 | `F10.IOS.06` | Device posture (S3): App Attest, DeviceCheck, jailbreak heuristics | Feeds risk score |
 | `F10.IOS.07` | App Group + shared container for extension↔app IPC | Extension cannot talk to the app directly |
-| `F10.IOS.08` | On-demand rules, tunnel restart, background survival | |
+| `F10.IOS.08` | On-demand rules, tunnel restart, background survival |
+| `F10.IOS.09` | **Loopback listener in the tunnel extension** for SDK peers (App Groups are same-team only); per-install key authentication; bounded connections inside the 45 MB budget | |
 
 #### F10.4 Sentinel forensics and control-plane integration
 
 | ID | Task |
 |---|---|
-| `F10.FO.01` | Local tamper-evident log (BLAKE3 + Merkle, key in Keystore/Secure Enclave) — same format as F5.FO |
+| `F10.FO.01` | Local tamper-evident log (BLAKE3 + Merkle, **P-256** key in StrongBox / Secure Enclave, non-exportable, `key_hw` per block) — same format as `F5.FO` |
 | `F10.FO.02` | Root anchoring to the paired workstation and/or SIEM |
 | `F10.FO.03` | Unified session view: a session may span workstation and phone; `aisme.session.id` is shared |
 | `F10.FO.04` | Observer LLM integration reusing F6 (compressed context, monotonic severity) |
@@ -1884,7 +1905,9 @@ cargo xtask sdk test-veto-e2e             # DENY verdict actually prevents the t
 
 **GATE F10**
 ```bash
-cargo xtask sentinel test-classifier --corpus flows      # see §4.11: precision ≥0.95, recall ≥0.90
+cargo xtask sentinel test-classifier --corpus flows      # §4.11: precision ≥0.95, recall ≥0.90,
+                                                        # incl. QUIC and ECH at stated confidence
+cargo xtask sentinel test-sdk-loopback --simulator ios  # second-team app reaches the tunnel
 cargo xtask sentinel test-no-payload-read                # asserts zero payload bytes touched
 cargo xtask sentinel test-slam --emulator android,ios    # exfil flow dropped pre-egress
 cargo xtask sentinel test-attribution --emulator android # flow→UID→package correct on 100 flows
@@ -1898,30 +1921,30 @@ cargo xtask sentinel test-benign --corpus mobile-apps    # 0 blocks on normal ap
 
 **Objective:** the control plane in the developer's pocket, without weakening the security model (H-19). This phase ships the app shell, pairing, transport and adjudication UI. The *detection engine* is F10; the SDK is F9.
 
-#### F9.1 Shared client core
+#### F11.1 Shared client core
 
 | ID | Task | Notes |
 |---|---|---|
-| `F11.CC.01` | `aisme-clientcore` crate: protocol types, Noise XX handshake, verdict signing, offline cache | Compiled for desktop, `aarch64-linux-android`, `aarch64-apple-ios` |
-| `F11.CC.02` | Keystore bindings: Android Keystore (`StrongBox` when present) / iOS Secure Enclave, non-exportable keys | Hardware-backed only; refuse software fallback for the `ALLOW` capability |
-| `F11.CC.03` | `uniffi` bindings as the fallback path if Tauri mobile blocks (§2.20.3) | De-risks the ADR |
+| `F11.CC.01` | `aisme-clientcore` crate: protocol types, Noise `XX` with a **software X25519 static in the OS keychain**, offline cache, and **verdict signing with the hardware P-256 key** (`F11.CC.02`) | Compiled for desktop, `aarch64-linux-android`, `aarch64-apple-ios` |
+| `F11.CC.02` | Hardware keys: Android Keystore (StrongBox when present) / iOS Secure Enclave, **P-256**, non-exportable, biometric-gated for signing. Used to sign every remote `ALLOW`; **no software fallback for that signature** (`I-06`). Not used as the Noise static — the enclaves do not do X25519 | The hardware key attests the *decision*; the software key protects the *channel* |
+| `F11.CC.03` | `uniffi` bindings as the fallback path if Tauri mobile blocks (§2.20.7) | De-risks `ADR-04` |
 
-#### F9.2 Pairing and transport
+#### F11.2 Pairing and transport
 
 | ID | Task |
 |---|---|
 | `F11.PA.01` | `aisme pair` on the workstation: QR with workstation pubkey + one-time secret, TTL 120 s |
-| `F11.PA.02` | Noise `XX` handshake, device registration, local-first revocation list |
+| `F11.PA.02` | Noise `XX` handshake; device registration **binds the device's hardware P-256 public key to its Noise static**, and the workstation verifies every `ALLOW` against it; local-first revocation list |
 | `F11.PA.03` | LAN direct path (mDNS discovery) preferred; relay only when off-LAN |
 | `F11.RL.01` | `aisme-relay`: **blind** store-and-forward, ciphertext only, self-hostable, no plaintext at rest |
 | `F11.RL.02` | Relay authentication by device pubkey; rate limiting; no account system for the local case |
 | `F11.RL.03` | Push integration: APNs + FCM carrying **only** an opaque escalation ID and wake signal |
 
-#### F9.3 Mobile application
+#### F11.3 Mobile application
 
 | ID | Task |
 |---|---|
-| `F11.APP.01` | Session list + live status (paired workstations, capability tier, DEGRADED banner) |
+| `F11.APP.01` | Session list + live status: paired workstations, capability tier, `DEGRADED` banner, the workstation's signing backend (`key_hw`), and its coverage boundary — native Windows processes are not covered under WSL2 |
 | `F11.APP.02` | Escalation detail: risk score, rationale, path class, process lineage — **metadata by default, no file contents** (§2.20.2) |
 | `F11.APP.03` | Adjudication UI: `Deny` one tap; `Allow` requires `BiometricPrompt`/`LAContext` and is class-capped |
 | `F11.APP.04` | Push handling: background wake → fetch → decrypt → render within the 2 s budget |
@@ -1931,7 +1954,7 @@ cargo xtask sentinel test-benign --corpus mobile-apps    # 0 blocks on normal ap
 | `F11.APP.08` | Battery discipline: fully push-driven, **no polling**, no background location/sensors |
 | `F11.APP.09` | Screenshot/redaction hardening: `FLAG_SECURE` on Android, obscured snapshot on iOS backgrounding |
 
-#### F9.4 Store compliance `[RISK]`
+#### F11.4 Store compliance `[RISK]`
 
 | ID | Task | Notes |
 |---|---|---|
@@ -1943,8 +1966,12 @@ cargo xtask sentinel test-benign --corpus mobile-apps    # 0 blocks on normal ap
 ```bash
 cargo xtask test-pairing            # MITM attempt on pairing fails; replayed nonce rejected
 cargo xtask test-relay-blindness    # relay memory/disk dump contains 0 plaintext bytes
-cargo xtask test-remote-authz       # remote ALLOW without biometric = rejected;
+cargo xtask test-remote-authz       # remote ALLOW without a valid hardware P-256 signature =
+                                    # rejected even over a valid Noise session;
+                                    # remote DENY without one = accepted;
                                     # remote ALLOW on CRITICAL class = rejected always
+cargo xtask test-no-hardware-key    # a device with no hardware key pairs and can DENY;
+                                    # its ALLOW is refused with a clear message
 cargo xtask test-mobile-e2e         # emulator + simulator: push → modal → deny → workstation enforces
 cargo xtask test-battery            # 24 h idle paired: drain within budget
 ```

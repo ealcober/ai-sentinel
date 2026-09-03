@@ -883,7 +883,7 @@ Visible changes from the original design: FUSE-RPC is gone, the Frida patching e
 
 ### 2.22 Revised resource budgets and SLAs — **INVARIANTS**
 
-**Single source of truth.** These values live in exactly two places: this table (human-readable, with rationale) and `budgets.toml` (machine-readable, read by `cargo xtask verify-budgets`). CI gate `F0.CI.07` fails the build if they disagree. `docs/ai/invariants.md` references this table rather than restating it — a third copy would drift. **The research contradicted itself** (one document says <2% CPU, another <3%). A single number is fixed.
+**Single source of truth.** These values live in exactly two places: this table (human-readable, with rationale) and `budgets.toml` (machine-readable, read by `cargo xtask verify-budgets`). CI gate `F0.GATE.07` fails the build if they disagree. `docs/ai/invariants.md` references this table rather than restating it — a third copy would drift. **The research contradicted itself** (one document says <2% CPU, another <3%). A single number is fixed.
 
 | Metric | Target | Hard ceiling (fails CI) | Reference load |
 |---|---|---|---|
@@ -1017,7 +1017,7 @@ member absent from `layers.toml` fails the gate — a new crate declares its lay
 before it compiles.
 ```
 
-**Enforced rules** (CI gate `F0.CI.06`, a dependency-direction check over `cargo metadata`):
+**Enforced rules** (CI gate `F0.GATE.06`, a dependency-direction check over `cargo metadata`):
 
 | # | Rule | Why |
 |---|---|---|
@@ -1279,35 +1279,45 @@ What this buys, concretely:
 
 | ID | Task | Done when |
 |---|---|---|
+| `F0.REPO.00` | **Initialise the repository**; the first commit is the tree exactly as it stands before any challenge patch is applied | `git log` shows one commit and `git status` is clean — **done 2026-08-17** |
 | `F0.REPO.01` | Cargo workspace with all crates stubbed, each in its §3.1 layer (Part VI layout) | `cargo check --workspace` passes |
-| `F0.REPO.05` | **Layer scaffolding**: crates created in their §3.1 layer with the dependency direction already correct | `cargo xtask verify-layering` passes on stubs |
-| `F0.REPO.02` | `rust-toolchain.toml` pinned; `+nightly` only for the eBPF crate | Reproducible across machines |
+| `F0.REPO.05` | **Layer scaffolding**: `layers.toml` lists every crate with its layer, the excluded Windows crate and the composition root; crates created with the dependency direction already correct | `cargo xtask verify-layering` passes on stubs and fails on a planted upward edge |
+| `F0.REPO.02` | `rust-toolchain.toml` pinned at the root; `crates/aisme-ebpf/rust-toolchain.toml` pins the nightly for `build-std`, with the Aya version it was validated against recorded in its comment | Reproducible across machines; the root file's claim is true |
 | `F0.REPO.03` | `xtask` build orchestrator (`cargo xtask build-ebpf`, `dist`, `verify-budgets`) | `cargo xtask --help` works |
-| `F0.REPO.04` | `docs/ai/` skeleton: `AGENTS.md`, `STATE.md`, `invariants.md`, `adr/01_*.md`, `memory/`, `glossary.md` | Part VII protocol executable |
-| `F0.CI.01` | GitHub Actions matrix: Linux x86_64/aarch64, WSL2 | Green on empty workspace |
-| `F0.CI.02` | Lints as errors: `clippy::pedantic`, `unsafe_op_in_unsafe_fn`, `missing_docs` on public API | CI fails on warning |
-| `F0.CI.03` | `cargo-deny` (licences, advisories, duplicate deps) | Advisory DB wired |
-| `F0.CI.04` | **Budget gate stub**: `cargo xtask verify-budgets` reads `budgets.toml`, fails on breach | Fails on a deliberately over-budget test binary |
-| `F0.CI.05` | Forbidden-dependency gate (`serde_json` in `agentd`, `frida-*` anywhere, `bpf_probe_write_user` outside the research feature) | Fails on a planted violation |
-| `F0.CI.06` | **Dependency-direction gate**: §3.1 rules `A-01`…`A-06` checked over `cargo metadata` | Fails on a planted upward dependency |
-| `F0.CI.07` | Doc-drift gate: `budgets.toml` is the single source for all budget numbers; CI fails if the plan or `invariants.md` state a different figure | Fails on a planted mismatch |
+| `F0.REPO.04` | `docs/adr/00_template.md`. The rest of `docs/ai/` (`AGENTS.md`, `STATE.md`, `invariants.md`, `adr/01_*`) **exists pre-F0**; `memory/` is seeded by `F0.DOC.01`. **No `glossary.md`** — Annex E is the single glossary | Part VII protocol executable |
+| `F0.GATE.01` | **Local gate runner**: `cargo xtask gate --level <commit\|pr\|nightly\|weekly>` runs the §4.12 cadence sets; a `pre-commit` hook runs `commit`; `nightly` and `weekly` are launched by a local scheduler. The WSL2 lane runs on the owner's Windows machine, where WSL2 is the real target. **No hosted CI** (`I-27`) | Each level runs green on an empty workspace |
+| `F0.GATE.02` | Lints as errors: `clippy::pedantic`, `unsafe_op_in_unsafe_fn`, `missing_docs` on public API | CI fails on warning |
+| `F0.GATE.03` | `cargo-deny` (licences, advisories, duplicate deps) | Advisory DB wired |
+| `F0.GATE.04` | **Budget gate stub**: `cargo xtask verify-budgets` reads `budgets.toml`, fails on breach | Fails on a deliberately over-budget test binary |
+| `F0.GATE.05` | Forbidden-dependency gate (`serde_json` in `agentd`, `frida-*` anywhere, `bpf_probe_write_user` outside the research feature) | Fails on a planted violation |
+| `F0.GATE.06` | **Dependency-direction gate**: §3.1 rules `A-01`…`A-06` checked over `cargo metadata` | Fails on a planted upward dependency |
+| `F0.GATE.07` | Budget-drift gate: plan §2.22 ↔ `budgets.toml` ↔ the headline figures in `CLAUDE.md` and `README.md` agree on every value **and direction** | Fails on a planted mismatch |
+| `F0.GATE.08` | **`verify-docs`**: read-order lists identical across `CLAUDE.md`, `AGENTS.md` and Part 0; the DoD contains the ADR-review line; `STATE.md` has its §7.3 headings; ADR numbers contiguous with no gaps; Part I index matches the real headers; `NN_` naming under `docs/` (exempting `README.md` and `docs/ai/*`) with no `NN_-`; phase-table sums match the stated totals; `Cargo.lock` and `layers.toml` tracked; **no `.github/workflows/*.yml` triggering on push, pull request or schedule** (`I-27`) | Fails on each planted violation |
 | `F0.VM.01` | Reproducible test VM images: Ubuntu 22.04/24.04, Debian 12, Fedora 40 | `cargo xtask vm up <name>` boots |
-| `F0.VM.02` | Linux kernel matrix via `virtme-ng`: 5.4, 5.10, 5.15, 6.1, 6.8 | Boots and runs a smoke BPF program |
+| `F0.VM.02` | Kernel matrix via `virtme-ng`: 5.4 (expect L1), 5.10 (L2-), 5.15 (L2), 6.1 (L2), 6.8 (L2/L3), **and latest stable ≥ 6.15 for Landlock audit**. Each boots, runs a smoke BPF program, **and reports the expected tier** from the capability probe | Tier per kernel matches the table, or the difference is explained |
 | ~~`F0.WIN.01`~~ | ~~Start EV code-signing certificate procurement~~ | **`DEPRECATED`** — cancelled by ADR-02 |
 | ~~`F0.WIN.02`~~ | ~~Submit MVI application~~ | **`DEPRECATED`** — cancelled by ADR-02 |
 | ~~`F0.WIN.03`~~ | ~~Test-signing dev environment + Driver Verifier~~ | **`DEPRECATED`** — cancelled by ADR-02 |
-| `F0.WSL.01` | **WSL2 capability probe**: does the stock WSL2 kernel ship `CONFIG_BPF_LSM=y`? | Answered; decides whether WSL2 reaches tier L2 or L3 (§2.16.1) |
+| `F0.WSL.01` | **WSL2 capability probe**: `CONFIG_BPF_LSM`, **Landlock presence and ABI**, `BPF_CGROUP_INET*_CONNECT` attachability, cgroup v2, systemd, **and whether any TPM device exists** | Answered in `docs/ai/memory/wsl2-capabilities.md`; decides L2 vs L3 (§2.16.1), whether the L2 row reads as written (`R1-04`), and confirms `R1-18` (no TPM ⇒ software-signed forensics for Windows users) |
 | `F0.WSL.02` | WSL2 test images: Ubuntu 24.04 under WSL2, with and without systemd, cgroup v1 and v2 | `cargo xtask vm up wsl2-*` boots |
-| `F0.SEC.01` | Threat model document (`docs/security/threat-model.md`) with the H-05/H-06/H-12 anti-goals written down | Reviewed |
+| `F0.SEC.01` | Threat model (`docs/security/01_threat-model.md`) with the H-05/H-06/H-12 anti-goals, the OWASP Agentic Top-10 mapping (Annex G §G.3) and the relationship to the agent's own sandbox (§G.4) | Reviewed |
+| `F0.DOC.01` | Write the **ten** seed memories listed in §7.4 into `docs/ai/memory/` | Ten files, each citing its source (plan section or ADR) |
+| `F0.VER.01`…`F0.VER.18` | One task per entry in the challenge report's **R1 register**, in register order, each with the verification command the register states | **The R1 register is empty at GATE F0.** An unverified claim either becomes a measured fact or is withdrawn |
 
 **GATE F0** — all must pass:
 ```bash
+git rev-parse --is-inside-work-tree                     # F0.REPO.00
+git ls-files --error-unmatch Cargo.lock layers.toml     # both tracked
 cargo check --workspace && cargo clippy --workspace -- -D warnings
-cargo xtask verify-budgets      # passes on stubs
-cargo xtask vm up ubuntu-24.04 && cargo xtask vm up wsl2-ubuntu-24.04
 cargo xtask verify-layering     # layering enforced from commit #1
-test -f docs/ai/AGENTS.md docs/ai/STATE.md docs/ai/invariants.md
-grep -q "read-only" docs/ai/invariants.md   # H-06 anti-goal recorded
+cargo xtask verify-docs         # cross-document consistency, incl. no push workflows
+cargo xtask verify-budgets      # passes on stubs; refuses entries without a direction
+cargo xtask vm up ubuntu-24.04 && cargo xtask vm up wsl2-ubuntu-24.04
+cargo xtask vm probe --all      # reports the tier and Landlock ABI per kernel
+test -f docs/ai/AGENTS.md docs/ai/STATE.md docs/ai/invariants.md docs/adr/00_template.md
+test -f docs/ai/memory/wsl2-capabilities.md
+test $(ls docs/ai/memory/*.md | wc -l) -ge 10           # F0.DOC.01
+grep -q "read-only" docs/ai/invariants.md               # H-06 anti-goal recorded
 ```
 
 ---

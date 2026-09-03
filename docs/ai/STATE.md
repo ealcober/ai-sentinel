@@ -1,7 +1,7 @@
 # STATE — live project status
 
 > **Update this file at the end of every working session.** It is the first thing the next session reads.
-> Last updated: **2026-08-17** · Phase: **pre-F0 (applying the challenge patches)** · Code written: **none**
+> Last updated: **2026-08-17** · Phase: **F0 ready to start** · Code written: **none**
 
 ## Where we are
 
@@ -9,7 +9,7 @@
 
 Two reviews shaped it. `ADR-03` fixed three structural defects (a circular dependency between the kernel phase and the policy language, horizontal layering that deferred all integration risk to week 10, an under-specified interface layer) and renumbered the phases **once**; **task IDs freeze at F0 start**. Then `docs/02_challenge_ampliacion_sistema.md` challenged all 34 points of the system, producing 209 numbered findings, an R1 register of 18 unverified claims, an R2 register of 13 claims that fell, and ten owner decisions (Q-01…Q-10, all answered).
 
-**We are now applying that report's patches, one commit per point.** See "Next up".
+**All 34 points' patches are applied**, one commit per point, and a coherence pass runs clean: no undefined task, invariant, detector or red-flag reference; no broken link; the critical path is the sum of its table; `budgets.toml` parses with a direction on every metric. **F0 can start.**
 
 ## Done
 
@@ -28,13 +28,19 @@ Two reviews shaped it. `ADR-03` fixed three structural defects (a circular depen
 | **ADR-03: walking skeleton, interface freeze, layered architecture** | `docs/adr/03_*.md` |
 | Repository skeleton, README, CLAUDE.md, AGENTS.md, invariants.md | repo root + `docs/ai/` |
 | Permission model design note (multiplatform prompt delivery) | `docs/design/01_permission-model.md` |
-| **ADR-02: Windows driver deferred, WSL2 is the Windows strategy** — applied across plan, README, invariants | `docs/adr/02_*.md` |
+| **ADR-02: Windows driver deferred, WSL2 is the Windows strategy** | `docs/adr/02_*.md` |
+| **Challenge review of the whole system**: 34 points, 209 findings, R1/R2 registers, ten owner decisions | `docs/02_challenge_ampliacion_sistema.md` |
+| **All 34 patches applied**, one commit per point, coherence pass clean | git history |
+| Detection catalogue: 15 detectors, 8 new red-flag classes, 16 benign twins | Plan Annex G, Annex C, §4.13 |
+| `warn` verdict and suppression rules (`I-26`) across policy, engine and UI | Plan F1/F7/F8, `01_permission-model.md` |
+| Tier L2 made real: Landlock + cgroup connect hooks, both without a reboot | Plan §2.2.1, F3.3 |
+| `layers.toml`, `budgets.toml` with directions and profiles, `docs/adr/00_template.md`, `docs/design/02_aisme-run.md` | repo root, `docs/` |
 
 ## Next up
 
-**Phase 0 — apply the challenge patches** (in progress). Each closed point in `docs/02_challenge_ampliacion_sistema.md` has a §3 that is an unapplied patch; they are applied in point order, one commit per point. Done so far: renames (Q-04/06/07), P-01 README, P-02 CLAUDE.md, P-03 workspace and `layers.toml`, P-04 `budgets.toml`, P-05 AGENTS.md, P-07 invariants, P-08 permission model, P-09/P-10 ADRs and research. Remaining: P-06 (this file), P-11…P-34 (the plan itself).
+**Phase 0 — apply the challenge patches: DONE.** All 34 points applied in order, one commit per point, plus the renames from Q-04/06/07. The report (`docs/02_challenge_ampliacion_sistema.md`) is now a record rather than a queue: its §3 sections describe what was done, and its R1 register became `F0.VER.01…18`.
 
-**Then phase F0.** Ordered; task IDs from Plan Part III.
+**Phase F0.** Ordered; task IDs from Plan Part III.
 
 0. `F0.REPO.00` — **done**: the owner initialised the repository before the patches (`b8b7a27`).
 1. **`F0.WSL.01`** — probe the stock WSL2 kernel: `CONFIG_BPF_LSM`, **Landlock presence and ABI**, cgroup v2, systemd, and whether a TPM exists. **Do this first**: it decides whether WSL2 reaches L2 or L3, whether the L2 row reads as written (`R1-04`), and it confirms `R1-18` (no TPM ⇒ software-signed forensics for Windows users).
@@ -77,4 +83,5 @@ Still owed from the plan: **ADR-04** (Tauri v2 + `uniffi` fallback) and **ADR-05
 - **The benign corpus (§4.8.2) matters as much as the red team corpus.** A product that blocks `npm ci` is dead on arrival. Milestone M5 is the real go/no-go for exactly this reason.
 - The permission model note is now `SPEC` (`docs/design/01_permission-model.md`) and carries the `warn` verdict and suppression rules. F1, F7 and F8 implement it.
 - **Two primitives make tier L2 real and were missing from the plan**: Landlock (in-kernel file deny) and `BPF_CGROUP_INET*_CONNECT` (in-kernel network deny). Both work without a reboot and without BPF-LSM, which matters because WSL2 — the Windows strategy — is L2 by default. Confirm with `F0.WSL.01`/`F0.VM.02` (`R1-04`, `R1-16`).
-- **Every gate runs locally** (`I-27`). Do not propose GitHub Actions.
+- **Every gate runs locally** (`I-27`). Do not propose GitHub Actions, self-hosted runners or scheduled cloud jobs. `.github/` does not exist and `verify-docs` fails if a push-triggered workflow appears.
+- **The report's R1 register is the F0 verification backlog.** Eighteen claims are asserted and unmeasured; four of them decide how a row reads (`R1-04` Landlock, `R1-16` cgroup hooks, `R1-18` no TPM under WSL2, `R1-12` hardware curves). The register must be empty at GATE F0.

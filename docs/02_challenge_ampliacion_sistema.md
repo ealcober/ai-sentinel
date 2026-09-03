@@ -25,7 +25,9 @@ Read-only script `verify_docs.py` (scratchpad, not in the repo). **Prediction wr
 
 ## Skeleton
 
-**Status 2026-08-17: all 34 points closed; all 10 owner questions answered (§Owner answers).** 209 numbered defects, 18 unverified claims (R1, two withdrawn), 13 fallen claims (R2).
+**Status 2026-08-17: all 34 points closed, all 10 owner questions answered, and every patch applied.** 209 numbered defects, 18 unverified claims (R1, two withdrawn), 13 fallen claims (R2).
+
+> **The patches are applied.** Each point's §3 was executed against the repository in point order, one commit per point, after the renames from Q-04/Q-06/Q-07. A coherence pass over the result is clean: no undefined task, invariant, detector or red-flag reference; no broken link; the stated critical path equals the sum of its phase table; `budgets.toml` parses with an explicit direction on every metric. **This report is now a record of what was found and done, not a queue.** Its R1 register lives on as `F0.VER.01…18`.
 
 **A. Root and working documents**
 

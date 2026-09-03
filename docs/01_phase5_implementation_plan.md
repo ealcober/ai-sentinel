@@ -1453,14 +1453,14 @@ The ontology is a **core type, not a correlation-engine detail**. F3 (kernel), F
 
 | ID | Task | Notes |
 |---|---|---|
-| `F1.PL.01` | **AISME-PL** grammar and parser per **Annex B** | Declarative, one source |
-| `F1.PL.02` | Compiler → `CompiledPolicy` IR with static validation: unreachable rules, allow/deny conflicts, unbounded globs | Fails at compile, never at runtime |
+| `F1.PL.01` | **AISME-PL** grammar and parser per **Annex B §B.0** | Declarative, one source, deliberately not Turing-complete |
+| `F1.PL.02` | Compiler → `CompiledPolicy` IR with static validation: **unreachable rules as defined by §B.10**, unbounded globs that would blow the verifier's loop budget | Fails at compile, never at runtime |
 | `F1.PL.03` | Backend trait `PolicyBackend` — one IR, **five** targets: BPF trie (L3), **Landlock ruleset (L2 files)**, **cgroup `sock_addr` allowlist (L2 network)**, Sentinel mobile trie, Windows trie `[POST]` | Backends live in adapters; IR lives here |
 | `F1.PL.04` | `promptable = false` enforced at compile time for the three groups in `I-05` | A policy that tries to make them promptable does not compile |
 | `F1.PL.05` | Deterministic compilation: same source → identical bytes | Makes policy generations comparable and diffable |
 | `F1.PL.06` | Grammar: `verdict = "warn"`, `suppressible`, `grant_ttl_days`, path class `PERSISTENCE_CONFIG`, `profile = "strict"` | Annex B |
 | `F1.PL.07` | `Grant` and `SuppressionRule` compile into the same rule space with TTL. A suppression targeting an `I-05` group or a `CRITICAL` verdict **fails to compile** | `I-26` enforced by the compiler, not by convention |
-| `F1.PL.08` | A backend that cannot express a verdict (Landlock cannot escalate; cgroup hooks cannot prompt) **rejects the rule at compile time with a tier-specific message** | Never a silent drop (general rule 9) |
+| `F1.PL.08` | A backend that cannot express a verdict or a key **rejects the rule at compile time with a tier-specific message**, checked against the **§B.9** matrix; the L3→L2 `escalate` substitution is stated, not silent | Never a silent drop (general rule 9) |
 
 #### F1.4 Interface layer — the trait catalogue
 
@@ -1843,8 +1843,9 @@ cargo xtask test-failsafe                  # kill -9 agentd mid-verdict → defi
 
 | ID | Track | Task |
 |---|---|---|
-| `F8.API.01` | F8a | Control-plane protocol (JSON-RPC over UDS; Named Pipe `[POST]`): `subscribe`, `getSession`, `getGraph`, `respondEscalation`, `setPolicy`, `pairDevice` — **this is the same protocol F11 consumes remotely**, defined once |
+| `F8.API.01` | F8a | Control-plane protocol **per Annex I** (JSON-RPC over UDS; Named Pipe `[POST]`): `subscribe`, `getSession`, `getGraph`, `respondEscalation`, `setPolicy`, `pairDevice` — **this is the same protocol F11 consumes remotely**, defined once |
 | `F8.API.02` | F8a | Protocol schema in one place (`aisme-proto`), codegen for TS types |
+| `F8.API.03` | F8a | **Authorization classes enforced server-side on every method** (Annex I.1), including the human-principal test by session-cgroup membership | `F7.PS.08` gains its expression in the protocol that carries every policy change |
 | `F8.UI.01` | F8a | Tauri v2 desktop shell + React/TS UI |
 | `F8.UI.02` | F8a | Session timeline: CoT overlaid chronologically on syscalls and network |
 | `F8.UI.03` | F8a | Causal graph view (DAG) with mutation/read colour differentiation |
@@ -2004,7 +2005,7 @@ cargo xtask sentinel test-benign --corpus mobile-apps    # 0 blocks on normal ap
 
 | ID | Task |
 |---|---|
-| `F11.PA.01` | `aisme pair` on the workstation: QR with workstation pubkey + one-time secret, TTL 120 s |
+| `F11.PA.01` | `aisme pair` on the workstation: QR with workstation pubkey + one-time secret, TTL 120 s. **Pairing failures are constant-time and indistinguishable** (Annex I.2) |
 | `F11.PA.02` | Noise `XX` handshake; device registration **binds the device's hardware P-256 public key to its Noise static**, and the workstation verifies every `ALLOW` against it; local-first revocation list |
 | `F11.PA.03` | LAN direct path (mDNS discovery) preferred; relay only when off-LAN |
 | `F11.RL.01` | `aisme-relay`: **blind** store-and-forward, ciphertext only, self-hostable, no plaintext at rest |
@@ -3060,6 +3061,34 @@ Adopted largely from the research, which was sound here.
 
 One language, **five** compiled backends: the BPF trie (L3), a **Landlock ruleset** (L2 files), a **cgroup `sock_addr` allowlist** (L2 network), the Sentinel mobile trie, and the Windows shared-section trie `[POST]`.
 
+### B.0 Grammar
+
+TOML is the surface syntax: no new parser, diffable, and familiar to the people who will write policy. The language is **deliberately not Turing-complete** — no negation, no nesting, no arithmetic — because it compiles into a BPF program with a verifier loop budget.
+
+```ebnf
+policy        = { session_defaults | rule | suppression | profile } ;
+rule          = "[[rule]]" , id , group , match , verdict ,
+                { taint | severity_floor | promptable | suppressible
+                | audit | event | escalate_if } ;
+suppression   = "[[suppression]]" , match , scope , ttl_days , origin , [ report ] ;
+
+id            = "id" , "=" , string ;               (* unique; the diff key *)
+group         = "group" , "=" , GROUP ;
+verdict       = "verdict" , "=" , ( "allow" | "warn" | "escalate" | "deny" ) ;
+match         = "match" , "=" , "{" , match_key , { "," , match_key } , "}" ;
+match_key     = path_under | path_glob | path_class | exec_class | exec_path
+              | dest_in | dest_not_in | port_in | proto
+              | taint_any | taint_all | not_declassified
+              | tool_name | origin | instruction_bearing
+              | scope_rel | age_lt | first_of_kind ;
+GROUP         = "FILES_OUTSIDE_WORKSPACE" | "SYSTEM_CONFIG" | "CREDENTIALS"
+              | "NETWORK_EGRESS" | "EXECUTE" | "FILELESS_EXECUTE"
+              | "PERSISTENCE" | "PERSISTENCE_CONFIG" | "PACKAGE_INSTALL"
+              | "SELF_PROTECTION" | "DEVICE" ;
+```
+
+Keys inside one `match` are **AND**; a list value is **OR** within that key.
+
 ### B.1 Sketch
 
 ```toml
@@ -3135,7 +3164,32 @@ event   = "aisme.exfiltration.blocked"
 | `B.5` | `promptable = false` **and `suppressible = false`** are enforced at compile time for the three groups in `I-05`; a policy that tries to make them promptable or suppressible fails to compile |
 | `B.6` | Grants (`Always`/`Session`) **and suppression rules** compile into the same rule space with TTL, so runtime has one evaluation path. A suppression targeting an `I-05` group or a `CRITICAL` verdict fails to compile (`I-26`) |
 | `B.7` | `verdict = "warn"` compiles to *allow + notify* on every backend. It never compiles to a kernel deny |
-| `B.8` | A backend that cannot express a rule's verdict — Landlock cannot escalate, cgroup hooks cannot prompt — **rejects the rule at compile time with a tier-specific message**. It never drops it silently (general rule 9) |
+| `B.8` | A backend that cannot express a rule's verdict — Landlock cannot escalate, cgroup hooks cannot prompt — **rejects the rule at compile time with a tier-specific message**, checked against the §B.9 matrix. It never drops it silently (general rule 9) |
+
+### B.9 Backend capability matrix
+
+`B.8` needs a basis to check against. This is it: which match keys and which verdicts each backend can express.
+
+| | BPF trie (L3) | Landlock (L2 file) | cgroup connect (L2 net) | Sentinel (mobile) | Windows `[POST]` |
+|---|---|---|---|---|---|
+| `path_under`, `path_glob`, `path_class` | ✅ | ✅ | ❌ | ⚠️ SDK-reported | ✅ |
+| `dest_in`, `dest_not_in`, `port_in`, `proto` | ✅ | ⚠️ ports only, ABI ≥ 4 | ✅ | ✅ | ✅ |
+| `exec_class`, `exec_path` | ✅ | ✅ (exec right) | ❌ | ❌ | ✅ |
+| `taint_*`, `not_declassified` | ✅ | ❌ | ✅ via the session map | ✅ | ✅ |
+| `tool_name`, `origin`, `instruction_bearing` | ❌ user space only | ❌ | ❌ | ✅ SDK | ❌ |
+| verdict `allow` / `deny` | ✅ | ✅ | ✅ | ✅ | ✅ |
+| verdict `escalate` | ✅ | **❌** | **❌** | ✅ | ✅ |
+| verdict `warn` | ✅ | ⚠️ allow + notify from user space | ⚠️ same | ✅ | ✅ |
+
+The common case is benign and must read clearly: an `escalate` rule compiles into the BPF trie at L3 and, at L2, into a Landlock **deny** plus a user-space escalation path. **The compiler states that substitution**; it does not perform it silently.
+
+### B.10 Precedence
+
+**Strictest verdict wins**: `deny` > `escalate` > `warn` > `allow`, evaluated across every rule whose match succeeds.
+
+Order in the file is irrelevant, so policy files merge without conflict and a rule can be added anywhere. The rationale is `I-15`'s sibling: in a security product the surprising outcome should be the safe one. It also resolves the case the §B.1 examples already contain — `${workspace}/.env` matches both `workspace-free` (allow) and `credentials-ask` (escalate), and escalate wins.
+
+`B.1`'s "no allow/deny conflicts" is restated precisely: **a rule that can never be the strictest for any input is unreachable and fails to compile.** That is the defect the requirement was reaching for; two rules with the same verdict and overlapping matches are not a conflict.
 
 ---
 
@@ -3522,6 +3576,60 @@ The consequence is worth stating: **the command surface becomes the plan's own p
 **Levels.** `commit` (≤ 10 min, the pre-commit hook) · `pr` (≤ 60 min, before merging a branch) · `nightly` and `weekly` (local scheduler, §4.12). A command marked `—` is invoked directly, not as part of a level.
 
 **Adding a command.** Add the row here first, then the task that implements it. `verify-docs` fails a gate command with no row, and fails a row whose task does not exist — in that order, so the error names the actual mistake.
+
+---
+
+---
+
+## Annex I — Control-plane protocol (normative)
+
+One protocol, spoken by the desktop UI, the CLI, `aisme-uiagent`, the mobile app and the relay. Defined once here so F8a and F11 — which run in parallel, in two languages — code against the same shapes. JSON-RPC 2.0 over a Unix socket locally, and over the blind relay remotely; the relay forwards opaque frames, which is what makes `I-07` true.
+
+### I.1 Methods
+
+| Method | Params | Result | Authorization | Idempotent |
+|---|---|---|---|---|
+| `getCapabilities` | — | tier, `key_hw`, coverage boundary, protocol and engine versions | any authenticated peer | yes |
+| `listSessions` | `{ active_only }` | session summaries | any | yes |
+| `getSession` | `{ session_id }` | detail, risk, taint, tier | any | yes |
+| `getGraph` | `{ session_id, since_seq, limit }` | graph delta, `next_seq` | any | yes |
+| `subscribe` | `{ session_id?, kinds[], min_severity }` | event stream, coalesced | any | n/a |
+| `respondEscalation` | `{ escalation_id, verdict, nonce, sig? }` | `accepted` \| `expired` \| `superseded` | **local peer; or remote with a hardware signature** (`I-06`) | **yes** — first valid verdict wins |
+| `setPolicy` | `{ source, generation_expected }` | new generation \| `conflict` | **human principal only** (`F7.PS.08`) | no — compare-and-swap |
+| `manageGrant` | `{ op: create\|revoke, … }` | grant state | **human principal only** | yes |
+| `manageSuppression` | `{ op: create\|revoke, … }` | rule state | **human principal only** | yes |
+| `pairDevice` | `{ qr_payload, device_pubkey, hw_pubkey }` | `paired` \| `rejected` | **local peer only** | no |
+| `revokeDevice` | `{ device_id }` | `revoked` | local peer, or the device revoking itself | yes |
+| `verifySession` | `{ session_id }` | inclusion proofs, `key_hw`, anchor status | any | yes |
+
+**Three authorization classes**, checked by the server on every call and never by the client:
+
+- **any authenticated peer** — read-only methods.
+- **local peer** — `SO_PEERCRED`, UID matches the installing user.
+- **human principal** — a local peer whose process is **not inside any session cgroup**. This is the mechanical distinction between the user and the agent, and it is what `F7.PS.08` needs in order to be enforceable rather than aspirational.
+
+### I.2 Errors
+
+Protocol failures are JSON-RPC errors; **domain outcomes are results**. `expired`, `superseded` and `conflict` are successful calls with a negative answer, so a client can never conflate "the network broke" with "you were too late".
+
+| Condition | Shape | Note |
+|---|---|---|
+| Malformed / unknown method | `-32600` / `-32601` | |
+| Unauthorized | `-32001`, naming the class required | Never says *why* the caller failed |
+| Version incompatible | `-32002`, both versions | §3.6 |
+| Escalation expired or already answered | **result** | |
+| Policy generation conflict | **result**, carrying the current generation | |
+| **Pairing failure, any cause** | `-32003`, **one message, constant time** | Wrong secret, expired secret and unknown device are **indistinguishable**. Anything else is an oracle |
+
+### I.3 Streaming and backpressure
+
+`subscribe` is server-push over a bounded per-subscriber queue. Under pressure the server **coalesces by intent** — the same rule the permission model applies to prompts — and emits a `Coalesced { kind_range, count, window }` marker. It never drops silently: a slow subscriber receives fewer, larger, honest events (`I-17`). A subscriber that stops reading is disconnected after a bounded timeout, and the disconnection is itself an event.
+
+### I.4 Versioning
+
+Semver in `aisme-proto`. Minor is additive and forward-compatible — clients ignore unknown fields. Major means the server refuses with `-32002` naming both versions, never a partial conversation. TypeScript types are generated from the Rust definitions (`F8.API.02`), so the two cannot drift, and `test-protocol-contract` proves it.
+
+**Frozen at GATE F8a**, because F11 codes against it (§3.7 freeze list).
 
 ---
 

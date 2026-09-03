@@ -880,7 +880,7 @@ The native sensor shims contain **no detection logic whatsoever** — they marsh
                                            the LINUX column, at tier L2
 ```
 
-Differences from the research's design: FUSE-RPC is absent, the Frida patching engine is absent, memory spoofing is absent, Detours DLL injection is absent (replaced by cooperative capture plus a Windows-equivalent return probe that does not modify memory), `forensicd` appears, `seccomp_unotify` and the freezer appear, the Windows telemetry channel is no longer `FltSendMessage`, and the control plane extends to mobile through a blind relay.
+Differences from the research's design: FUSE-RPC is absent, the Frida patching engine is absent, memory spoofing is absent, Detours DLL injection is absent (replaced by cooperative capture plus a Windows-equivalent return probe that does not modify memory), `forensicd` appears, `seccomp_unotify` and the freezer appear, the Windows telemetry channel is a shared-memory ring rather than `FltSendMessage`, and the control plane extends to mobile through a blind relay.
 
 ---
 

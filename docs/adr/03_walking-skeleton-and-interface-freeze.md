@@ -67,6 +67,6 @@ Permitted because no code exists. **Task IDs freeze at F0 start** (`I-23`).
 - [x] Windows moved to Annex F; §4.3 marked deferred.
 - [x] Critical path, milestones and risk-register phase owners updated.
 - [x] Deduplication: red flags → Annex C only; budgets → §2.22 + `budgets.toml` only; capability matrix → Annex D only; session protocol → `docs/ai/AGENTS.md` only.
-- [ ] `F0.CI.06` — implement the dependency-direction gate.
-- [ ] `F0.CI.07` — implement the doc-drift gate between §2.22 and `budgets.toml`.
+- [ ] `F0.GATE.06` — implement the dependency-direction gate.
+- [ ] `F0.GATE.07` — implement the doc-drift gate between §2.22 and `budgets.toml`.
 - [ ] Write ADR-04 (Tauri v2 + uniffi fallback) and ADR-05 (multiplatform detection scope).

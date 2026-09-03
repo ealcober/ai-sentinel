@@ -49,7 +49,7 @@ Filtering, lookup and message passing only. Target < 3,000 LoC. All intelligence
 
 ## 3. Resource invariants (CI-enforced)
 
-**The numbers live in `budgets.toml`**, which `cargo xtask verify-budgets` reads, and in the plan's §2.22 table with their rationale and measurement protocol. They are deliberately **not** restated here — a third copy would drift, and CI gate `F0.CI.07` fails the build if the two authoritative copies disagree.
+**The numbers live in `budgets.toml`**, which `cargo xtask verify-budgets` reads, and in the plan's §2.22 table with their rationale and measurement protocol. They are deliberately **not** restated here — a third copy would drift, and the doc-drift gate `F0.GATE.07` fails the build if the two authoritative copies disagree.
 
 The invariant is the enforcement, not the number:
 

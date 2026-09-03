@@ -14,10 +14,10 @@ This document is **executable by an LLM**. It is not a whitepaper. Reading and e
 
 1. **Every task has a stable identifier** of the form `F<phase>.<block>.<task>` (e.g. `F3.RB.03`). Never renumber: if a task dies, mark it `DEPRECATED`, do not delete it.
 2. **Every architectural decision that contradicts the original research is recorded as finding `H-xx`** in Part II, together with the applied correction. If you are about to implement something that appears in the DOCX files but contradicts an `H-xx`, **the `H-xx` wins**.
-3. **The resource budgets (§2.21) are build invariants, not aspirations.** CI gates fail the build when they are exceeded. They are not negotiated in a PR; they are negotiated with an ADR.
+3. **The resource budgets (§2.22) are build invariants, not aspirations.** Gates fail the build when they are exceeded. They are not negotiated in a PR; they are negotiated with an ADR. Every gate runs locally (`I-27`).
 4. **No phase may be "finished" without its Gates.** Each phase ends with a `GATE F<n>` block of binary, command-verifiable criteria. If a gate does not pass, the phase is not closed — even if the code works.
-5. **Before touching code**: read `docs/ai/AGENTS.md` → `docs/ai/STATE.md` → `docs/ai/invariants.md` → the relevant ADR. When done: update `STATE.md` and append an entry to `docs/ai/memory/`. Full protocol in **Part VII**.
-6. **When this document and the code disagree, the code wins and the document is corrected** via ADR plus an update to this specification. This is a living document.
+5. **Before touching code**: follow the read order in `CLAUDE.md`, which is canonical (`docs/ai/AGENTS.md` §1 repeats it verbatim and a gate checks the two agree). When done: follow the write order in the same file. Rationale in **Part VII**.
+6. **When this document and the code disagree on implementation detail below the ADR level**, the code wins and the document is corrected. **Invariants, ADRs and the `H-xx` findings win over code**: code that contradicts one of those is a defect, not a correction. Full precedence order in §7.6. This is a living document, not scripture — and not a licence either.
 
 ### 0.1 Status markers
 
@@ -26,6 +26,7 @@ This document is **executable by an LLM**. It is not a whitepaper. Reading and e
 | `[MVP]` | Required to close Phase 5. |
 | `[POST]` | Explicitly deferred. Do not implement. Reject PRs that introduce it. |
 | `[CUT]` | Present in the research and **removed by architectural decision**. Forbidden to implement. |
+| `DEP.*` | A cross-phase deployment task (Part V). It names its owning phase; it is not a task of phase F5. |
 | `[RISK]` | External dependency or non-technical blocker on the critical path. |
 
 ---
@@ -59,6 +60,7 @@ Part II   Architect's analysis: challenging the research
           2.21 Corrected architecture (final topology)
           2.22 Revised resource budgets and SLAs (INVARIANTS)
           2.23 Capability-based degradation model
+          2.24 Detection techniques → Annex G
 Part III  Software architecture and development phases
           3.1  Layering and dependency rules
           3.2  The trait catalogue — interface architecture
@@ -91,7 +93,8 @@ Part IV   Exhaustive test plan
           4.9  Fault injection and chaos
           4.10 Mobile and remote-adjudication testing
           4.11 AI Sentinel detection testing (flow corpus, classifier, tunnel)
-          4.12 CI gates and platform matrix
+          4.12 Gates, cadences and platform matrix (all local — I-27)
+          4.13 Detector tests (Annex G)
 Part V    Documentation and deployment
           5.1  Cross-platform builds
           5.2  Self-contained binary packaging
@@ -109,6 +112,7 @@ Annexes   A. Causal graph ontology (normative schema)
           D. Capability matrix by kernel/OS
           E. Glossary
           F. Windows minifilter specification            [POST — ADR-02]
+          G. Detection catalogue (normative)
 ```
 
 ---
@@ -126,7 +130,7 @@ That said, **eighteen points of the design do not survive contact with engineeri
 
 | # | Component in the research | Verdict | Applied correction |
 |---|---|---|---|
-| H-01 | Synchronous LSM blocking via FUSE-RPC + `bpf_get_file_xattr` | **REJECTED** | `seccomp_unotify` as the blocking channel + process freeze via cgroup freezer |
+| H-01 | Synchronous LSM blocking via FUSE-RPC + `bpf_get_file_xattr` | **REJECTED** | BPF-LSM at L3; **Landlock + cgroup connect hooks at L2**; `seccomp_unotify` as the escalation channel; cgroup freezer for slow adjudication |
 | H-02 | Global "sub-microsecond latency" | **CORRECTED** | Three latency tiers T0/T1/T2 with independent SLAs |
 | H-03 | <50 MB RAM with DuckDB embedded in the daemon | **CORRECTED** | Split into two processes: `agentd` (hot, ≤50 MB) and `forensicd` (cold, ≤150 MB, idle priority) |
 | H-04 | Internal normalization to JSON | **REJECTED** | Fixed-layout binary format (`rkyv`) + string interner; JSON only at the export boundary |
@@ -140,7 +144,7 @@ That said, **eighteen points of the design do not survive contact with engineeri
 | H-12 | Observer LLM treated as a trusted component | **CORRECTED** | Structured input, constrained output schema, severity monotonicity, never auto-allow |
 | H-13 | Binary taint tracking without declassification | **CORRECTED** | Taint as a category bitmask + propagation rules + explicit declassification |
 | H-14 | "Rust core" including the Windows driver | **CORRECTED** | Minifilter in C/WDK, thin and logic-free. All intelligence in the Rust daemon |
-| H-15 | ELAM + PPL as an implementation detail | **`[CUT]` for MVP** | EV cert + MVI make the kernel driver untenable. **Windows minifilter deferred; WSL2 is the Windows strategy** (ADR-02) |
+| H-15 | ELAM + PPL as an implementation detail | **`[POST]`** — deferred, not cut | EV cert + MVI make the kernel driver untenable. **Windows minifilter deferred to Annex F; WSL2 is the Windows strategy** (ADR-02) |
 | H-16 | "Zero friction" on Linux | **CORRECTED** | BPF-LSM requires `lsm=...,bpf` on the kernel cmdline → reboot. Becomes an explicit install decision with three service tiers |
 | H-17 | Local Merkle log = "mathematically immutable" | **CORRECTED** | Tamper-**evident**, not immutable. Requires external root anchoring for real non-repudiation |
 | H-18 | NVML/ROCm GPU discovery heuristics | **`[POST]`** | Out of MVP scope (target = remote-inference clients) |
@@ -188,6 +192,25 @@ TIER 2 (slow adjudication: human or Observer LLM)             ── exceptional
 > **Implementation rule (invariant):** *no AISME eBPF program may block waiting for user space. All LSM hooks return in bounded time reading only maps.*
 
 **Fallback when user-notif is unavailable (kernel <5.9):** Tier 1 disappears and `ESCALATE` degrades to `DENY` (enforce mode) or `ALLOW + alert` (observe mode), per explicit operator configuration. Never implicit behaviour.
+
+#### 2.2.1 Tier shape at L2 — where most users actually are
+
+The tier block above describes **L3**. At L2 there is no BPF-LSM, and the naive reading — "then everything traps to `seccomp_unotify`" — would be a disaster: a classic seccomp filter cannot read a path string, only syscall numbers and register-sized arguments, so **every** path decision would become a user-space round trip. Under the reference workload's `npm ci`, tens of thousands of `openat` per second at ~100 µs each is tens of percent of a core. That is the majority tier, and it is the WSL2 default.
+
+Two in-kernel primitives fix it, and neither needs BPF-LSM or a reboot:
+
+| L2 primitive | Covers | Mechanism | Requires |
+|---|---|---|---|
+| **Landlock** | File T0 deny: the never-promptable classes and writes outside the declared scope | Per-process, inherited across `execve`, monotonic (a child can only narrow) | Landlock in the active LSM list, kernel ≥ 5.13. ABI 3 adds truncate, ABI 4 adds TCP ports |
+| **cgroup `sock_addr` hooks** | Network T0 deny: **Network Slam at L2** | `BPF_CGROUP_INET4_CONNECT` / `INET6_CONNECT` on the session cgroup evaluates the destination **in kernel** and returns `EPERM` | cgroup v2 and `CAP_NET_ADMIN`/`CAP_BPF` in the loader; kernel ≥ 4.17. **Not** an LSM, so no `lsm=` boot parameter |
+
+The cgroup hook matters for a second reason: at L2 a `connect` trapped to `seccomp_unotify` would have to read `sockaddr` from **user memory**, which is precisely the TOCTOU this finding warns about. The cgroup hook sees the address in kernel and closes that race.
+
+**So the L2 shape is:** Landlock and the cgroup hook deny in-kernel; `seccomp_unotify` carries **only the escalate class**; the freezer carries T2. Path-based *allow* decisions never trap. For the escalate class the supervisor resolves the path itself and hands the target the resulting fd with `SECCOMP_IOCTL_NOTIF_ADDFD`, so the target never re-resolves a path — the L2 answer to TOCTOU.
+
+L2 has its own SLA row (§2.22): **T0-L2 p99 ≤ 20 µs**, T1-L2 p99 ≤ 1 ms. **The CPU budget is certified at L2 and at L3 separately**; a latency claim without its tier is not a claim.
+
+*Landlock's presence on each matrix kernel and on the stock WSL2 kernel is measured by `F0.VM.02` and `F0.WSL.01` (`R1-04`); the cgroup-hook attach semantics by `R1-16`. If Landlock is absent the tier is **L2-**, the seccomp-only shape, and it is reported as such.*
 
 ---
 
@@ -291,6 +314,8 @@ BPF maps (≤ 12 MB of locked memory) are **accounted separately** and reported 
 | Agent tries `ptrace`/`process_vm_writev` on the daemon | — | BPF-LSM `ptrace_access_check` + `yama.ptrace_scope`; deny and alert |
 | Agent tries to kill the daemon | — | BPF-LSM `task_kill`; on Windows, PPL `[POST]` |
 | Probes detach for any reason | — | **Integrity watchdog**: `agentd` verifies every 2 s that its programs are still attached via `bpf_prog_get_info`. If not, it enters `DEGRADED` and reports it **loudly** to the UI and the SIEM |
+
+**At L2 the BPF-LSM rows above are unavailable.** Self-protection then rests on privilege separation — the engine runs as root under systemd, the agent as the user, so the agent cannot signal or `ptrace` it — plus a Landlock rule in every session ruleset denying access to AISME's own binaries, configuration, WAL and sockets. The user-owned `aisme-uiagent` **is** killable by the agent; its death drops the adjudicator ladder to the policy default, which is deny-on-timeout for the escalate class. That is the safe direction, and it is tested (§4.9).
 
 The principle: **it is more valuable for the system to know that someone tried to look than to prevent them from looking.** A forensic tool that lies about system state cannot be the substrate of a legally usable audit record — it contradicts the purpose of its own Merkle tree.
 
@@ -582,10 +607,11 @@ This directly contradicts the "zero friction" product axis. It cannot be hidden:
 | Tier | Requirements | What it provides |
 |---|---|---|
 | **L3 — Full enforce** | kernel ≥ 5.10, BTF, `lsm=...,bpf` active, `CAP_BPF` | Full observability + synchronous blocking on file, exec and network |
-| **L2 — Partial enforce** | kernel ≥ 5.9, BTF, no BPF-LSM | Full observability (kprobes/tracepoints/uprobes) + blocking via `seccomp_unotify` over the session tree + cgroup freeze. **Covers most real use cases without a reboot.** |
+| **L2 — Partial enforce** | kernel ≥ 5.13, BTF, **Landlock active in the LSM list** (default on Ubuntu 22.04+, Fedora, Debian 12), cgroup v2, no BPF-LSM | Full observability + **in-kernel file deny (Landlock)** + **in-kernel network deny (cgroup connect hooks)** + escalation via `seccomp_unotify` + cgroup freeze. **Covers most real use cases without a reboot, and is the WSL2 default.** |
+| **L2- — Degraded partial** | kernel ≥ 5.9, BTF, no Landlock | As L2 but with **no in-kernel deny**: every watched path decision traps to user space. Usable, and honest about its cost under build load. Reported as `L2-`, never as `L2` |
 | **L1 — Observe only** | kernel ≥ 5.4, no BTF/CO-RE | Telemetry + alerts + forensics. No blocking. |
 
-The installer detects the tier, explains it in one sentence, and offers the exact command to reach L3 (`grubby --update-kernel=ALL --args="lsm=..."` + reboot) **without running it automatically**. L2 is the MVP quality target: it must be *genuinely useful* without a reboot.
+The installer detects the tier, explains it in one sentence, and offers the exact command to reach L3 (`grubby --update-kernel=ALL --args="lsm=..."` + reboot) **without running it automatically**. L2 is the MVP quality target: it must be *genuinely useful* without a reboot — which, with Landlock and the cgroup hooks (§2.2.1), it now is.
 
 ---
 

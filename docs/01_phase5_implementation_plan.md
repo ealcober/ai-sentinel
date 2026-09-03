@@ -525,7 +525,9 @@ bitflags! { struct Taint: u32 {
 
 Normative rules:
 
-- **Propagation**: inherited on `fork`/`clone`/`execve`; propagated over pipes/UNIX sockets between processes of the same session; **not** propagated through the filesystem except on direct write of a tainted buffer (this avoids transitive explosion).
+- **Propagation**: inherited on `fork`/`clone`/`execve`; propagated over pipes/UNIX sockets between processes of the same session; and **through the filesystem**: a write by a tainted process labels the `File` node with the writer's taint (`File.taint`), and a read of a labelled file taints the reader. A network fetch — `git clone`, `curl -o`, a package install — labels the **target tree root**, so every file beneath it is untrusted without per-file bookkeeping. Labels are session-scoped and decay on `UNTRUSTED_INPUT`'s clock.
+
+  *Why this is not the transitive explosion the naive design produces:* labels flow only from a network-tainted writer to its own outputs, and from those outputs to their readers, inside one session. **Without it the headline indirect-injection detection does not fire at all.** Trace `RF-09`: `git clone` runs as a *child* of the agent, so the child acquires `UNTRUSTED_INPUT`, the child exits, and the agent — the parent — then reads `README.md` untainted. Taint went down the tree and died with the child. With file labelling the clone marks the tree, and the agent is tainted at the moment it reads the injection.
 - **Explicit declassification** (all recorded in the graph as `declassified_by` edges):
   - the secret file belongs to the workspace and is in `.gitignore` **and** the network destination is in the project allowlist;
   - the user marked the path as trusted in the UI;
@@ -625,7 +627,9 @@ What a local Merkle log actually provides: **tamper detection against anyone who
 **Correction:**
 
 - Terminology corrected throughout the documentation: **tamper-evident**, not *immutable*.
-- Signing key: **Ed25519 sealed in hardware** — TPM 2.0 (Windows/Linux), Secure Enclave/Keychain (macOS `[POST]`). No export operation.
+- Signing key: **ECDSA P-256 in hardware** — TPM 2.0 (Linux, and WSL2 where a TPM is exposed), Secure Enclave (iOS), StrongBox/TEE Keystore (Android). Non-exportable. **Ed25519 only where no hardware key exists** (software key, wrapped at rest). Every block header records which backend signed it (`key_hw`) and the UI shows it (`I-16`).
+  *Why not Ed25519 in hardware, which an earlier draft specified:* EdDSA is optional in the TPM 2.0 library specification and commodity discrete and firmware TPMs implement ECDSA P-256; iOS Secure Enclave keys are P-256 only; Android StrongBox is P-256/RSA. The curve was chosen for elegance rather than for what the hardware offers (`R1-12` verifies this on the reference hardware).
+  **WSL2 exposes no TPM** (`R1-18`), so the platform chosen for Windows users is software-signed. For such installs external root anchoring is **on by default** — it is what carries non-repudiation when the key is not sealed.
 - **External root anchoring (this is what gives real non-repudiation):** every N blocks or every 60 s, the Merkle root is emitted to the OTel collector / corporate SIEM as an `aisme.forensic.root` event. An auditor compares the local chain against remotely witnessed roots. Without this the guarantee is weak; with it, rewriting history requires compromising the SIEM too.
 - BLAKE3 instead of SHA-256 for leaf hashing (≈5–10× faster, same security level; it matters on the ingest path). SHA-256 is retained only where interoperability demands it.
 
@@ -703,6 +707,7 @@ The workhorse. A local, on-device tunnel that never forwards traffic to any AISM
 - **On Android, `ConnectivityManager.getConnectionOwnerUid()` maps every flow to an app UID with no root and no MDM** — real per-app attribution.
 - **AI-inference endpoint classification**: signed, updatable catalogue of inference provider endpoints (Anthropic, OpenAI, Google, Mistral, Azure OpenAI, Bedrock, self-hosted patterns) by domain, SNI and IP range.
 - **Traffic-shape classifier**: token-streaming (SSE) has a highly distinctive signature — a long-lived connection, a small asymmetric request, then a trickle of many small inbound frames at human-reading cadence. This detects *unknown* and *self-hosted* inference endpoints that a domain catalogue would miss. Runs on-device, no data leaves. This is the mobile equivalent of the research's own network heuristic, and it is one of the stronger ideas in the original documents.
+- **Degradations stated to the user** (`I-16`): under **QUIC / HTTP-3** the transport is UDP, so the "long-lived TCP" heuristic does not apply and SNI must be parsed from the QUIC Initial; under **ECH** the SNI is encrypted and under **DoH** the DNS name is invisible, leaving shape alone. None of these breaks detection, but all three lower confidence, and the app says so rather than showing false certainty.
 - **Enforcement**: drop the flow. Synchronous. Pre-egress. This is Network Slam.
 
 **S2 — AI Sentinel SDK** (embeddable library for AI apps and agent frameworks) `[MVP]`
@@ -745,8 +750,6 @@ The last clause is a product invariant: **the app must show the user its own rea
 
 #### 2.20.5 Consequence — the T2 adjudication model must become channel-aware
 
-#### 2.20.1 Consequence 1 — the T2 adjudication model must become channel-aware
-
 The existing T2 design assumes a human at the keyboard with a 10 s timeout. A phone in a pocket is not that. Freezing a developer's process for 10 s and then defaulting is fine; freezing it for 3 minutes waiting on a push notification is not.
 
 **Correction — per-channel adjudication policy:**
@@ -764,9 +767,13 @@ The asymmetry is deliberate: remote adjudication is for **reviewing and reversin
 
 Letting a phone authorize kernel-level operations on a workstation is the single most dangerous feature in this plan. It must inherit the **severity-monotonicity** principle from H-12 and add device-level authentication:
 
-1. **Pairing**: out-of-band QR code displayed by `aisme-cli pair` on the workstation, containing the workstation's public key + a one-time pairing secret. The phone generates a device keypair (stored in Android Keystore / iOS Secure Enclave, hardware-backed, non-exportable) and completes a Noise `XX` handshake. **No account, no cloud identity required for the local case.**
+1. **Pairing**: out-of-band QR code displayed by `aisme-cli pair` on the workstation, carrying the workstation's Noise static public key + a one-time pairing secret. The phone holds **two** keys, and the distinction is load-bearing:
+   - a **software X25519 static** in the OS keychain (encrypted at rest, app-bound) which is the Noise static and protects the *channel*;
+   - a **hardware P-256 key** (Secure Enclave / StrongBox, non-exportable, biometric-gated) whose public half is exchanged during pairing and which **signs every remote `ALLOW`**, attesting the *decision*.
+
+   Noise's DH functions are X25519 and X448; the enclaves perform P-256 only, so a hardware-resident key cannot be the Noise static — an earlier draft specified exactly that and it is not implementable. Splitting the two is not a workaround, it is the better design: the workstation verifies the hardware signature on an `ALLOW` before honouring it, and a valid transport session alone is never sufficient. **No account, no cloud identity required for the local case.**
 2. **End-to-end encryption**: the relay (§F9) is a **blind transport**. It sees ciphertext and routing metadata only. It never holds plaintext telemetry or verdicts. Self-hostable.
-3. **Asymmetric authorization** (invariant): a remote `DENY` requires only a paired device. A remote **`ALLOW` requires biometric/passcode confirmation on the device** (`BiometricPrompt` / `LAContext` with `.biometryCurrentSet`) **and** is capped by class: remote clients may never allow operations in the `CRITICAL` red-flag class (kernel driver load, credential store access, `/etc/shadow`-class writes). Those require physical presence.
+3. **Asymmetric authorization** (invariant): a remote `DENY` requires only a paired device. A remote **`ALLOW` must carry a signature from the device's hardware key**, produced under biometric/passcode confirmation (`BiometricPrompt` / `LAContext` with `.biometryCurrentSet`) — a signature, not merely a gated send — **and** is capped by class: remote clients may never allow operations in the `CRITICAL` red-flag class (kernel driver load, credential store access, `/etc/shadow`-class writes). Those require physical presence.
 4. **Replay and freshness**: every verdict carries a nonce bound to the specific escalation ID and a 30 s validity window. Reused nonces are a security event.
 5. **Revocation**: any paired device can be revoked from the workstation without network access; revocation is local-first.
 6. **Data minimization**: by default the phone receives *metadata* (path class, risk score, rationale summary), **not** file contents or raw Chain-of-Thought. Full detail requires an explicit per-session opt-in, because a lost phone must not equal a source-code leak.
@@ -853,7 +860,7 @@ The native sensor shims contain **no detection logic whatsoever** — they marsh
 │                          └───────────────────────────┘                        │
 └───────────────────────────────────────┬───────────────────────────────────────┘
                                         │
-┌──────────────── LINUX ────────────────┼──────────────── WINDOWS ──────────────┐
+┌──────────── LINUX / WSL2 ─────────────┼─── WINDOWS [POST — Annex F] ──────────┐
 │  BPF ring buffers (RINGBUF)           │   Shared section (SPSC ring)          │
 │  ┌──────────────────────────────┐     │   ┌──────────────────────────────┐    │
 │  │ tracepoints: sched_process_* │     │   │ aisme-flt.sys (C, <3k LoC)   │    │
@@ -866,7 +873,8 @@ The native sensor shims contain **no detection logic whatsoever** — they marsh
 │  │ cgroup.freeze (T2 channel)   │     │   └──────────────────────────────┘    │
 │  └──────────────────────────────┘     │   ETW / ETW-TI (process, image, net)  │
 │                                        │   Detours-free: no injection `[CUT]` │
-└───────────────────── RING 0 ──────────┴───────────────────────────────────────┘
+└───────────────────── RING 0 ──────────┴── MVP Windows coverage = WSL2, i.e. ──┘
+                                           the LINUX column, at tier L2
 ```
 
 Visible changes from the original design: FUSE-RPC is gone, the Frida patching engine is gone, memory spoofing is gone, Detours DLL injection is gone (replaced by cooperative capture plus a Windows-equivalent return probe that does not modify memory), `forensicd` appears, `seccomp_unotify` and the freezer appear, the Windows telemetry channel is no longer `FltSendMessage`, and the control plane extends to mobile through a blind relay.
@@ -882,10 +890,11 @@ Visible changes from the original design: FUSE-RPC is gone, the Frida patching e
 | RSS `aisme-agentd` | ≤ 42 MB | **50 MB** | 72 h soak |
 | RSS `aisme-forensicd` | ≤ 110 MB | 150 MB | 72 h soak |
 | BPF map locked memory | ≤ 8 MB | 12 MB | — |
-| `aisme-flt.sys` non-paged memory | ≤ 4 MB | 8 MB | Driver Verifier |
+| `aisme-flt.sys` non-paged memory `[POST — Annex F]` | ≤ 4 MB | 8 MB | Driver Verifier |
 | Aggregate CPU (all components) | ≤ 1.5% | **3.0%** of one core | *Reference workload* ↓ |
 | Idle CPU (no active agent) | ≤ 0.1% | 0.3% | 10 min idle |
-| T0 latency (p99) | ≤ 8 µs | **15 µs** | 1M intercepted syscalls |
+| T0 latency (p99) — **L3**, BPF-LSM | ≤ 8 µs | **15 µs** | 1M intercepted syscalls |
+| T0 latency (p99) — **L2**, Landlock + cgroup hooks | ≤ 12 µs | **20 µs** | 1M intercepted syscalls (§2.2.1) |
 | T1 latency (p99) | ≤ 400 µs | 1 ms | 10k escalations |
 | T2 latency (p95) | ≤ 1.2 s | 2.5 s | 200 adjudications |
 | Project build-time overhead | ≤ 2% | 4% | ↓ |
@@ -900,10 +909,18 @@ Visible changes from the original design: FUSE-RPC is gone, the Frida patching e
 | **Android `VpnService` process RSS** | ≤ 40 MB | 60 MB | Low-memory device (3 GB RAM) |
 | Sentinel per-flow classification latency | ≤ 40 µs | 150 µs | 10k flows replayed |
 | Sentinel added network latency (allowed flow) | ≤ 0.5 ms | 2 ms | Speedtest A/B, tunnel on vs. off |
-| Sentinel throughput ceiling | ≥ 300 Mbps | 150 Mbps | The tunnel must not throttle the device |
+| Sentinel throughput ceiling | ≥ 500 Mbps | **300 Mbps** | The tunnel must not throttle the device (owner decision Q-01) |
 | Mobile battery drain (Sentinel active, tunnel up) | ≤ 3%/24 h | **6%/24 h** | Normal usage profile |
 | Mobile battery drain (control plane only, idle) | ≤ 1%/24 h | 3%/24 h | Push-driven, no polling |
 | Sentinel SDK overhead per tool call | ≤ 50 µs | 200 µs | Host app must not feel it |
+| `aisme-agentd` binary size, stripped | ≤ 10 MB | 12 MB | Proxy for dependency creep (§5.2) |
+| Non-session process overhead | ≤ 0.1% | **0.5%** | The central architectural claim (`T4.4.14`) |
+| Compressor token reduction | ≥ 0.85 | 0.60 | Annex C corpus (§4.7) |
+| Sentinel classifier precision / recall | ≥ 0.97 / ≥ 0.95 | 0.95 / 0.90 | Flow corpus (§4.11) |
+| Sentinel video false-positive rate | ≤ 0.2% | **1.0%** | Hard negatives (§4.11) |
+| Benign corpus blocks / escalations | 0 / 0 | **0 / 2** | `I-15`; a release blocker (§4.8.2) |
+| Prompts per developer-day | ≤ 1 | **3** | Prompt fatigue (`01_permission-model.md` §6) |
+| Warns per developer-day | ≤ 10 | 30 | A warn costs attention, not a decision (§4.1 of the same note) |
 
 **Normative definition of the *reference workload*** (without it, "<3% CPU" means nothing and is not reproducible):
 
@@ -913,6 +930,7 @@ Visible changes from the original design: FUSE-RPC is gone, the Frida patching e
 > (c) an **agent simulator** (`aisme-agentsim`) replaying a recorded Claude Code trace: 200 tool calls/hour, 4,000 file reads, 600 writes, 40 subprocess executions, 120 HTTPS requests with SSE streaming;
 > (d) IDE indexing over the workspace.
 > Measured with and without AISME, 3 repetitions, comparing the median of total system CPU time.
+> **Run at tier L2 and at tier L3 on every matrix kernel; both must pass.** A CPU or latency figure without its tier is not a figure (§2.2.1).
 
 ---
 
@@ -929,7 +947,12 @@ pub struct Capabilities {
     pub seccomp_unotify: bool,     // kernel >= 5.9 (CONTINUE >= 5.5)
     pub cgroup_v2_freeze: bool,    // kernel >= 5.2 + cgroup2 mounted
     pub uprobe: bool,
+    pub landlock_abi: u8,          // 0 = absent; >=3 truncate; >=4 TCP ports
+    pub cgroup_sock_addr: bool,    // BPF_CGROUP_INET4/6_CONNECT attachable
+    pub wsl2: bool,                // changes tier guidance, /mnt semantics, TPM absence
     pub tpm: bool,
+    pub key_hw: KeyHw,             // None | Tpm2P256 | SecureEnclaveP256
+                                   // | StrongBoxP256 | SoftwareEd25519
     // Windows
     pub minifilter_loaded: bool,
     pub etw_ti: bool,              // requires PPL — [POST]

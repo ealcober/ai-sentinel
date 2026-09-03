@@ -4,7 +4,7 @@ Kernel-level observability and containment for autonomous AI coding agents.
 
 AISME watches what an AI agent *says it is going to do* and what it *actually does to your machine*, links the two causally, and stops the operations that do not match. It runs on Linux workstations from Ring-0 — including **Windows via WSL2** — and on Android and iOS through the **AI Sentinel** app.
 
-> **Status: pre-implementation.** Architecture and implementation plan are complete (Parts 0–VIII, Annexes A–G) and have been through a full challenge review; no product code has been written yet. See [the plan](docs/01_phase5_implementation_plan.md) and [the review](docs/02_challenge_ampliacion_sistema.md).
+> **Status: pre-implementation.** The architecture and implementation plan are complete (Parts 0–VIII, Annexes A–I), reviewed twice — for correctness and for executability — with every finding applied; no product code exists yet. Start at [the plan](docs/01_phase5_implementation_plan.md); the live position is in [STATE](docs/ai/STATE.md); every change is in the [changelog](docs/CHANGELOG.md).
 
 ---
 
@@ -27,7 +27,7 @@ AISME adds that representation.
 
 ## Design commitments
 
-These are enforced by CI gates, not aspirations:
+These are enforced by gates that run locally, not aspirations:
 
 - **< 50 MB RAM** for the hot daemon, **< 3% CPU** under a defined reference workload, **< 15 µs** p99 added syscall latency.
 - **Strictly read-only observation.** AISME never modifies the memory, control flow or cryptographic state of a monitored process. It does not defeat certificate pinning, and it does not hide itself from the system.
@@ -52,12 +52,12 @@ Full topology and the reasoning behind every choice: [implementation plan, Part 
 
 ```
 crates/        Rust workspace — engine, daemons, correlation, compression, CLI
-driver/        aisme-flt — Windows minifilter (C11 / WDK)  [DEFERRED — ADR-02]
+driver/        aisme-flt — Windows minifilter (C11 / WDK)  [POST — ADR-02]
 mobile/        AI Sentinel — Android (Kotlin) and iOS (Swift) sensor shims
 sdk/           AI Sentinel SDK bindings for third-party AI applications
 ui/            React/TypeScript control-plane UI (Tauri v2 shell)
 xtask/         Build, test and certification orchestration
-docs/          Plan, ADRs, design notes, research sources, LLM working docs
+docs/          Plan, reviews, ADRs, design notes, threat model, research, LLM working docs, changelog
 tests/         Fixtures, labelled corpora, adversarial scenarios
 ```
 
@@ -66,11 +66,14 @@ tests/         Fixtures, labelled corpora, adversarial scenarios
 | Document | Purpose |
 |---|---|
 | [docs/01_phase5_implementation_plan.md](docs/01_phase5_implementation_plan.md) | The definitive plan. Start here |
-| [docs/02_challenge_ampliacion_sistema.md](docs/02_challenge_ampliacion_sistema.md) | Challenge review of the whole system: 209 findings, unapplied patches, owner decisions |
+| [docs/02_challenge_ampliacion_sistema.md](docs/02_challenge_ampliacion_sistema.md) | Correctness review: 209 findings with their patches, all applied; the owner's ten decisions |
+| [docs/03_challenge_accionabilidad.md](docs/03_challenge_accionabilidad.md) | Executability review: 35 findings with their patches, all applied |
+| [docs/CHANGELOG.md](docs/CHANGELOG.md) | Every change, by commit and task |
+| [docs/security/01_threat-model.md](docs/security/01_threat-model.md) | Assets, ranked adversaries, trust boundaries, non-goals |
 | [docs/ai/AGENTS.md](docs/ai/AGENTS.md) | Working contract for development LLMs |
 | [docs/ai/STATE.md](docs/ai/STATE.md) | Live project state — what is done, what is next |
 | [docs/ai/invariants.md](docs/ai/invariants.md) | Non-negotiable constraints |
-| [docs/design/](docs/design/) | Design notes under active development |
+| [docs/design/](docs/design/) | `01_permission-model.md` (the permission and suppression model), `02_aisme-run.md` (the session launcher) |
 | [docs/adr/](docs/adr/) | Architecture decision records |
 | [docs/research/](docs/research/) | Original research documents (Spanish) and extracted text |
 

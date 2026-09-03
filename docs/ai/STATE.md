@@ -5,15 +5,9 @@
 
 ## Where we are
 
-**Planning is complete, structurally reviewed, and challenged end to end.** The plan (`docs/01_phase5_implementation_plan.md`) is ~2,900 lines, Parts 0 through VIII plus Annexes A–F. **No product code has been written and the Cargo workspace has no members yet** — that is task `F0.REPO.01`.
+**Planning is complete and executable.** The plan (`docs/01_phase5_implementation_plan.md`) is ~3,700 lines, Parts 0 through VIII plus Annexes A–I, reviewed twice with every finding applied: `docs/02_…` for correctness, `docs/03_…` for executability. **No product code exists and the Cargo workspace has no members** — that is task `F0.REPO.01`.
 
-Two reviews shaped it. `ADR-03` fixed three structural defects (a circular dependency between the kernel phase and the policy language, horizontal layering that deferred all integration risk to week 10, an under-specified interface layer) and renumbered the phases **once**; **task IDs freeze at F0 start**. Then `docs/02_challenge_ampliacion_sistema.md` challenged all 34 points of the system, producing 209 numbered findings, an R1 register of 18 unverified claims, an R2 register of 13 claims that fell, and ten owner decisions (Q-01…Q-10, all answered).
-
-**All 34 points' patches are applied**, one commit per point, and a coherence pass runs clean.
-
-Then a **second review** asked a different question — *is this executable?* — and found that it was not: `docs/03_challenge_accionabilidad.md` measured 67 `xtask` commands cited by the gates with five assigned to a task, zero enumerated `EventKind` variants, a policy language with examples and no grammar, a protocol with method names and no shapes, four of five corpora with no format, and five named deliverables that did not exist. Twelve points (`P-35`…`P-46`), 35 findings (`D-210`…`D-244`), all applied.
-
-**The plan is now executable end to end**: every gate command exists from F0 (unimplemented ones exit 3 naming the phase that owes them), every type has values, every language has a grammar, every protocol has shapes, every corpus has a manifest, every named deliverable has a task, and every phase states what it assumes and what it hands on. **F0 can start.**
+**Task IDs are frozen** (`I-23`, `ADR-03`). Every gate command exists from F0 (Annex H; an unimplemented one exits 3 naming the phase that owes it), every type has values (§F1.1.1), the policy language has a grammar (Annex B §B.0), the protocol has shapes (Annex I), every corpus has a manifest (§4.14), every named deliverable has a task, and every phase states what it assumes and what it hands on (§3.7.1). The execution directives are in `CLAUDE.md` §"How to execute the plan"; every closed task adds a line to `docs/CHANGELOG.md`. **F0 can start.**
 
 ## Done
 
@@ -50,22 +44,21 @@ Then a **second review** asked a different question — *is this executable?* �
 
 ## Next up
 
-**Phase 0 — apply both reviews' patches: DONE.** Reports 02 (34 points) and 03 (12 points) are applied, one commit per point. Both are now records rather than queues; their R1 registers became the twenty-row verification backlog in plan §F0.4.
-
 **One owner question is open**: `Q-11` — AISME-PL rule precedence, **strictest-verdict-wins** (implemented, order-independent, fails safe) versus most-specific-wins. The safe default is in place; answering it either confirms Annex B §B.10 or triggers one edit there.
 
 **Phase F0.** Ordered; task IDs from Plan Part III.
 
-0. `F0.REPO.00` — **done**: the owner initialised the repository before the patches (`b8b7a27`).
 1. **The four `[BLOCKING]` verifications of §F0.4, in week 1** — `F0.VER.04` (Landlock), `F0.VER.16` (cgroup connect hook), `F0.VER.18` (WSL2 TPM), `F0.VER.12` (hardware curves). They do not confirm claims, they decide what plan rows say, and three phases plus a High/High risk rest on them. `F0.WSL.01` is where three of the four are measured.
-2. **`F0.WSL.01`** — probe the stock WSL2 kernel: `CONFIG_BPF_LSM`, **Landlock presence and ABI**, cgroup v2, systemd, and whether a TPM exists. **Do this first**: it decides whether WSL2 reaches L2 or L3, whether the L2 row reads as written (`R1-04`), and it confirms `R1-18` (no TPM ⇒ software-signed forensics for Windows users).
-2. `F0.REPO.01` / `F0.REPO.05` — populate the Cargo workspace with each crate **in its §3.1 layer**, dependency direction correct from the first commit.
-3. `F0.REPO.03` — `xtask` orchestrator: `build-ebpf`, `verify-budgets`, `verify-layering`, `vm up`.
-4. `F0.GATE.04`…`F0.GATE.08` — budget gate, forbidden-dependency gate, **dependency-direction gate**, doc-drift gate, `verify-docs`. **All must exist before F1 code lands**, or the invariants become retrofits nobody enforces. All run locally (`I-27`); there is no hosted CI.
-5. `F0.VM.01` / `F0.VM.02` / `F0.WSL.02` — VM images and the kernel matrix, including WSL2 with and without systemd.
-6. `F0.SEC.01` — threat model doc recording the `H-05`/`H-06`/`H-12` anti-goals, the OWASP Agentic Top-10 mapping (Annex G §G.3) and the relationship to the agent's own sandbox (§G.4).
-7. `F0.DOC.01` — write the ten seed memories (Plan §7.4). They record facts already paid for.
-8. `F0.VER.01…18` — one task per R1 register entry, each with its verification command. **The R1 register must be empty at GATE F0.**
+2. **`F0.WSL.01`** — probe the stock WSL2 kernel: `CONFIG_BPF_LSM`, **Landlock presence and ABI**, the cgroup connect hook, cgroup v2, systemd, and whether a TPM exists. Three of the four blocking verifications are measured here.
+3. `F0.ASSET.01` / `F0.ASSET.02` — corpus manifests and the empty corpus tree; **record the reference trace** in observe-only mode, before any enforcement exists.
+4. `F0.REPO.01` / `F0.REPO.05` — populate the Cargo workspace with each crate **in its §3.1 layer** (`layers.toml` is the source), dependency direction correct from the first commit.
+5. `F0.REPO.03` — `xtask`: the argument surface of **all 68 Annex H commands**, each unimplemented one exiting 3 with its owning task; working `build-ebpf`, `dist`, `vm *`, `verify-*`, `gate --level`.
+6. `F0.GATE.04`…`F0.GATE.08` — budget gate, forbidden-dependency gate, dependency-direction gate, doc-drift gate, `verify-docs`. **All exist before F1 code lands.** All run locally (`I-27`).
+7. `F0.VM.01` / `F0.VM.02` / `F0.WSL.02` — VM images and the kernel matrix with the expected tier asserted per kernel, including WSL2 with and without systemd.
+8. `F0.DOC.01` — write the **eleven** seed memories from Plan §7.4 (fact, why it matters, source — transcribe, do not reconstruct).
+9. `F0.VER.01…20` — the remaining sixteen verification rows of §F0.4, any order. **Every row has a recorded outcome at GATE F0.**
+
+Already in place, not F0 work: `F0.REPO.00` (repository), `F0.SEC.01` (`docs/security/01_threat-model.md`), `ADR-04` and `ADR-05`, `docs/adr/00_template.md`.
 
 **Then F1, and treat it as the highest-leverage phase in the plan.** It ends with the interface freeze (§3.2), after which four tracks run in parallel against contracts that cannot move. An interface defect found in F1 costs hours; the same defect found in F6 invalidates three tracks. Do not compress it.
 
@@ -93,7 +86,7 @@ All ten open questions were answered by the owner on 2026-08-17 (`docs/02_…` �
 - **Read Plan §3.1–3.2 before writing any code.** The layering rules (`A-01`…`A-06`) and the trait catalogue are the architecture. `aisme-core` must never learn what OS it is on — that single rule is what makes one engine serve Linux, WSL2, Android, iOS and the SDK.
 - **F2 is a walking skeleton, not a feature phase.** Its out-of-scope list is as binding as its task list. If it grows features it becomes F3 with extra steps and the whole risk-transfer benefit is lost.
 - **Plan Part II is the most valuable artefact here.** It exists specifically to stop the research's rejected designs from being re-implemented by a well-meaning contributor. Read it before writing kernel code. The precedence rule is in Plan §7.6.
-- **Windows is served by WSL2 now** (ADR-02). The native driver spec now lives in **Annex F** marked `[POST]` — do not implement it. Keep the `Sensor`/`Enforcer`/`Adjudicator` trait boundaries (§3.2); they are what makes that decision cheaply reversible.
+- **Windows is served by WSL2** (ADR-02). The native driver spec now lives in **Annex F** marked `[POST]` — do not implement it. Keep the `Sensor`/`Enforcer`/`Adjudicator` trait boundaries (§3.2); they are what makes that decision cheaply reversible.
 - **The hardest unsolved problems**, both with documented fallbacks so neither can block the MVP: prompt delivery on headless/GUI Linux (`docs/design/01_permission-model.md` §7.3) and F4 tier-D offset resolution on stripped BoringSSL.
 - **The benign corpus (§4.8.2) matters as much as the red team corpus.** A product that blocks `npm ci` is dead on arrival. Milestone M5 is the real go/no-go for exactly this reason.
 - The permission model note is now `SPEC` (`docs/design/01_permission-model.md`) and carries the `warn` verdict and suppression rules. F1, F7 and F8 implement it.

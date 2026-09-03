@@ -29,8 +29,11 @@ The canonical list lives in `CLAUDE.md`; it is repeated here verbatim and a gate
 2. Append docs/ai/memory/*.md   ← only durable, non-obvious discoveries
 3. Write an ADR if you decided something architectural
 4. Update the plan if reality diverged from it
-5. Leave a handoff note in docs/ai/handoff/ if the task is mid-flight
+5. Add a line to docs/CHANGELOG.md for every task closed
+6. Leave a handoff note in docs/ai/handoff/ if the task is mid-flight
 ```
+
+The execution directives — how to pick a task, edit, commit, measure and close a phase — are in `CLAUDE.md` §"How to execute the plan". They are not repeated here.
 
 ## 2. Definition of done
 
@@ -67,6 +70,7 @@ A phase is done when its `GATE F<n>` block passes in full. Code that works but w
 | Weaken the benign corpus gate to ship | `I-15` |
 | Add a workflow that triggers on push, pull request or schedule | `I-27` — this project incurs zero hosted-CI cost |
 | Let a suppression rule remove evidence or weaken enforcement | `I-26` — suppression is notification-only |
+| Regenerate a file instead of editing it | A rewrite silently loses the reasoning nobody is looking at; ask the owner if one is genuinely needed |
 | Commit or push without being asked | Standard |
 
 ## 5. Memory discipline

@@ -17,10 +17,26 @@ This list is canonical. `docs/ai/AGENTS.md` §1 and plan Part 0 rule 5 repeat it
 ## Write order (end of every session, non-optional)
 
 1. Update `docs/ai/STATE.md` — task statuses, what you learned, what is blocked.
-2. Append to `docs/ai/memory/` if you discovered something durable and non-obvious.
-3. Write an ADR if you made or changed an architectural decision.
-4. If the plan is now wrong, **fix the plan** — it is a living document.
-5. Leave a handoff note in `docs/ai/handoff/` if the task is mid-flight.
+2. Add a line to `docs/CHANGELOG.md` under `[Unreleased]` for every task you closed.
+3. Append to `docs/ai/memory/` if you discovered something durable and non-obvious.
+4. Write an ADR if you made or changed an architectural decision.
+5. If the plan is now wrong, **fix the plan** — it is a living document.
+6. Leave a handoff note in `docs/ai/handoff/` if the task is mid-flight.
+
+## How to execute the plan
+
+The plan is the roadmap. Execute it in this order and this way; nothing here is optional.
+
+1. **Pick the next task from `docs/ai/STATE.md` → "Next up".** It names the phase and the task IDs in order. Within a phase, work the task table top to bottom unless a task's Notes column says otherwise. Check the phase's **Entry** row in plan §3.7.1 before starting; if an Entry condition is only available as a mock, say so in `STATE.md` under `## Mocked entries`.
+2. **One task ID per unit of work.** Announce it. Do not start a second task before the first is done by the definition in `docs/ai/AGENTS.md` §2.
+3. **Edit surgically. Never regenerate a file.** Change only what the task requires; keep every existing comment and its reasoning; if your change makes a comment false, rewrite that comment and say so in the commit. A rewrite silently loses what nobody is looking at. If you believe a rewrite is genuinely needed, ask the owner and explain why.
+4. **One commit per task**, subject `<area>(<task-id>): <what changed>`, body stating what was verified and how. Commit only when the task's own checks pass. Do not push unless asked.
+5. **Predict before you measure.** Any command that produces a number (`bench-*`, `verify-budgets`, the §F0.4 backlog) gets its expected outcome written down first — in the commit body or in `STATE.md` — and then the measurement.
+6. **A phase closes only on its gate.** Run the phase's `GATE F<n>` block and paste its output. `PASS` and `PENDING <phase>` are acceptable; `FAIL` is not; `SKIP` needs a reason. Exit code 3 means *not implemented in any phase yet* and names the task that will implement it — that is a map, not an error.
+7. **Nothing enters the plan or the docs unverified.** A claim about a kernel, a platform or a library that you cannot show with a command or a citation goes into §F0.4 as a verification row, not into prose.
+8. **When the plan is wrong, fix the plan** — surgically, in the same commit, citing the task. When an `H-xx` finding or an invariant is wrong, write an ADR; do not implement around it.
+9. **When blocked**, write the blocker into `STATE.md` with what would unblock it, then stop. Do not mark a task done that is not.
+10. **Report what happened, not a summary of it.** Gate output, test output, the number you measured. A failed step is reported as failed.
 
 ## The single most important rule
 
@@ -58,7 +74,7 @@ L0 WIRE      aisme-ebpf-common — no_std, zero deps, layout-stable
 |---|---|
 | **`aisme-core` has no I/O, no async runtime, no `cfg(target_os)`, no platform crate.** | The moment it learns about a platform, mobile reuse dies. Enforced by `cargo xtask verify-layering`. |
 | No layer depends upward; no sibling dependency inside L2. | |
-| No platform-specific type in `aisme-core`'s public API. | This is what made removing Windows cost an afternoon instead of a refactor. |
+| No platform-specific type in `aisme-core`'s public API. | This is what keeps `ADR-02` reversible. |
 | `agentd` depends on adapters **only through L1 traits**. | Enables `MockSensor` for the whole test suite. |
 | The composition root is `aisme-agentd::platform` — the **only** module that names concrete adapters or uses `cfg(target_os)`. | A rule with no legal home is not a rule. |
 | `unsafe` is forbidden in `aisme-core` and in L4; permitted in L0 (layout), L2 (platform FFI) and the L3 runtimes (`mmap` for ring buffer and WAL), always with a safety comment. | `agentd` cannot map its own ring buffer without it. |
@@ -71,7 +87,7 @@ L0 WIRE      aisme-ebpf-common — no_std, zero deps, layout-stable
 
 ## Invariants you must not break
 
-Full list in `docs/ai/invariants.md`. The ones that fail CI:
+Full list in `docs/ai/invariants.md`. The ones that fail the gate:
 
 - `aisme-agentd` RSS **< 50 MB**; aggregate CPU **< 3%**; T0 p99 **< 15 µs** — canonical values in `budgets.toml`, checked by a gate.
 - AISME **never modifies an observed process**. There is a test (`T4.5.06`) that proves this; it must keep passing.
@@ -97,7 +113,7 @@ Full list in `docs/ai/invariants.md`. The ones that fail CI:
 
 ## Build and verify
 
-The workspace is not yet populated — phase `F0` creates it. Once it exists:
+Phase `F0` populates the workspace. The gates, all local:
 
 ```bash
 cargo xtask gate --level commit     # what the pre-commit hook runs, < 10 min
@@ -110,3 +126,5 @@ cargo xtask test-benign             # false-positive gate
 ```
 
 **Every gate runs locally.** There is no hosted CI and no workflow that triggers on push (`I-27`). Never run kernel tests outside a disposable VM (`cargo xtask vm up <name>`).
+
+Every `cargo xtask` command in plan Annex H exists from F0. One whose phase has not arrived exits **3** and names the task that implements it; `gate --level` reports that as `PENDING`, not as a failure.

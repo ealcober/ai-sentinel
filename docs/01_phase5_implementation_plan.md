@@ -2375,7 +2375,9 @@ The detection quality of the mobile engine is only as good as its corpus. This i
 
 ## Part V — Documentation and deployment
 
-Scope note: the native Windows driver is deferred by `ADR-02` and its specification lives in **Annex F**. Windows is served by **WSL2** running the Linux engine. This part reflects that; the native-Windows packaging specification is retained in the ADR for revival.
+Scope note: the native Windows driver is deferred by `ADR-02` and its specification lives in **Annex F**. Windows is served by **WSL2** running the Linux engine.
+
+**Task IDs in this part use the `DEP.<block>.<n>` namespace**, not `F<n>.*`: these are cross-phase deployment tasks and the earlier `F5.*` prefix pointed readers at phase F5, which is correlation. Each table names the phase that owns the work.
 
 ### 5.1 Cross-platform builds
 
@@ -2393,15 +2395,15 @@ Scope note: the native Windows driver is deferred by `ADR-02` and its specificat
 
 **glibc vs. musl.** The daemons link **glibc** and are built against the oldest supported glibc (Ubuntu 22.04 / glibc 2.35) in a container, not statically with musl. Reason: `libbpf`'s CO-RE path, NSS for user resolution, and TPM/PKCS#11 access all behave badly under musl static linking. Portability comes from an old build base, not from static linking.
 
-**The eBPF build is the one non-obvious step.** `cargo xtask build-ebpf` compiles the BPF crate with a nightly toolchain and `-Z build-std=core`, producing `aisme.bpf.o`, which is then embedded with `include_bytes!` into `aisme-agentd`. **The user never needs LLVM, Clang, or kernel headers** — this is the core reason for choosing Aya (plan §F2, `F3.LD.01`).
+**The eBPF build is the one non-obvious step.** `cargo xtask build-ebpf` compiles the BPF crate with a nightly toolchain and `-Z build-std=core`, producing `aisme.bpf.o`, which is then embedded with `include_bytes!` into `aisme-agentd`. **The user never needs LLVM, Clang, or kernel headers** — this is the core reason for choosing Aya (phase F3, `F3.LD.01`).
 
 | ID | Task |
 |---|---|
-| `F5.BLD.01` | `cargo xtask build-ebpf` with pinned nightly, reproducible output hash |
-| `F5.BLD.02` | Container-based release builds (old glibc base) via `cargo xtask dist` |
-| `F5.BLD.03` | Cross builds for aarch64 with `cross` or a native runner |
-| `F5.BLD.04` | Android/iOS core builds + `uniffi` binding generation |
-| `F5.BLD.05` | **Reproducible builds**: pinned toolchain, `SOURCE_DATE_EPOCH`, no build-time timestamps; two independent builds must produce identical hashes |
+| `DEP.BLD.01` | `cargo xtask build-ebpf` with pinned nightly, reproducible output hash |
+| `DEP.BLD.02` | Container-based release builds (old glibc base) via `cargo xtask dist` |
+| `DEP.BLD.03` | Cross builds for aarch64 with `cross` or a native runner |
+| `DEP.BLD.04` | Android/iOS core builds + `uniffi` binding generation |
+| `DEP.BLD.05` | **Reproducible builds**: pinned toolchain, `SOURCE_DATE_EPOCH`, no build-time timestamps; two independent builds must produce identical hashes |
 
 ### 5.2 Self-contained binary packaging
 
@@ -2423,7 +2425,7 @@ aisme-agentd (single ELF)
 | `AI-Sentinel-<ver>.aab` | Android App Bundle |
 | `AI Sentinel.ipa` | iOS, via App Store Connect |
 
-**Size budget:** `aisme-agentd` ≤ 12 MB stripped. Enforced in `budgets.toml` — binary size is a proxy for dependency creep, and dependency creep is how the RAM budget dies.
+**Size budget:** `aisme-agentd` ≤ 12 MB stripped — `budgets.toml` key `process.agentd.binary.size_mb`, measured on the stripped release artefact. Binary size is a proxy for dependency creep, and dependency creep is how the RAM budget dies. *The claim "enforced in `budgets.toml`" was made before the key existed; it is now true.*
 
 ### 5.3 Signing, SBOM and supply chain
 
@@ -2431,14 +2433,14 @@ A security product is a high-value supply-chain target. Its own chain must be de
 
 | ID | Task | Notes |
 |---|---|---|
-| `F5.SUP.01` | **SBOM** per release: CycloneDX via `cargo-cyclonedx` + `syft` for mobile | Published as a release asset |
-| `F5.SUP.02` | `cargo-auditable` — dependency manifest embedded in the binary itself | Lets a responder audit a deployed binary offline |
-| `F5.SUP.03` | Linux package signing with GPG; repository metadata signed | No EV certificate needed |
-| `F5.SUP.04` | **Sigstore/cosign** signatures + transparency-log entry for every artifact | Public verifiability |
-| `F5.SUP.05` | `cargo-deny`: licences, advisories, duplicate and yanked crates | CI gate, already in F0 |
-| `F5.SUP.06` | **Dependency policy**: every new dependency of `aisme-agentd` or `aisme-ebpf` requires review. `unsafe`-heavy or unmaintained crates rejected | The hot path and kernel path are audited surfaces |
-| `F5.SUP.07` | Vendored dependencies for release builds; no network access during `cargo xtask dist` | Reproducibility + tamper resistance |
-| `F5.SUP.08` | Release checklist with two-person sign-off on the budget certification report | §4.4 report is a release artifact |
+| `DEP.SUP.01` | **SBOM** per release: CycloneDX via `cargo-cyclonedx` + `syft` for mobile | Published as a release asset |
+| `DEP.SUP.02` | `cargo-auditable` — dependency manifest embedded in the binary itself | Lets a responder audit a deployed binary offline |
+| `DEP.SUP.03` | Linux package signing with GPG; repository metadata signed | No EV certificate needed |
+| `DEP.SUP.04` | **Sigstore/cosign** signatures + transparency-log entry for every artifact | Public verifiability |
+| `DEP.SUP.05` | `cargo-deny`: licences, advisories, duplicate and yanked crates | CI gate, already in F0 |
+| `DEP.SUP.06` | **Dependency policy**: every new dependency in **L0–L2**, and every `unsafe` block in L3, requires review (`A-06`). `unsafe`-heavy or unmaintained crates rejected | The kernel-adjacent and budget-bound surfaces |
+| `DEP.SUP.07` | Vendored dependencies for release builds; no network access during `cargo xtask dist` | Reproducibility + tamper resistance |
+| `DEP.SUP.08` | Release checklist with two-person sign-off on the budget certification report | §4.4 report is a release artifact |
 
 **Note:** dropping the Windows driver removed the EV certificate from the supply chain entirely. Linux (GPG), Android (self-managed keystore, $25 account) and iOS/macOS (Apple Developer Program, $99/yr) are all self-service. This is a real simplification, not just a cost saving — there is no longer a commercial third party on the release critical path.
 
@@ -2455,11 +2457,12 @@ A security product is a high-value supply-chain target. Its own chain must be de
 ```
 $ sudo aisme install
 
-  Detected: Ubuntu 24.04 · kernel 6.8 · BTF present · cgroup v2
+  Detected: Ubuntu 24.04 · kernel 6.8 · BTF present · cgroup v2 · Landlock ABI 4
   BPF-LSM:  not active
 
-  AISME will install at TIER L2 — full observability, plus blocking of
-  file, exec and network operations through seccomp and cgroup freezing.
+  AISME will install at TIER L2 — full observability, plus in-kernel blocking
+  of file writes outside your workspace (Landlock) and of network egress
+  outside this session's allowlist (cgroup hooks), and prompts for the rest.
 
   TIER L3 additionally blocks at the LSM layer, which is harder to bypass.
   It requires adding "bpf" to the kernel's LSM list and rebooting:
@@ -2472,18 +2475,20 @@ $ sudo aisme install
   Continue installing at TIER L2? [Y/n]
 ```
 
-**L2 must be genuinely useful.** Most users will not reboot. If L2 is a crippled demo, the product fails for the majority of its installs.
+**L2 must be genuinely useful.** Most users will not reboot. If L2 is a crippled demo, the product fails for the majority of its installs — and with Landlock and the cgroup hooks (§2.2.1) it is not a demo.
+
+A third variant of this screen exists for **`L2-`** (no Landlock): it states the seccomp-only shape and its cost under build load plainly, rather than presenting a weaker tier under the same name.
 
 #### 5.4.2 WSL2 specifics
 
 | ID | Task | Notes |
 |---|---|---|
-| `F5.INS.01` | **WSL2 detection** (`/proc/sys/kernel/osrelease` contains `microsoft`, or `/run/WSL` exists) and WSL-specific install path | Different guidance, different tier probe |
-| `F5.INS.02` | systemd and non-systemd startup paths (`/etc/wsl.conf` `systemd=true` vs. `wsl.conf` boot command) | Both must work |
-| `F5.INS.03` | Guidance for reaching L3 on WSL2 via `.wslconfig` `kernelCommandLine=`, or a custom kernel if `CONFIG_BPF_LSM` is absent | Gated on `F0.WSL.01` |
-| `F5.INS.04` | **Coverage disclosure**: state explicitly that native Windows processes are not covered (`I-16`) | Non-negotiable honesty requirement |
-| `F5.INS.05` | `/mnt/*` workspace handling: warn when the project root is on a Windows drive, since path semantics and performance differ | Common real-world setup |
-| `F5.INS.06` | `RLIMIT_MEMLOCK` and `/proc/sys/kernel/unprivileged_bpf_disabled` handling | Frequent install failure |
+| `DEP.INS.01` | **WSL2 detection** (`/proc/sys/kernel/osrelease` contains `microsoft`, or `/run/WSL` exists) and WSL-specific install path | Different guidance, different tier probe |
+| `DEP.INS.02` | systemd and non-systemd startup paths (`/etc/wsl.conf` `systemd=true` vs. `wsl.conf` boot command) | Both must work |
+| `DEP.INS.03` | Guidance for reaching L3 on WSL2 via `.wslconfig` `kernelCommandLine=`, or a custom kernel if `CONFIG_BPF_LSM` is absent | Gated on `F0.WSL.01` |
+| `DEP.INS.04` | **Coverage disclosure**: state explicitly that native Windows processes are not covered (`I-16`) | Non-negotiable honesty requirement |
+| `DEP.INS.05` | `/mnt/*` workspace handling: warn when the project root is on a Windows drive, since path semantics and performance differ | Common real-world setup |
+| `DEP.INS.06` | `RLIMIT_MEMLOCK` and `/proc/sys/kernel/unprivileged_bpf_disabled` handling | Frequent install failure |
 
 #### 5.4.3 Uninstall
 
@@ -2496,23 +2501,24 @@ aisme uninstall --purge    # also remove forensic store, policies and keys
 
 | ID | Requirement |
 |---|---|
-| `F5.INS.07` | All BPF programs detached and pinned maps removed; verified by `bpftool prog list` |
-| `F5.INS.08` | No frozen cgroups left behind; all supervised processes released |
-| `F5.INS.09` | Forensic data **retained by default** and only removed with `--purge`, with an explicit warning that audit evidence is being destroyed |
-| `F5.INS.10` | `aisme uninstall --verify` prints a clean-state report |
+| `DEP.INS.07` | All BPF programs detached and pinned maps removed; verified by `bpftool prog list` |
+| `DEP.INS.08` | No frozen cgroups left behind; all supervised processes released |
+| `DEP.INS.09` | Forensic data **retained by default** and only removed with `--purge`, with an explicit warning that audit evidence is being destroyed |
+| `DEP.INS.10` | `aisme uninstall --verify` prints a clean-state report |
+| `DEP.INS.11` | cgroup programs detached; `aisme-uiagent` user units removed; active sessions ended, so their Landlock rulesets vanish with the processes that held them |
 
 ### 5.5 Mobile distribution
 
 | ID | Task | Notes |
 |---|---|---|
-| `F5.MOB.01` | Play Console: internal → closed → open testing tracks | Set up before feature-complete |
-| `F5.MOB.02` | TestFlight internal + external groups | Same |
-| `F5.MOB.03` | **Privacy manifests and data-safety declarations** | Must match reality: the tunnel is local, no traffic is forwarded to AISME servers, the relay is blind |
-| `F5.MOB.04` | **Review positioning** `[RISK]` | The app is a *security console for the user's own devices*, not a tool to monitor third parties. Frame `VpnService`/`NEPacketTunnelProvider` usage explicitly as on-device filtering with no data collection. Getting this framing wrong risks rejection under Play's device-and-network-abuse policy and App Store Guideline 5.1.2 |
-| `F5.MOB.05` | Prominent-disclosure flow for the VPN permission, as Play requires | User-facing, before the system dialog |
-| `F5.MOB.06` | Staged rollout with crash/ANR monitoring and automatic halt thresholds | The tunnel is on the critical path of the user's entire network |
+| `DEP.MOB.01` | Play Console: internal → closed → open testing tracks | Set up before feature-complete |
+| `DEP.MOB.02` | TestFlight internal + external groups | Same |
+| `DEP.MOB.03` | **Privacy manifests and data-safety declarations** | Must match reality: the tunnel is local, no traffic is forwarded to AISME servers, the relay is blind |
+| `DEP.MOB.04` | **Review positioning** `[RISK]` | The app is a *security console for the user's own devices*, not a tool to monitor third parties. Frame `VpnService`/`NEPacketTunnelProvider` usage explicitly as on-device filtering with no data collection. Getting this framing wrong risks rejection under Play's device-and-network-abuse policy and App Store Guideline 5.1.2 |
+| `DEP.MOB.05` | Prominent-disclosure flow for the VPN permission, as Play requires | User-facing, before the system dialog |
+| `DEP.MOB.06` | Staged rollout with crash/ANR monitoring and automatic halt thresholds | The tunnel is on the critical path of the user's entire network |
 
-**`F5.MOB.04` is the mobile equivalent of the Windows EV problem** — a non-engineering gate that can block release. Submit a review-intent build early rather than discovering policy issues at launch.
+**`DEP.MOB.04` is the mobile equivalent of the Windows EV problem** — a non-engineering gate that can block release. Submit a review-intent build early rather than discovering policy issues at launch.
 
 ### 5.6 OTel monitoring: conventions, cardinality and dashboards
 
@@ -2528,7 +2534,7 @@ Implements the §2.10 correction. This is what a SOC actually consumes.
 | File mutation | Log Record | `event.name=aisme.mutation`, `file.path`, `aisme.path.class`, `aisme.taint` |
 | Network flow | Log Record | `network.peer.address`, `server.address`, `aisme.verdict` |
 | Enforcement decision | Log Record + Metric | `aisme.verdict`, `aisme.policy.rule_id`, `aisme.tier` |
-| Merkle root | Log Record | `event.name=aisme.forensic.root` — **this is the external anchor from `H-17`** |
+| Merkle root | Log Record | `event.name=aisme.forensic.root`, carrying `key_hw` — **this is the external anchor from `H-17`**, and it is on by default where no hardware key exists |
 | Aggregates | Metrics | see below |
 
 #### 5.6.2 Metric catalogue
@@ -2540,7 +2546,14 @@ aisme.enforcement.decisions{verdict,group,tier}    counter
 aisme.enforcement.latency{tier}                    histogram   ← T0/T1/T2 SLA
 aisme.permission.prompts{group,outcome}            counter
 aisme.permission.prompts_per_day                   gauge       ← UX budget (≤3)
-aisme.capability.level{platform}                   gauge       ← 1/2/3, or DEGRADED=0
+aisme.permission.warns_per_day                     gauge       ← UX budget (≤30)
+aisme.detect.findings{dt,verdict}                  counter     ← Annex G
+aisme.session.risk                                 gauge       ← DT-09, deterministic
+aisme.suppression.hits{rule_id}                    counter     ← bounded by the active-rule cap
+aisme.scope.widen_attempt                          counter     ← security signal
+aisme.sdk.inconsistent                             counter     ← declared vs observed
+aisme.capability.level{platform}                   gauge       ← ordinal: 0 DEGRADED,
+                                                               1 L1, 2 L2-, 3 L2, 4 L3
 aisme.daemon.rss_bytes{process}                    gauge       ← budget invariant
 aisme.daemon.cpu_ratio{process}                    gauge
 aisme.correlation.unmatched                        counter     ← detection quality
@@ -2566,14 +2579,16 @@ Cardinality explosion is the most common way an observability integration gets s
 
 Per invariant `I-08`: **prompts and Chain-of-Thought never leave the machine by default.** OTLP export carries classifications, hashes, path classes and verdicts. Exporting raw semantic content requires explicit opt-in per session, and the UI must say what will be sent.
 
+Two specifics: **TLS key material obtained cooperatively is consumed in memory and is never exported or persisted**; and a detector finding exports its detector id, verdict and a content hash — **never the matched bytes**.
+
 #### 5.6.5 Dashboards and alerts (shipped as assets)
 
 | ID | Deliverable |
 |---|---|
-| `F5.OTEL.01` | Collector config with the recommended pipeline, sampling and redaction processors |
-| `F5.OTEL.02` | Grafana dashboards: session timeline, enforcement decisions, budget health, detection quality |
-| `F5.OTEL.03` | Alert rules: `events.dropped > 0`, `capability.level == 0` (DEGRADED), `observer.injection_attempt > 0`, `enforcement.latency` SLA breach, forensic lag |
-| `F5.OTEL.04` | Splunk / Sentinel / Elastic field mappings |
+| `DEP.OTEL.01` | Collector config with the recommended pipeline, sampling and redaction processors |
+| `DEP.OTEL.02` | Grafana dashboards: session timeline, enforcement decisions, budget health, detection quality |
+| `DEP.OTEL.03` | Alert rules: `events.dropped > 0`, `capability.level == 0` (DEGRADED), `observer.injection_attempt > 0`, `enforcement.latency` SLA breach, forensic lag |
+| `DEP.OTEL.04` | Splunk / Sentinel / Elastic field mappings |
 
 ### 5.7 Operational runbooks
 
@@ -2585,9 +2600,11 @@ Written in `docs/ops/`, one file per scenario, each with symptom → diagnosis �
 | `high-cpu.md` | Overhead above budget; identifying the source; emergency `aisme disable` |
 | `false-positive.md` | Legitimate work blocked; how to grant, how to file a policy fix |
 | `event-loss.md` | Drop counter non-zero; tuning ring size vs. throughput |
-| `forensic-verify.md` | How an auditor verifies a session, including inclusion proofs and external root comparison |
+| `forensic-verify.md` | How an auditor verifies a session: inclusion proofs, external root comparison, and **interpreting `key_hw`** — what a software-signed block means and why anchoring carries the weight there |
 | `wsl2-troubleshooting.md` | WSL2-specific: systemd, cgroups, `/mnt` paths, tier upgrade, kernel command line |
 | `mobile-tunnel.md` | Tunnel not starting, battery complaints, Doze interactions, coverage questions |
+| `prompt-fatigue.md` | Prompts or warns over budget: widening scope, adding suppressions, choosing a profile — and when the answer is a policy bug rather than a user preference |
+| `suppression-review.md` | Auditing suppression rules: origin, hit counts, expiry, what `I-26` guarantees is still recorded, and how to see what a rule has been hiding |
 | `incident-response.md` | A real detection fired: how to triage, preserve evidence, and export a signed report |
 | `upgrade-rollback.md` | Version skew, safe rollback, policy migration |
 
@@ -2660,7 +2677,7 @@ AI-SYSTEM-MONITOR/
 
 **Layout rules:**
 
-1. **`crates/aisme-agentd` is a budgeted crate.** Adding a dependency there requires justification (`F5.SUP.06`). Cold-path work belongs in `forensicd`.
+1. **`crates/aisme-agentd` is a budgeted crate.** Adding a dependency there requires justification (`DEP.SUP.06`). Cold-path work belongs in `forensicd`.
 2. **`aisme-ebpf-common` is shared with kernel code** — it must stay `no_std` and layout-stable. Changing a struct there is a wire-format change requiring a version bump.
 3. **Platform crates implement traits from `aisme-core`.** No platform-specific type ever appears in `aisme-core`'s public API. This is what keeps `ADR-02` reversible.
 4. **`tests/corpus/` is a first-class asset**, versioned and reviewed like code. The benign corpus is the false-positive gate and the red-team corpus doubles as the IRR corpus.
@@ -2802,7 +2819,7 @@ Collected because they are the specific ways this project would degrade:
 |---|---|---|
 | Restoring a rejected design from `docs/research/` | The research is detailed and persuasive | Precedence rule §7.6; `CLAUDE.md` table |
 | Loosening a budget to make a test pass | The budget looks like a config value | `budgets.toml` changes require an ADR |
-| Adding a convenience dependency to `agentd` | Each one seems small | `F5.SUP.06` review; forbidden-dep CI gate |
+| Adding a convenience dependency to `agentd` | Each one seems small | `DEP.SUP.06` review; forbidden-dep CI gate |
 | Weakening the benign corpus to ship | False positives feel less urgent than features | `I-15`; zero-block gate |
 | Marking a phase done without running its gate | The code works, so it feels done | §7.7 |
 | Collapsing platform traits because there is one implementation | Looks like dead abstraction | `ADR-02` reversibility depends on them |
@@ -2822,7 +2839,7 @@ Severity = impact if it happens. Likelihood after mitigation.
 | R-01 | **F4 tier-D offset resolution proves unworkable** on real stripped Bun/Node builds | High | Med | Four-tier ladder (`H-07`): cooperative capture covers ~70% of signal without any reverse engineering. Kernel layer works at 100% with zero uprobes | F4 |
 | R-02 | **Sentinel classifier false-positives on video streaming** | High | Med | Hard 1% FP gate (`T4.11.02`); labelled hard-negative corpus; learning mode before enforcement | F10 |
 | R-03 | **Prompt fatigue kills adoption** | High | Med | ≤3 prompts/day budget as a CI metric; 7-day learning mode; generous in-workspace scope; intent coalescing | F7, F8 |
-| R-04 | **Store review rejection** (Play device-abuse, App Store 5.1.2) | High | Med | Early review-intent submission (`F5.MOB.04`); precise positioning as a self-monitoring console; accurate privacy manifests | F10, F11 |
+| R-04 | **Store review rejection** (Play device-abuse, App Store 5.1.2) | High | Med | Early review-intent submission (`DEP.MOB.04`); precise positioning as a self-monitoring console; accurate privacy manifests | F10, F11 |
 | R-05 | **Tauri v2 mobile immaturity** | Med | Med | Client is thin; `uniffi` fallback to native shells pre-specified in `ADR-04`; shared Rust core survives either way | F11 |
 | R-06 | **50 MB budget missed** under real load | High | Low | Two-process split (`H-03`); line-item budget; 72 h soak with growth-slope regression; zero-alloc hot loop | F1 |
 | R-07 | **eBPF verifier rejects programs on older kernels** | Med | Med | Kernel matrix in CI from commit #1; complexity budget at 60% of limit; documented degradation per capability | F3 |

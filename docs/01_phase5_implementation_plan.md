@@ -2846,9 +2846,15 @@ Severity = impact if it happens. Likelihood after mitigation.
 | R-03 | **Prompt fatigue kills adoption** | High | Med | ≤3 prompts/day budget as a CI metric; 7-day learning mode; generous in-workspace scope; intent coalescing | F7, F8 |
 | R-04 | **Store review rejection** (Play device-abuse, App Store 5.1.2) | High | Med | Early review-intent submission (`DEP.MOB.04`); precise positioning as a self-monitoring console; accurate privacy manifests | F10, F11 |
 | R-05 | **Tauri v2 mobile immaturity** | Med | Med | Client is thin; `uniffi` fallback to native shells pre-specified in `ADR-04`; shared Rust core survives either way | F11 |
+| R-19 | **Prompt-delivery on Linux desktops** — no single stack, and Wayland cannot force focus | Med | Med | `aisme run` prompts in the terminal, which covers the common developer case, headless and WSL2; `aisme-uiagent` always pairs a modal with a notification; the ladder degrades to policy default, never to allow | F8b |
 | R-06 | **50 MB budget missed** under real load | High | Low | Two-process split (`H-03`); line-item budget; 72 h soak with growth-slope regression; zero-alloc hot loop | F1 |
 | R-07 | **eBPF verifier rejects programs on older kernels** | Med | Med | Kernel matrix in CI from commit #1; complexity budget at 60% of limit; documented degradation per capability | F3 |
-| R-08 | **WSL2 lacks `CONFIG_BPF_LSM`** → stuck at L2 | Low | Med | `F0.WSL.01` answers this in week 1. L2 is designed to be genuinely useful; custom kernel documented as opt-in | F0 |
+| R-08 | **WSL2 lacks `CONFIG_BPF_LSM`** → stuck at L2 | Low | Med | `F0.WSL.01` answers this in week 1. L2 still provides in-kernel file deny (Landlock) and network deny (cgroup connect hooks) with no reboot; custom kernel documented as opt-in for L3 | F0 |
+| R-15 | **Landlock absent** on a target kernel (Debian derivatives, or the stock WSL2 kernel) → `L2-`, seccomp trap volume under builds | Med | Med | `F0.WSL.01` / `F0.VM.02` probe it; `L2-` is reported honestly (`I-16`); the CPU gate runs at `L2-` too, so the cost is measured rather than assumed | F0, F3 |
+| R-16 | **F2 overruns** its one week — eleven tasks on a real kernel | Med | Med | The scope table is binding; an overrun is absorbed by F3's start, never by cutting F2 tasks. The exit demo is the only criterion | F2 |
+| R-17 | ~~No self-hosted WSL2 runner~~ | — | — | **Withdrawn**: there is no hosted CI at all (`I-27`). Replaced by R-17′ | — |
+| R-17′ | **Local gate discipline erodes** — nobody runs `nightly` or `weekly` | Med | Med | `STATE.md` records the last run of each; `verify-docs` warns past 7 and 14 days; the release checklist refuses without a fresh weekly report | F0 |
+| R-18 | **No TPM under WSL2** → the forensic chain is software-signed for Windows users, who are the reason WSL2 was chosen | High | High | `key_hw` recorded per block and shown in the UI; **external root anchoring on by default** for software-signed installs (`I-18`); ADR-02 and the README state it plainly (`R1-18`) | F5, F8 |
 | R-09 | **Correlation accuracy below gate** on real workloads | High | Low | Ground-truth harness with scripted intent (`§4.6`); adaptive temporal window; decoy resistance testing | F5 |
 | R-10 | **Observer LLM cost** makes continuous supervision uneconomic | Med | Low | SAC-lite 60–90% reduction with IRR gate; Observer is asynchronous and optional; enforcement never depends on it | F6 |
 | R-11 | **iOS extension OOM-killed** in the field | High | Low | 45 MB hard budget; flow table bounded with LRU; zero-termination gate over 24 h | F10 |
@@ -2861,28 +2867,29 @@ Severity = impact if it happens. Likelihood after mitigation.
 ### 8.2 Critical path
 
 ```
-Week   1    2    3    4    5    6    7    8    9   10   11
+Week   1    2    3    4    5    6    7    8    9   10   11   12
        ├─F0─┤
-            ├─────F1─────┤              ← INTERFACE FREEZE at week 3.5
-                         ├F2┤           ← WALKING SKELETON: product runs
-   ─────────────────────────┴──────────────────────────────────────────
+            ├─────F1─────┤              ← INTERFACE FREEZE, week 3.5
+                         ├F2┤           ← WALKING SKELETON, week 4.5: product runs
+   ─────────────────────────┴──────────────────────────────────────────────
    KERNEL TRACK    ├───────F3 (Linux + WSL2)───────┤
    SEMANTIC TRACK  ├───────F4 (capture ladder)─────┤
    CORE TRACK           ├──F5──┤
                                ├──F6──┤
                                       ├──F7──┤
-                                             ├───F8───┤
+                                             ├─F8b─┤
+   UX TRACK        ├──F8a──┤                        (F8a needs only aisme-proto)
    MOBILE TRACK    ├──F9 SDK──┤
                               ├──────F10 Sentinel──────┤
                                                 ├─F11─┤
 ```
 
-**Critical path: F0 → F1 → F2 → F5 → F6 → F7 → F8 ≈ 11 weeks.**
+**Critical path: F0 → F1 → F2 → F5 → F6 → F7 → F8b = 1 + 2.5 + 1 + 2 + 2 + 2 + 1 = 11.5 weeks.**
 
 Two properties of this shape are deliberate and worth protecting:
 
 1. **Week 3.5 is the interface freeze; week 4.5 is a running product.** Everything after week 4.5 widens a proven system. Before the restructure, nothing worked end to end until week 10 and all integration risk sat at the end.
-2. **Four tracks run genuinely in parallel after F2** because they code against frozen traits (§3.2) against a working skeleton. Parallelism here is real, not a Gantt-chart aspiration — each track can run its own tests without the others existing, using `MockSensor`/`NullEnforcer`.
+2. **Five tracks run genuinely in parallel after F2** because they code against frozen traits (§3.2) on top of a working skeleton. Parallelism here is real, not a Gantt-chart aspiration — each track runs its own tests without the others existing, using `MockSensor`/`NullEnforcer`. Splitting F8 is what makes the number honest: its shell depends only on `aisme-proto`, its adjudication UI depends on F7.
 
 **The two ways this schedule slips:**
 - **F1 rushed.** An interface defect discovered in week 8 invalidates work in three tracks simultaneously. F1 is 2.5 weeks for a reason; compressing it is a false economy.
@@ -2893,12 +2900,12 @@ Two properties of this shape are deliberate and worth protecting:
 | M | Week | Deliverable | Go/no-go criterion |
 |---|---|---|---|
 | **M1** | 3.5 | **Interface freeze** | §3.2 traits complete; `verify-layering` passes; policy compiler deterministic; `agentd` under 25 MB on `MockSensor` |
-| **M2** | 4.5 | **Walking skeleton — the product runs** | `aisme run -- bash` → terminal prompt → verdict → syscall obeys, on a real kernel. Every architectural seam exercised |
-| **M3** | 7 | Kernel + semantic layers widened | Full probe set on the kernel matrix incl. WSL2; T0 p99 < 15 µs; capture from cooperative and symbol tiers; `T4.5.06` proves zero process modification |
+| **M2** | 4.5 | **Walking skeleton — the product runs** | `aisme run -- bash` → terminal prompt → verdict → syscall obeys, on a real kernel. Every architectural seam exercised; one Landlock ruleset denies in-kernel with zero notifications (if `R1-04`) |
+| **M3** | 7 | Kernel + semantic layers widened | Full probe set on the kernel matrix incl. WSL2; **T0 p99 < 15 µs at L3 and < 20 µs at L2**; capture from cooperative and symbol tiers; `T4.5.06` proves zero process modification |
 | **M4** | 8 | Correlation meets gate | Precision ≥ 0.98, recall ≥ 0.95 on the ground-truth harness |
-| **M5** | 10 | **Enforcement + permission model** | Every red-team scenario contained at the expected tier; **zero blocks on the benign corpus**; ≤3 prompts/day |
+| **M5** | 10 | **Enforcement + permission model** | Every red-team scenario (RF-01…24) contained at the expected tier; **zero blocks on the benign corpus and every benign twin silent**; ≤3 prompts/day and ≤30 warns/day; `RF-17` passes |
 | **M6** | 10 | Mobile detection | Sentinel classifier ≥ 0.95 precision, ≤ 1% video FP; Network Slam works on Android and iOS |
-| **M7** | 11 | **MVP release candidate** | 72 h soak passed; signed budget certification report; all release blockers clear |
+| **M7** | 11.5 | **MVP release candidate** | 72 h soak passed at both tiers; signed budget certification report; `verify-docs` clean; `key_hw` shown in every UI; all release blockers clear |
 
 **M2 and M5 are the two real go/no-go points.** M2 answers *"is the architecture sound?"* while there is still almost nothing to throw away. M5 answers *"is this shippable to a human being?"* — and a system that blocks legitimate work is not, regardless of how good its detection is.
 
@@ -2908,7 +2915,7 @@ Stated plainly, because these are the outcomes worth actively steering away from
 
 1. **It becomes annoying.** Prompt fatigue and false positives are the most likely cause of death. The benign corpus and the prompts-per-day budget exist for this, and they must be treated as release blockers, not nice-to-haves.
 2. **It becomes invisible.** If the budgets slip and it costs 10% CPU, developers uninstall it. The budget invariants are the product.
-3. **It becomes untrustworthy.** If AISME ever modifies a process, hides itself, or overstates its coverage, it loses the standing to be a forensic tool. `I-01`, `I-02` and `I-16` are load-bearing.
+3. **It becomes untrustworthy.** If AISME ever modifies a process, hides itself, overstates its coverage, or lets a suppression rule hide evidence, it loses the standing to be a forensic tool. `I-01`, `I-02`, `I-16` and `I-26` are load-bearing.
 4. **It becomes unmaintainable.** If the F4 reverse-engineering treadmill dominates the roadmap, the team spends its life chasing Bun releases. The cooperative-first ladder and the Sentinel SDK exist to escape this.
 5. **The plan gets forgotten.** If Part II findings are lost and rejected designs return, the project rebuilds its own known defects. Part VII exists for this.
 

@@ -1511,17 +1511,17 @@ cargo xtask bench-t0 --syscalls 100000                         # baseline record
 
 > **Since `ADR-02`, this phase also delivers Windows coverage.** WSL2 runs a real Linux kernel, so everything below applies there unmodified. WSL2-specific test coverage (`/mnt/*` path canonicalization, systemd and non-systemd startup, cgroup v1/v2, NAT vs. mirrored networking) is part of this phase's gate, not an afterthought — see §2.16.1 and §4.12.
 
-#### F2.1 Observation probes
+#### F3.1 Observation probes
 
 | ID | Hook | Type | Data captured |
 |---|---|---|---|
-| `F3.OB.01` | `sched_process_exec` | tracepoint | argv, envp (filtered), binary hash ref, ppid |
+| `F3.OB.01` | `sched_process_exec` | tracepoint | argv, envp (redacted by `F4.UP.03`, **after** `DT-01` provenance matching), binary hash ref, ppid |
 | `F3.OB.02` | `sched_process_exit` | tracepoint | exit code, rusage |
 | `F3.OB.03` | `sys_enter_openat2` / `sys_exit_openat2` | tracepoint | flags, mode, resolved fd → path |
 | `F3.OB.04` | `security_file_open` | LSM (observe mode) | **kernel-resolved `struct file`** — the TOCTOU-safe path source (H-01) |
 | `F3.OB.05` | `sys_enter_connect`, `sys_enter_sendto` | tracepoint | sockaddr, family, port |
 | `F3.OB.06` | `sys_enter_unlinkat`, `renameat2` | tracepoint | destructive ops |
-| `F3.OB.07` | `sys_enter_write` on fd 1/2 | tracepoint | stdout/stderr capture of local CoT |
+| `F3.OB.07` | `sys_enter_write` on fd 1/2 **only for processes matching a profile that emits reasoning to stdout** (`DT-10`); otherwise aggregated to byte counters | tracepoint | Local CoT capture, bounded. Raw capture for every session process would push megabytes per second of build output through the ring buffer |
 | `F3.OB.08` | `memfd_create`, `execveat(AT_EMPTY_PATH)` | tracepoint | **fileless execution detection** (Red Flag) |
 | `F3.OB.09` | `ptrace`, `process_vm_readv/writev` | tracepoint | cross-process introspection |
 | `F3.OB.10` | `bpf`, `perf_event_open` | tracepoint | anti-instrumentation probing (H-05 signal) |
@@ -1536,10 +1536,10 @@ cargo xtask bench-t0 --syscalls 100000                         # baseline record
 | `F3.RB.04` | Per-CPU aggregation maps for high-frequency, low-value events (reads/stats) | Prevents ring saturation (H-09) |
 | `F3.LD.01` | Embed BPF object with `include_bytes!`; **no LLVM at runtime** | Self-contained binary requirement |
 | `F3.LD.02` | CO-RE via BTF; fallback to BTFHub archive for BTF-less kernels | Extends L1/L2 coverage |
-| `F3.LD.03` | Integrity watchdog: verify attachment every 2 s (H-05) | `DEGRADED` on detach |
+| `F3.LD.03` | Integrity watchdog: **hold the `bpf_link` fds** — that is what keeps programs attached — and verify the links, not only the programs, every 2 s (H-05) | `DEGRADED` on any detach |
 | `F3.LD.04` | `RLIMIT_MEMLOCK` handling + graceful failure message | Common install failure |
 
-#### F2.2 Enforcement
+#### F3.2 Enforcement — L3 (BPF-LSM)
 
 | ID | Hook | Return |
 |---|---|---|
@@ -1553,19 +1553,42 @@ cargo xtask bench-t0 --syscalls 100000                         # baseline record
 |---|---|---|
 | `F3.PT.01` | **Path trie in BPF**: LPM-style over canonicalized path components, `BPF_MAP_TYPE_LPM_TRIE` + hash for exact matches | O(1)-ish, bounded loop count for the verifier |
 | `F3.PT.02` | Atomic policy publication: double map + generation counter, readers never lock | No torn policy reads |
-| `F3.PT.03` | Path canonicalization **in user space**, published as pre-resolved prefixes; kernel does prefix match only | Canonicalizing in BPF is verifier hell |
+| `F3.PT.03` | Path canonicalization **in user space**, published as pre-resolved prefixes; kernel does prefix match only. `/mnt/*` (9p/virtiofs under WSL2) has its own rules and its own coverage (`T4.6.07`) | Canonicalizing in BPF is verifier hell |
 | `F3.EN.06` | `seccomp_unotify` supervisor for T1 (H-01): pidfd, `ADDFD`, `CONTINUE`, supervisor-death safety | The T1 channel |
 | `F3.EN.07` | cgroup v2 freezer for T2: per-session cgroup, `cgroup.freeze`, thaw-on-timeout watchdog | The T2 channel |
 | `F3.EN.08` | Verifier-friendliness harness: every program must load on all matrix kernels | See §4.2 |
 
+#### F3.3 Enforcement — L2 (no BPF-LSM, no reboot)
+
+The majority tier, and the WSL2 default. Rationale in §2.2.1; without these four tasks L2 traps every path decision to user space and misses the CPU budget under a build.
+
+| ID | Task | Notes |
+|---|---|---|
+| `F3.EN.09` | **`LandlockEnforcer`**: compile a Landlock ruleset from `CompiledPolicy` (never-promptable classes, writes outside the declared scope), apply it in `aisme run` before `exec`, inherited by the whole tree; ABI-gated features (truncate ≥ 3, TCP ports ≥ 4) skipped with a reported reason | The L2 file T0. `PolicyBackend` target #2 (`F1.PL.03`) |
+| `F3.EN.10` | **`CgroupConnectEnforcer`**: `BPF_CGROUP_INET4/6_CONNECT` on the session cgroup, evaluating destination and taint state **in kernel**; `EPERM` on deny | **Network Slam at L2, T0 and TOCTOU-free.** Needs cgroup v2 and `CAP_NET_ADMIN`/`CAP_BPF` in `loaderd`; **not** an LSM, so no `lsm=` boot parameter (`R1-16`) |
+| `F3.EN.11` | L2 self-protection: every session ruleset denies access to AISME's binaries, config, WAL and sockets; the engine runs as root and the agent as the user | Replaces `F3.EN.05` at L2 |
+| `F3.EN.12` | Escalate-class opens at L2 are resolved **by the supervisor** and delivered with `SECCOMP_IOCTL_NOTIF_ADDFD`: the target receives the fd the supervisor validated and never re-resolves the path | Closes H-01's TOCTOU at L2 for the open class |
+
+#### F3.4 WSL2
+
+| ID | Task | Notes |
+|---|---|---|
+| `F3.WSL.01` | Networking: NAT and mirrored modes — host-visible address mapping in the flow model; egress verdicts identical in both | ADR-02 follow-up |
+| `F3.WSL.02` | Startup under systemd (unit) and without it (`/etc/wsl.conf` boot command); the capability probe reports `wsl2 = true` | Both paths must reach the same tier |
+
 **GATE F3**
 ```bash
-cargo xtask test-kernels --matrix 5.4,5.10,5.15,6.1,6.8   # all programs load or degrade cleanly
-cargo xtask test-kernels --matrix wsl2                    # WSL2: tier probe, systemd/non-systemd, cgroup v1/v2
+cargo xtask test-kernels --matrix 5.4,5.10,5.15,6.1,6.8,6.15+  # load or degrade cleanly
+cargo xtask test-kernels --matrix wsl2                    # tier probe, systemd/non-systemd, cgroup v1/v2
 cargo xtask test-paths --mount /mnt/c                     # 9p/virtiofs canonicalization
-cargo xtask bench-t0 --syscalls 1000000                   # p99 < 15 µs
-cargo xtask test-enforce --scenarios annex-c              # deny actually denies
-cargo xtask verify-budgets --profile linux-reference      # RSS < 50 MB, CPU < 3%
+cargo xtask bench-t0 --tier l3 --syscalls 1000000         # p99 < 15 µs
+cargo xtask bench-t0 --tier l2 --syscalls 1000000         # p99 < 20 µs, Landlock + cgroup deny
+cargo xtask test-enforce --scenarios annex-c --tier l3
+cargo xtask test-enforce --scenarios annex-c --tier l2
+cargo xtask test-slam --tier l2                           # RF-01 denied by the cgroup hook,
+                                                          # with zero seccomp notifications
+cargo xtask verify-budgets --profile linux-reference --tier l3
+cargo xtask verify-budgets --profile linux-reference --tier l2   # the tier most users run
 ```
 
 ---
@@ -1576,11 +1599,13 @@ cargo xtask verify-budgets --profile linux-reference      # RSS < 50 MB, CPU < 3
 
 | ID | Tier | Task |
 |---|---|---|
-| `F4.CO.01` | A | Claude Code JSONL transcript reader (`~/.claude/projects/**/*.jsonl`), tailing + incremental parse |
+| `F4.CO.01` | A | Claude Code JSONL transcript reader (`~/.claude/projects/**/*.jsonl`), tailing + incremental parse; emits `ToolResult` nodes so tool outputs enter the context plane | Annex A |
 | `F4.CO.02` | A | Generic cooperative adapters: `SSLKEYLOGFILE` correlation, MCP server logs, client OTel endpoints |
 | `F4.CO.03` | A | Adapter registry keyed by detected client; graceful absence |
+| `F4.CO.04` | A | `aisme run` exports `SSLKEYLOGFILE` and, for Node-family runtimes, `NODE_OPTIONS=--tls-keylog`, pointing at an `agentd`-owned 0600 socket. **Keys are consumed in memory and never written to disk** | Plaintext with zero uprobes wherever the runtime honours it |
+| `F4.CO.05` | A | Per-runtime measurement of tier A–D coverage against the fixture set; publishes the real percentages that replace H-07's estimates | Closes `R1-09` |
 | `F4.SY.01` | B | ELF `.dynsym`/`.symtab` resolution for `SSL_read`/`SSL_write`/`SSL_read_ex` on `libssl.so`/`libcrypto` |
-| `F4.SY.02` | B | PE export resolution on Windows; **Schannel path**: return probe on `DecryptMessage` reading `SECBUFFER_DATA` from `SecBufferDesc`, entry probe on `EncryptMessage` |
+| `F4.SY.02` | B | `[POST — native Windows, Annex F]` PE export resolution; **Schannel path**: return probe on `DecryptMessage` reading `SECBUFFER_DATA` from `SecBufferDesc`, entry probe on `EncryptMessage` |
 | `F4.DB.01` | C | Signed offset manifest format + verification (Ed25519), keyed by **Build-ID**, `SHA-256` fallback |
 | `F4.DB.02` | C | Manifest build tooling: extract offsets from known Bun/Node/Electron builds in CI |
 | `F4.HE.01` | D | Heuristic scanner in a **sacrificial seccomp-jailed process** with a time limit |
@@ -1588,15 +1613,20 @@ cargo xtask verify-budgets --profile linux-reference      # RSS < 50 MB, CPU < 3
 | `F4.HE.03` | D | Backward sweep to function prologue with confidence scoring |
 | `F4.VAL.01` | all | **Self-test harness**: canary process + local TLS server; an offset is untrusted until captured plaintext matches expected (H-07) |
 | `F4.VAL.02` | all | `UNRESOLVED` state → semantic layer disabled for that binary, kernel layer unaffected, loudly reported |
+| `F4.VAL.03` | all | **Observe-with-validation** for tier C/D offsets where no canary is possible (packaged apps): the first N captures must parse as HTTP or SSE, or the probe detaches and the hash is marked `UNRESOLVED` | H-07 rule 1 as amended |
+| `F4.DT.01` | — | **`DT-01` hook**: provenance-match outbound request bytes against `SECRET_MATERIAL` sources **before** `F4.UP.03` redaction; store the finding and a hash, never the matched bytes | Annex G. The provider endpoint is the one egress every allowlist permits |
 | `F4.UP.01` | — | uprobe/uretprobe attach with `(pid,tgid,tid)` keyed buffer-pointer map for the read path |
 | `F4.UP.02` | — | SSE / chunked-transfer reassembly, streaming JSON incremental parser, bounded per-stream buffers |
-| `F4.UP.03` | — | Redaction at ingest: API keys, `Authorization` headers, tokens never reach the WAL in plaintext |
+| `F4.UP.03` | — | Redaction at ingest: API keys, `Authorization` headers, tokens never reach the WAL in plaintext. **Runs after `F4.DT.01`** — the redaction boundary is the WAL, not the detector, or `DT-01` sees `[REDACTED]` and can never match |
 | `F4.CACHE.01` | — | Autocalibration cache keyed by Build-ID, versioned, invalidated on binary change |
 
 **Privacy invariant added here:** prompts and CoT are the user's source code and intent. They are stored encrypted at rest, are excluded from OTLP export by default (only hashes and classifications leave the machine), and are subject to a configurable retention window. This is not optional in an EU-targeted product.
 
 **GATE F4**
 ```bash
+cargo xtask test-keylog-socket      # tier-A capture with zero uprobes attached;
+                                    # no CLIENT_RANDOM anywhere on disk afterwards
+cargo xtask test-detect --scenario rf-18 --order  # DT-01 before redaction; reversed order fails
 cargo xtask test-tls --fixtures node,bun-stripped,python-dynamic,electron
 # fixtures include a purpose-built statically-linked stripped BoringSSL client (§4.5)
 cargo xtask test-tls-selftest       # a deliberately wrong offset MUST be rejected

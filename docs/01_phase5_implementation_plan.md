@@ -2619,29 +2619,32 @@ AI-SYSTEM-MONITOR/
 ├── README.md                     Product overview, scope, honesty statement
 ├── CLAUDE.md                     Entry contract for development LLMs
 ├── Cargo.toml                    Workspace (members added as crates are implemented)
-├── budgets.toml                  Resource invariants — CI reads this
-├── rust-toolchain.toml           Pinned toolchain
+├── layers.toml                   Crate → layer map; the verify-layering input
+├── budgets.toml                  Resource invariants — the gate reads this
+├── rust-toolchain.toml           Pinned toolchain (the eBPF crate pins its own)
 │
 ├── crates/
-│   ├── aisme-core/               Ontology, traits, policy IR, capability model
-│   ├── aisme-ebpf-common/        no_std event structs shared with BPF programs
-│   ├── aisme-ebpf/               BPF programs (bpfel-unknown-none)
-│   ├── aisme-linux/              Aya loader, seccomp_unotify, cgroup freezer
-│   ├── aisme-windows/            [POST — ADR-02] FltPort client, ETW
-│   ├── aisme-agentd/             HOT PATH daemon — 50 MB budget lives here
-│   ├── aisme-forensicd/          Cold path: DuckDB, Parquet, Merkle, export
-│   ├── aisme-loaderd/            Minimal privileged loader (CAP_BPF only)
-│   ├── aisme-tls/                Capture ladder, offset resolution, SSE reassembly
-│   ├── aisme-correlate/          Causal graph, taint, Lamport ordering
-│   ├── aisme-compress/           SAC-lite pipeline (L2–L5)
-│   ├── aisme-observer/           Observer LLM client, schema-constrained
-│   ├── aisme-otel/               OTLP export, semantic conventions
-│   ├── aisme-proto/              Control-plane protocol + TS codegen
-│   ├── aisme-cli/                aisme run / status / policy / verify / pair
-│   ├── aisme-clientcore/         Shared desktop+mobile client core (uniffi)
-│   ├── aisme-relay/              Blind store-and-forward relay
-│   ├── sentinel-core/            Mobile detection: flows, classifier, verdicts
-│   └── aisme-agentsim/           Agent simulator for the reference workload
+│   ├── aisme-core/          [L1] Ontology, traits, policy IR, detectors, capability
+│   ├── aisme-ebpf-common/   [L0] no_std event structs shared with BPF programs
+│   ├── aisme-ebpf/           [--] BPF programs; built by xtask, not a member
+│   ├── aisme-linux/         [L2] Aya loader, Landlock, cgroup hooks, seccomp, freezer
+│   ├── aisme-windows/       [POST — ADR-02, not a member] FltPort client, ETW
+│   ├── aisme-agentd/        [L3] HOT PATH daemon — 50 MB budget; src/platform/ is
+│   │                             the composition root
+│   ├── aisme-forensicd/     [L3] Cold path: DuckDB, Parquet, Merkle, export
+│   ├── aisme-loaderd/       [L3] Minimal privileged loader (CAP_BPF, CAP_NET_ADMIN)
+│   ├── aisme-tls/           [L2] Capture ladder, offset resolution, SSE reassembly
+│   ├── aisme-correlate/     [L1] Causal graph, taint, Lamport ordering
+│   ├── aisme-compress/      [L1] SAC-lite pipeline (stages L2–L5)
+│   ├── aisme-observer/      [L1] Observer schema + scoring (client lives in forensicd)
+│   ├── aisme-otel/          [L4] OTLP export, semantic conventions
+│   ├── aisme-proto/         [L4] Control-plane protocol + TS codegen
+│   ├── aisme-cli/           [L4] aisme run / status / policy / verify / pair
+│   ├── aisme-clientcore/    [L4] Shared desktop+mobile client core (uniffi)
+│   ├── aisme-relay/         [L4] Blind store-and-forward relay
+│   ├── sentinel-core/       [L2] Mobile detection: flows, classifier, verdicts
+│   ├── aisme-sdkhost/       [L2] SDK host adapter (Sensor + Enforcer for SDK peers)
+│   └── aisme-agentsim/      [L4] Agent simulator for the reference workload
 │
 ├── driver/aisme-flt/             [POST — ADR-02] Windows minifilter (C11/WDK)
 ├── mobile/android/               AI Sentinel — VpnService shim (Kotlin, thin)
@@ -2652,34 +2655,35 @@ AI-SYSTEM-MONITOR/
 │
 ├── docs/
 │   ├── 01_phase5_implementation_plan.md   This document
+│   ├── 02_challenge_ampliacion_sistema.md Challenge review: findings and patches
 │   ├── ai/                       LLM working docs — see Part VII
 │   │   ├── AGENTS.md             Session protocol, definition of done
 │   │   ├── STATE.md              Live status — updated every session
 │   │   ├── invariants.md         Non-negotiable constraints
 │   │   ├── memory/               Durable non-obvious facts
 │   │   └── handoff/              Mid-flight task handoffs
-│   ├── adr/                      Architecture decision records
-│   ├── design/                   Design notes under development
+│   ├── adr/                      00_template.md, then NN_slug.md by creation order
+│   ├── design/                   01_permission-model.md · 02_aisme-run.md
 │   ├── ops/                      Runbooks
-│   ├── security/                 Threat model, disclosure policy
+│   ├── security/                 01_threat-model.md, disclosure policy
 │   ├── reports/                  Signed budget certification reports per release
 │   └── research/                 Original DOCX + extracted/ plain text
 │
 ├── tests/
 │   ├── fixtures/                 fx-static-boringssl, fx-schannel, fx-sse-server…
 │   ├── corpus/flows/             10k labelled network flows (Sentinel)
-│   ├── corpus/benign/            Workflows that must NEVER be blocked
-│   ├── corpus/redteam/           RF-01…RF-16 adversarial scenarios
+│   ├── corpus/benign/            BN-01…BN-16, incl. one benign twin per detector
+│   ├── corpus/redteam/           RF-01…RF-24 adversarial scenarios
 │   └── scenarios/                Ground-truth correlation harness scripts
 │
-└── .github/workflows/            CI: per-commit, per-PR, nightly, release
+└── (no .github/) — every gate runs locally; nothing triggers on push (I-27)
 ```
 
 **Layout rules:**
 
-1. **`crates/aisme-agentd` is a budgeted crate.** Adding a dependency there requires justification (`DEP.SUP.06`). Cold-path work belongs in `forensicd`.
+1. **`crates/aisme-agentd` is a budgeted crate.** Adding a dependency there requires justification (`DEP.SUP.06`). Cold-path work belongs in `forensicd`. The tree above is generated from `layers.toml` by `verify-docs --tree`, so it cannot drift.
 2. **`aisme-ebpf-common` is shared with kernel code** — it must stay `no_std` and layout-stable. Changing a struct there is a wire-format change requiring a version bump.
-3. **Platform crates implement traits from `aisme-core`.** No platform-specific type ever appears in `aisme-core`'s public API. This is what keeps `ADR-02` reversible.
+3. **Platform crates implement traits from `aisme-core`.** No platform-specific type ever appears in `aisme-core`'s public API. This is what keeps `ADR-02` reversible. The composition root `aisme-agentd::platform` is the single exception, and it is the only place `cfg(target_os)` may appear (§3.2).
 4. **`tests/corpus/` is a first-class asset**, versioned and reviewed like code. The benign corpus is the false-positive gate and the red-team corpus doubles as the IRR corpus.
 5. **`docs/research/` is provenance, not specification.** Findings `H-01`…`H-19` override it.
 
@@ -2702,6 +2706,7 @@ Putting the right fact in the wrong file is how these systems rot. The rule is: 
 | `docs/design/*.md` | *How should this work?* | Evolves into spec, then retires | During design |
 | `docs/ai/memory/*.md` | *What did we learn the hard way?* | Permanent | On discovery |
 | `docs/ai/handoff/*.md` | *What was I in the middle of?* | Deleted when resumed | On interruption |
+| `docs/NN_*.md` (challenge reports) | *What is wrong, and what is the patch?* | Permanent; points append-only; patches applied one commit per point | During a review |
 
 **The distinction that matters most:** `STATE.md` holds *status*, ADRs hold *decisions*, `memory/` holds *discoveries*. Status changes constantly and is overwritten. Decisions never change — they get superseded by a new ADR. Discoveries accumulate.
 
@@ -2761,10 +2766,15 @@ Related: [[other-memory-slug]]
 |---|---|
 | `ev-cert-windows-only` | Azure Trusted Signing cannot substitute for an EV cert on kernel drivers; Partner Center requires one. Source of `ADR-02` |
 | `wsl2-ebpf-support` | WSL2 ships BTF; BPF-LSM needs `kernelCommandLine` in `.wslconfig`; `/mnt/*` is 9p/virtiofs with different path semantics |
+| `landlock-l2-file-deny` | Landlock gives in-kernel, inheritable, monotonic file deny without BPF-LSM and without a reboot. It is what makes L2 a real tier |
+| `cgroup-connect-l2-net-deny` | `BPF_CGROUP_INET4/6_CONNECT` denies egress in kernel with cgroup v2 and no `lsm=` change — Network Slam at L2, and TOCTOU-free where seccomp is not |
+| `hardware-keys-are-p256` | Commodity TPM 2.0, iOS Secure Enclave and Android StrongBox offer non-exportable P-256, not Ed25519. Noise uses X25519, so a hardware key cannot be a Noise static |
+| `ios-app-groups-same-team` | App Groups are scoped to one developer team: a third-party app can never share ours. Cross-vendor IPC on iOS is loopback or nothing |
+| `wsl2-has-no-tpm` | No TPM device under WSL2, so Windows-via-WSL2 forensics are software-signed and rely on external root anchoring |
 | `ios-extension-memory-ceiling` | `NEPacketTunnelProvider` is OS-killed near 50 MB; hard 45 MB budget |
 | `android-full-screen-intent-restricted` | Android 14 restricts `USE_FULL_SCREEN_INTENT` to calling/alarm apps; use heads-up notifications with actions |
-| `bpf-probe-write-user-taints-kernel` | Why `H-05` was cut, in mechanical terms |
-| `seccomp-unotify-toctou` | Never make a security decision by re-reading user memory from a notification; resolve paths in LSM |
+| `bpf-probe-write-user-is-experimental` | Why `H-05` was cut, in mechanical terms. The helper is documented as experimental and warns in the kernel log; whether it sets a taint flag is a measurement, not an assumption |
+| `seccomp-unotify-toctou` | Never make a security decision by re-reading user memory from a notification. At L3 the LSM-resolved `struct file` is the path of record; at L2 the supervisor resolves the path and hands the target the fd with `ADDFD` |
 
 ### 7.5 ADR discipline
 
@@ -2775,6 +2785,8 @@ Numbered, sequential, never deleted. Superseded ADRs are marked, not removed.
 **Not required for:** implementation detail inside a settled boundary, refactors, tests, docs.
 
 Template: `docs/adr/00_template.md` — Context / Decision / Consequences / Follow-up actions / Sources. Short. If it needs ten pages, it is a design note and the ADR references it.
+
+Numbering: sequential by creation, `NN_slug.md`, never reserved in advance. An ADR that formalizes a finding says `Formalizes H-xx`; **the H number and the ADR number are unrelated** (`ADR-01`).
 
 ### 7.6 The precedence rule
 
@@ -2787,29 +2799,19 @@ When sources disagree, this is the order. **Memorize it.**
 4. The rest of the plan
 5. docs/design/ notes
 6. docs/research/ (original DOCX)   ← lowest; provenance only
+7. docs/NN_*.md (challenge reports) ← proposals until applied; never override 1–4
+                                      on their own
 ```
 
-**The most important consequence:** the research documents in `docs/research/` are the *lowest* authority in the repository. Nineteen of their designs were analysed and rejected. A contributor who reads them and "fixes an omission" in the plan is reintroducing a defect. `CLAUDE.md` states this; `docs/research/README.md` repeats it at the source.
+**The most important consequence:** the research documents in `docs/research/` are the *lowest* authority in the repository. Eighteen of their designs were analysed and rejected, cut, corrected or deferred. A contributor who reads them and "fixes an omission" in the plan is reintroducing a defect. `CLAUDE.md` states this; `docs/research/README.md` repeats it at the source.
 
-### 7.7 Definition of done
+### 7.7 Definition of done, and reporting
 
-A task is done when **all** hold — not four out of five:
+**Both live in `docs/ai/AGENTS.md` §2 and §3 and are not restated here** — the same reason §7.2 delegates the session protocol. What belongs here is why they are shaped as they are.
 
-- [ ] Compiles clean with `clippy -D warnings`
-- [ ] Tests exist and pass, including at least one negative/adversarial case
-- [ ] Relevant invariants verified, not assumed
-- [ ] Budget gate passes if the task touches `agentd` or a mobile sensor
-- [ ] The phase gate command output is **shown**, not summarized
-- [ ] `STATE.md` updated
+The definition of done is a conjunction, not a majority: six items, all of which must hold. The two that decay first are the gate output (which must be *shown*, because a summary of a gate is not evidence that it ran) and the ADR-review item (which is the only thing standing between a settled decision and its silent reversal).
 
-A phase is done when its `GATE F<n>` block passes in full.
-
-### 7.8 Reporting rules
-
-- **Show gate output.** "Tests pass" is not a report.
-- **Failures are reported with their output.** Skipped steps are reported as skipped.
-- **Never claim a measurement you did not take.** Budget numbers come from `cargo xtask verify-budgets`, not estimation.
-- **Partial work is reported as partial**, with what remains and why.
+The reporting rules exist because the cheapest way to look productive is to report a summary. **A phase is done when its `GATE F<n>` block passes in full**, and a budget number comes from `cargo xtask verify-budgets`, never from estimation.
 
 ### 7.9 Anti-patterns to watch for in LLM contributions
 
@@ -2819,7 +2821,10 @@ Collected because they are the specific ways this project would degrade:
 |---|---|---|
 | Restoring a rejected design from `docs/research/` | The research is detailed and persuasive | Precedence rule §7.6; `CLAUDE.md` table |
 | Loosening a budget to make a test pass | The budget looks like a config value | `budgets.toml` changes require an ADR |
-| Adding a convenience dependency to `agentd` | Each one seems small | `DEP.SUP.06` review; forbidden-dep CI gate |
+| Adding a convenience dependency to `agentd` | Each one seems small | `DEP.SUP.06` review; forbidden-dependency gate |
+| Claiming a budget is "enforced in `budgets.toml`" | The sentence is easy to write and reads as done | `verify-budgets` refuses metrics with no key; `verify-docs` cross-checks every such claim |
+| A §-reference that resolves to the *wrong* section | Renumbering leaves pointers that still look valid | `verify-docs` compares title prefixes, not only numbers |
+| Asserting a hardware capability from memory — a curve, an IPC mechanism, a device | It sounds authoritative and is rarely challenged | Hardware facts go to the report's R1 register first and become `F0.VER` tasks |
 | Weakening the benign corpus to ship | False positives feel less urgent than features | `I-15`; zero-block gate |
 | Marking a phase done without running its gate | The code works, so it feels done | §7.7 |
 | Collapsing platform traits because there is one implementation | Looks like dead abstraction | `ADR-02` reversibility depends on them |

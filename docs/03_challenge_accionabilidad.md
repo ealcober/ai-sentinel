@@ -30,8 +30,8 @@ Read-only script over `docs/01_phase5_implementation_plan.md`. **Prediction writ
 | Point | Object | Status |
 |---|---|---|
 | P-35 | **The `xtask` surface** — 77 commands, 5 tasked | **closed** |
-| P-36 | `EventKind`, `EventPayload`, `Verdict` — the wire enumeration | pending |
-| P-37 | AISME-PL — a grammar, not examples | pending |
+| P-36 | `EventKind`, `EventPayload`, `Verdict` — the wire enumeration | **closed** |
+| P-37 | AISME-PL — a grammar, not examples | **closed** |
 | P-38 | Control-plane protocol — method shapes and error model | pending |
 | P-39 | Fixtures and corpora — formats, provenance, size | pending |
 | P-40 | `F0.VER.01…18` — the R1 register needs its commands in the plan | pending |
@@ -50,6 +50,8 @@ Report 02's owner questions `Q-01`…`Q-10` are answered and closed; where this 
 
 | # | Claim | Where | Why unverified | What would verify it |
 |---|---|---|---|---|
+| R1-19 | A BPF program can range-check `EventKind` in one comparison, and the verifier accepts it | P-36 D-215 | Not compiled | Load a program doing `kind >= 0x4000 && kind < 0x5000` on the matrix kernels (`F0.VM.02`) |
+| R1-20 | Landlock ABI 4 can express `port_in` for TCP bind/connect, and nothing else network-related | P-37 §B.9 | Read from the ABI summary, not tested | `landlock_create_ruleset` with a net rule on a 6.7+ kernel |
 
 ## R2 — Claims that fell (continues from report 02)
 
@@ -121,4 +123,156 @@ Concretely:
 **5. Documentation.** New Annex H in the plan; Part I index gains it; `F0.REPO.03` and `F0.GATE.08` rewritten; GATE F0 gains the composite line; `CLAUDE.md` "Build and verify" gains one sentence on exit code 3 so a session that hits it knows what it means.
 
 **Closure.** Verified by extracting all 77 command strings and diffing against the tasks that create one: five matched. The finding is the largest actionability defect in the plan and it blocks F1, not some distant phase. The fix costs one F0 task and turns the gap into a progress map — running any gate early now names the phases still owed instead of failing as a broken toolchain. Nothing fell. Open: none.
+
+---
+
+### P-36 — `EventKind`: the most important type has no values
+
+**1. Challenge.** F1 calls `RawEvent` "the single most important type in the system" and specifies its layout to the byte. Its `kind` field is `EventKind`, described as "u16, exhaustive enum, append-only and versioned". Measured: **zero variants are enumerated anywhere in the plan.** F1 cannot begin; F3's ten probes have nothing to emit; F4's four capture tiers have nothing to tag; F5's detectors have nothing to match on. Every downstream phase would invent its own values and they would not agree.
+
+The layout rule is right and the append-only rule is right. What is missing is the list — and, more importantly, a *structure* for the list that survives ten phases of additions without renumbering.
+
+**2. Verification.**
+
+- **D-214** `EventKind` has no variants. *Damage today*: none. *Open path*: F1 blocks, or four phases each invent a numbering and the wire format forks. *Bias*: neutral, but **it is on F1's critical path** → urgent. *Falsified by*: a normative enumeration.
+- **D-215** Append-only without reserved ranges is a trap. If variants are numbered sequentially as they are thought of, the first file-related addition after a network variant sits between two network variants forever, and any grouping logic in the kernel (`kind >= X && kind < Y`) becomes impossible. BPF programs *want* range checks: they are one comparison instead of a lookup. *Bias*: neutral; a design defect that only shows up in phase F5. *Falsified by*: the enumeration reserving a block per category.
+- **D-216** `EventPayload` is "a union, fixed size 256 B" with no variants either, and no rule tying a payload variant to its `kind`. A union whose discriminant lives in a different field is exactly the shape that produces a misread when the two disagree across a version skew. *Bias*: **optimistic** — the wire-version check catches a *different* driver version, not a payload/kind mismatch within one version. *Falsified by*: a compile-time assertion pairing each `kind` with its payload variant.
+- Verified sound: 320-byte fixed layout, `u16` discriminant (65 536 values is ample; a `u8` would not have been), the append-only rule and its wire-version gate (`F1.EV.02`).
+
+No question for the owner.
+
+**3. Implementation.** A new **§F1.1.1 Event taxonomy (normative)** in the plan, and the same table as Annex A's companion, stating:
+
+**Ranges are reserved per category and never reordered.** A new variant takes the next free value *inside its range*. A category that fills its range gets a second range, never a renumbering.
+
+```rust
+#[repr(u16)]
+#[non_exhaustive]
+pub enum EventKind {
+    // 0x0000–0x0FFF  META — lifecycle and self-observability
+    SessionStart = 0x0001, SessionEnd = 0x0002, CapabilityChange = 0x0003,
+    CoverageGap  = 0x0004,      // I-17: observation lapsed, recorded as a gap
+    DropNotice   = 0x0005,      // ring buffer overflow, with the count
+    PolicyGeneration = 0x0006,  // a new compiled policy became active
+    DegradedEnter = 0x0007, DegradedLeave = 0x0008,
+
+    // 0x1000–0x1FFF  PROCESS
+    ProcFork = 0x1001, ProcExec = 0x1002, ProcExit = 0x1003,
+    ProcSetuid = 0x1004, ProcCgroupMove = 0x1005,
+
+    // 0x2000–0x2FFF  FILE
+    FileOpen = 0x2001, FileWrite = 0x2002, FileUnlink = 0x2003,
+    FileRename = 0x2004, FileTruncate = 0x2005, FileChmod = 0x2006,
+    FileLink = 0x2007, FileMount = 0x2008,
+
+    // 0x3000–0x3FFF  NETWORK
+    SockConnect = 0x3001, SockAccept = 0x3002, SockSend = 0x3003,
+    SockClose = 0x3004, DnsQuery = 0x3005,
+    FlowOpen = 0x3006, FlowClose = 0x3007,   // mobile tunnel (F10)
+
+    // 0x4000–0x4FFF  EXECUTION HAZARD — the never-promptable classes
+    MemfdCreate = 0x4001, ExecveAt = 0x4002, PreloadEnv = 0x4003,
+
+    // 0x5000–0x5FFF  INTROSPECTION — anti-analysis signals (H-05)
+    PtraceAttach = 0x5001, ProcessVmRw = 0x5002, MapsRead = 0x5003,
+    BpfCall = 0x5004, PerfEventOpen = 0x5005, SelfObservation = 0x5006,
+
+    // 0x6000–0x6FFF  SEMANTIC — the intent plane (F4, F9)
+    Prompt = 0x6001, ChainOfThought = 0x6002, ToolCall = 0x6003,
+    ToolResult = 0x6004, ToolManifest = 0x6005, InferenceTurn = 0x6006,
+
+    // 0x7000–0x7FFF  DECISION — enforcement and the permission model
+    VerdictIssued = 0x7001, EscalationRaised = 0x7002, EscalationResolved = 0x7003,
+    GrantCreated = 0x7004, GrantExpired = 0x7005, GrantRevoked = 0x7006,
+    SuppressionHit = 0x7007, ScopeWidenAttempt = 0x7008,
+
+    // 0x8000–0x8FFF  DETECTION — Annex G
+    FindingRaised = 0x8001, SessionRiskChanged = 0x8002,
+
+    // 0x9000–0x9FFF  FORENSIC
+    MerkleBlockClosed = 0x9001, RootAnchored = 0x9002,
+}
+```
+
+Three rules travel with it:
+
+1. **Range checks are the kernel's grouping primitive.** A BPF program asking "is this an execution hazard?" is `kind >= 0x4000 && kind < 0x5000`, one comparison. This is why the ranges exist and why they may never be reordered.
+2. **`EventPayload` is a union whose variant is determined by `kind`'s range**, one payload struct per range, each ≤ 256 B: `MetaPayload`, `ProcPayload`, `FilePayload`, `NetPayload`, `HazardPayload`, `IntrospectPayload`, `SemanticPayload`, `DecisionPayload`, `DetectionPayload`, `ForensicPayload`. A compile-time table maps range → payload type, and `F1.EV.03` asserts every variant's range has a payload and every payload fits (D-216).
+3. **`#[non_exhaustive]`** so a consumer compiled against an older wire version cannot pattern-match exhaustively and silently miss a new kind — it must have a `_ => ` arm, which becomes the honest "unknown kind, recorded, not interpreted" path.
+
+Task changes: `F1.EV.01` gains "the §F1.1.1 taxonomy in full"; `F1.EV.03` gains the range↔payload assertion and a test that every declared variant is reachable from at least one producer (a probe, a capture tier, the SDK or the engine) — an unproduced variant is dead weight or a missing producer, and either is worth knowing.
+
+**4. Tests.** **New** — `F1.EV.03` extended: `size_of::<RawEvent>() == 320`; every variant's discriminant inside its declared range; range→payload mapping total; every variant produced by at least one producer in the test suite. **New** — wire-skew test: an event with a `kind` from an unknown range is recorded with its bytes and marked `uninterpreted`, never dropped and never guessed (`I-17`).
+
+**5. Documentation.** Plan §F1.1.1 (new); Annex A gains a pointer from each node type to the `EventKind` values that create it; Annex E gains "Event range".
+
+**Closure.** Verified by grep: zero variants existed. The enumeration is now normative and structured so that ten phases of additions cannot force a renumbering — which is what "append-only" needs in order to mean anything. The range design also buys the kernel a one-comparison category test it would otherwise do with a map lookup. Nothing fell. Open: none.
+
+---
+
+### P-37 — AISME-PL: a grammar, not examples
+
+**1. Challenge.** `F1.PL.01` says "AISME-PL grammar and parser per **Annex B**". Annex B contains four TOML examples and eight compiler requirements. Measured: **no grammar** — no BNF, no EBNF, no field inventory. The examples are good and they are not a specification: they show `match = { path_under = … }` and `match = { taint_any = …, dest_not_in = …, not_declassified = true }` without ever saying what the complete set of match keys is, which combine, or what a compiler must reject.
+
+This matters more than it looks. The policy language is compiled to **five backends** (`F1.PL.03`), two of which — Landlock and cgroup hooks — cannot express most verdicts. Without a grammar, `F1.PL.08` ("a backend rejects what it cannot express") has nothing to check a rule against.
+
+**2. Verification.**
+
+- **D-217** No grammar. *Damage today*: none. *Open path*: F1.PL blocks; or a parser is written from four examples and the first policy that uses an unanticipated combination either silently misparses or is rejected for the wrong reason. *Bias*: neutral, **on F1's critical path** → urgent. *Falsified by*: an EBNF and a match-key inventory.
+- **D-218** No match-key inventory, so **no way to know which keys a backend supports**. Landlock matches paths and access rights and nothing else — it cannot see taint, cannot see a destination, cannot escalate. `F1.PL.08` requires a compile-time rejection with a tier-specific message, and that requires a per-backend capability table. *Bias*: **optimistic** — the plan asserts a check it gives no basis to perform. *Falsified by*: the table below.
+- **D-219** Conflict resolution is unspecified. `B.1` forbids "allow/deny conflicts on the same match", but two rules rarely match *identically* — they overlap. Which wins when `workspace-free` (allow, `path_under ${workspace}`) and `credentials-ask` (escalate, `path_glob **/.env`) both match `${workspace}/.env`? Without a stated rule this is undefined behaviour in the security core. *Bias*: **optimistic** → urgent. *Falsified by*: a precedence rule and a test that the example set resolves deterministically.
+- Verified sound: TOML as the surface syntax (no new parser, diffable, familiar); the eight compiler requirements `B.1`–`B.8`; determinism (`B.3`) and atomic publication (`B.4`).
+
+**Question for the owner (Q-11)** — it changes the language's shape and a user's mental model: on `D-219`, should rule precedence be **most-specific-wins** (longest matching path prefix, like a routing table — familiar, but "specific" is ill-defined across different key types) or **strictest-verdict-wins** (deny > escalate > warn > allow, order-independent, trivially explainable, and it fails safe)? The implementation below assumes **strictest-wins**, because in a security product the surprising outcome should be the safe one, and because it makes rule files order-independent and therefore mergeable.
+
+**3. Implementation.** Annex B gains **§B.0 Grammar** and **§B.9 Backend capability matrix**, before the existing examples.
+
+```ebnf
+policy        = { session_defaults | rule | suppression | profile } ;
+rule          = "[[rule]]" , id , group , match , verdict ,
+                { taint | severity_floor | promptable | suppressible
+                | audit | event | escalate_if } ;
+suppression   = "[[suppression]]" , match , scope , ttl_days , origin , [ report ] ;
+
+id            = "id" , "=" , string ;                  (* unique; the diff key *)
+group         = "group" , "=" , GROUP ;
+verdict       = "verdict" , "=" , ( "allow" | "warn" | "escalate" | "deny" ) ;
+match         = "match" , "=" , "{" , match_key , { "," , match_key } , "}" ;
+match_key     = path_under | path_glob | path_class | exec_class | exec_path
+              | dest_in | dest_not_in | port_in | proto
+              | taint_any | taint_all | not_declassified
+              | tool_name | origin | instruction_bearing
+              | scope_rel | age_lt | first_of_kind ;
+GROUP         = "FILES_OUTSIDE_WORKSPACE" | "SYSTEM_CONFIG" | "CREDENTIALS"
+              | "NETWORK_EGRESS" | "EXECUTE" | "FILELESS_EXECUTE"
+              | "PERSISTENCE" | "PERSISTENCE_CONFIG" | "PACKAGE_INSTALL"
+              | "SELF_PROTECTION" | "DEVICE" ;
+```
+
+Keys inside one `match` are **AND**; a list value is **OR** within that key. There is no `not`, no nesting and no arithmetic: the language is deliberately not Turing-complete, because it compiles into a BPF program with a verifier loop budget.
+
+**§B.9 Backend capability matrix** — which keys and verdicts each backend can express. This is the table `F1.PL.08` checks against:
+
+| | BPF trie (L3) | Landlock (L2 file) | cgroup connect (L2 net) | Sentinel (mobile) | Windows `[POST]` |
+|---|---|---|---|---|---|
+| `path_under`, `path_glob`, `path_class` | ✅ | ✅ | ❌ | ⚠️ SDK-reported | ✅ |
+| `dest_in`, `dest_not_in`, `port_in`, `proto` | ✅ | ⚠️ ports only, ABI ≥ 4 | ✅ | ✅ | ✅ |
+| `exec_class`, `exec_path` | ✅ | ✅ (exec right) | ❌ | ❌ | ✅ |
+| `taint_*`, `not_declassified` | ✅ | ❌ | ✅ via the session map | ✅ | ✅ |
+| `tool_name`, `origin`, `instruction_bearing` | ❌ user-space only | ❌ | ❌ | ✅ SDK | ❌ |
+| verdict `allow` / `deny` | ✅ | ✅ | ✅ | ✅ | ✅ |
+| verdict `escalate` | ✅ | **❌** | **❌** | ✅ | ✅ |
+| verdict `warn` | ✅ | ⚠️ allow + notify from user space | ⚠️ same | ✅ | ✅ |
+
+**A rule a backend cannot express is a compile-time error naming the backend, the key or verdict at fault, and the tier the rule will therefore not cover** — never a silent drop (`B.8`, general rule 9). The common case is benign and must read clearly: an `escalate` rule is compiled into the BPF trie at L3 and, at L2, into a Landlock *deny* plus a user-space escalation path — the compiler states that substitution rather than performing it silently.
+
+**§B.10 Precedence** (assuming the owner confirms Q-11): **strictest verdict wins**, `deny > escalate > warn > allow`, evaluated over every rule whose match succeeds. Order in the file is irrelevant, so policy files merge without conflict. Two rules with the same verdict and overlapping matches are not a conflict. `B.1`'s "no allow/deny conflict" is restated as: **a rule that can never be the strictest for any input is unreachable and fails to compile** — that is the real defect the requirement was reaching for.
+
+Task changes: `F1.PL.01` gains "per Annex B §B.0"; `F1.PL.02` gains the unreachability check as defined by §B.10; `F1.PL.08` gains "against the §B.9 matrix".
+
+**4. Tests.** **New** — grammar conformance: a corpus of accepted and rejected policy files, one rejection per grammar rule, each asserting the *message*, not only the failure. **New** — precedence: the four Annex B examples plus a deliberately overlapping pair resolve to the documented verdict, and the resolution is invariant under file order (shuffle the rules, same result). **New** — backend rejection: an `escalate` rule targeting a Landlock-only tier produces the substitution notice; a `taint_any` rule targeting Landlock is a compile error naming the key. **Changed** — `test-policy-compiler` covers all three.
+
+**5. Documentation.** Annex B §B.0, §B.9, §B.10; `B.1` restated; `01_permission-model.md` §4.1 gains a pointer to §B.9 (why `warn` behaves differently at L2); Annex E gains "Backend capability".
+
+**Closure.** Verified by searching the plan for any grammar production: none. The three findings compound — no grammar means no key inventory, no key inventory means the backend-rejection rule has nothing to check, and no precedence rule means the security core has undefined behaviour on overlapping rules, which the four examples already exhibit (`${workspace}/.env` matches both `workspace-free` and `credentials-ask`). One owner question is open (Q-11); the implementation proceeds on strictest-wins.
 

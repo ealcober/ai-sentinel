@@ -95,6 +95,7 @@ Part IV   Exhaustive test plan
           4.11 AI Sentinel detection testing (flow corpus, classifier, tunnel)
           4.12 Gates, cadences and platform matrix (all local — I-27)
           4.13 Detector tests (Annex G)
+          4.14 Test assets: fixtures and corpora
 Part V    Documentation and deployment
           5.1  Cross-platform builds
           5.2  Self-contained binary packaging
@@ -932,6 +933,7 @@ Visible changes from the original design: FUSE-RPC is gone, the Frida patching e
 > (c) an **agent simulator** (`aisme-agentsim`) replaying a recorded Claude Code trace: 200 tool calls/hour, 4,000 file reads, 600 writes, 40 subprocess executions, 120 HTTPS requests with SSE streaming;
 > (d) IDE indexing over the workspace.
 > Measured with and without AISME, 3 repetitions, comparing the median of total system CPU time.
+> Component (c) replays `tests/fixtures/reference-trace/` at 1× **with its recorded inter-arrival timing** — totals are not a workload, because this system's cost is burst-shaped and a flat replay would pass a gate a real agent fails. **The trace's hash appears in every certification report**; a CPU figure certified against a different trace is not comparable, and the report says so.
 > **Run at tier L2 and at tier L3 on every matrix kernel; both must pass.** A CPU or latency figure without its tier is not a figure (§2.2.1).
 
 ---
@@ -1310,9 +1312,28 @@ What this buys, concretely:
 | ~~`F0.WIN.03`~~ | ~~Test-signing dev environment + Driver Verifier~~ | **`DEPRECATED`** — cancelled by ADR-02 |
 | `F0.WSL.01` | **WSL2 capability probe**: `CONFIG_BPF_LSM`, **Landlock presence and ABI**, `BPF_CGROUP_INET*_CONNECT` attachability, cgroup v2, systemd, **and whether any TPM device exists** | Answered in `docs/ai/memory/wsl2-capabilities.md`; decides L2 vs L3 (§2.16.1), whether the L2 row reads as written (`R1-04`), and confirms `R1-18` (no TPM ⇒ software-signed forensics for Windows users) |
 | `F0.WSL.02` | WSL2 test images: Ubuntu 24.04 under WSL2, with and without systemd, cgroup v1 and v2 | `cargo xtask vm up wsl2-*` boots |
+| `F0.ASSET.01` | Corpus manifest format (§4.14), the `verify-docs` hash check, and the empty corpus directories with their licences | A gate can name the corpus version it certified |
+| `F0.ASSET.02` | **Record the reference trace**: a real Claude Code session on this repository — an actual working session, not a script — captured with `aisme run` in observe-only mode into `tests/fixtures/reference-trace/`, with a `manifest.toml` carrying its hash, the agent and model, the repository commit and the wall-clock duration | The CPU gate and the correlation gate get one fixed, hashed input. Recorded in F0, before enforcement exists, so recording it perturbs nothing |
 | `F0.SEC.01` | Threat model (`docs/security/01_threat-model.md`) with the H-05/H-06/H-12 anti-goals, the OWASP Agentic Top-10 mapping (Annex G §G.3) and the relationship to the agent's own sandbox (§G.4) | Reviewed |
 | `F0.DOC.01` | Write the **ten** seed memories listed in §7.4 into `docs/ai/memory/` | Ten files, each citing its source (plan section or ADR) |
-| `F0.VER.01`…`F0.VER.18` | One task per entry in the challenge report's **R1 register**, in register order, each with the verification command the register states | **The R1 register is empty at GATE F0.** An unverified claim either becomes a measured fact or is withdrawn |
+| `F0.VER.01`…`F0.VER.20` | The verification backlog — **see §F0.4**. Four are `[BLOCKING]` and run in week 1 | **The register is empty at GATE F0**: every row has a recorded outcome. An unverified claim becomes a measured fact or is withdrawn |
+
+#### F0.4 Verification backlog
+
+Twenty claims are asserted in this plan and not measured. Each is a task with a command **and a prediction**: what it will mean if the claim holds, and what it will mean if it does not. Writing both before measuring is general rule 5 applied to the plan itself.
+
+**Four are `[BLOCKING]`** — they do not confirm a claim, they decide what a plan row says. They run in **week 1**, ahead of `F0.REPO.01`.
+
+| ID | Claim | Command | If it holds | If it does not |
+|---|---|---|---|---|
+| `F0.VER.04` **`[BLOCKING]`** | Landlock is active on the matrix kernels and in stock WSL2 | `cat /sys/kernel/security/lsm`; `landlock_create_ruleset(NULL,0,LANDLOCK_CREATE_RULESET_VERSION)` per VM | §2.2.1, H-16's L2 row and Annex D stand; `F3.EN.09` proceeds | That platform is **L2-**; the installer, Annex D and the CPU expectation say so; `F2.WS.11` leaves the skeleton and `F3.EN.09` becomes conditional |
+| `F0.VER.16` **`[BLOCKING]`** | `BPF_CGROUP_INET4/6_CONNECT` attaches with `bpf` absent from the LSM list and denies only session flows | `bpftool cgroup attach` on such a VM; `connect` from inside and outside the session cgroup | `F3.EN.10` proceeds; Network Slam is T0 at L2 | Network Slam at L2 falls back to `seccomp_unotify` with its TOCTOU caveat stated; H-13 gains an L2 note; the L2 CPU budget is re-examined |
+| `F0.VER.18` **`[BLOCKING]`** | WSL2 exposes no TPM | `ls /dev/tpm* /dev/tpmrm*` inside the WSL2 image | Risk R-18 stands; software signing and default anchoring confirmed in README, ADR-02 and the UI | R-18 is downgraded; Annex D's WSL2 row gains a hardware-key line; the README sentence is removed |
+| `F0.VER.12` **`[BLOCKING]`** | Commodity TPM, Secure Enclave and StrongBox offer non-exportable P-256, not Ed25519 | `tpm2_getcap algorithms`; a key-generation attempt on each platform | H-17, `F5.FO.02`, `F10.FO.01` and `F11.CC.02` stand | An ADR revisits the curve; `key_hw` gains the value the hardware actually offers |
+
+The remaining sixteen run any time before GATE F0, in the same four-column form: Aya's MSRV against Rust 1.82; `strip` versus `cargo-auditable`; what the `.docx` extraction omits; `seccomp_unotify`'s `ENOSYS` on listener close; kfunc stability; DuckDB's baseline RSS; `bpf_probe_write_user`'s taint flag; per-runtime key-log support; the OTel `gen_ai.*` conventions; the SAC paper's method; BLAKE3 versus SHA-256 on 320-byte leaves; Landlock's audit-record kernel version; iOS App Group team scoping; **`R1-19`** (a BPF program range-checking `EventKind` in one comparison, verifier-accepted) and **`R1-20`** (Landlock ABI 4 port rules).
+
+Outcomes are recorded in `docs/reports/f0-verification.md`. `cargo xtask verify-backlog` fails if any row is unrecorded — "the register is empty" becomes a machine check rather than a habit.
 
 **GATE F0** — all must pass:
 ```bash
@@ -1322,6 +1343,7 @@ cargo check --workspace && cargo clippy --workspace -- -D warnings
 cargo xtask verify-layering     # layering enforced from commit #1
 cargo xtask verify-docs         # cross-document consistency, incl. no push workflows
 cargo xtask gate --level commit # every member PASS or PENDING; none FAIL
+cargo xtask verify-backlog      # every §F0.4 row has a recorded outcome
 cargo xtask verify-budgets      # passes on stubs; refuses entries without a direction
 cargo xtask vm up ubuntu-24.04 && cargo xtask vm up wsl2-ubuntu-24.04
 cargo xtask vm probe --all      # reports the tier and Landlock ABI per kernel
@@ -1495,6 +1517,8 @@ Implements §3.2. **This is the interface freeze deliverable.**
 | `F1.RT.05` | Binary WAL: `rkyv`, 64 MB segments, `fsync` policy configurable, crash-safe replay by offset | `forensicd` resumes by offset |
 | `F1.RT.06` | Self-observability: RSS, CPU, queue depths, drop counters exported as metrics | Feeds §4.4 |
 | `F1.RT.07` | Privilege split: tiny privileged loader (`aisme-loaderd`) vs. unprivileged worker; the session cgroup subtree is **delegated** (`Delegate=` in the unit) so T2 freeze needs no privilege | Reduces root surface |
+| `F1.SIM.01` | `aisme-agentsim` replays a recorded trace **preserving inter-arrival timing**, with `--speed` and `--seed`; emits the hidden correlation token per declared tool call (§4.6) | One artefact serves the CPU gate and the correlation gate |
+| `F1.SIM.02` | Trace format: an append-only log of `{ t_offset_us, action, args_hash, declared_intent, correlation_token }`, one line per agent action, plus a summary block carrying the §2.22 counts so a trace can be checked against the spec | Diffable, hashable, human-readable |
 | `F1.RT.08` | Crate lints: `#![forbid(unsafe_code)]` in `aisme-core`; `#![deny(clippy::unwrap_used, clippy::expect_used)]` in `aisme-agentd` | §3.4, §3.5 — a panic in a security daemon is a silent protection outage |
 | `F1.IPC.01` | Local IPC server (UDS with `SO_PEERCRED`; Named Pipe with SID check `[POST]` with native Windows) | JSON-RPC 2.0; auth by peer identity |
 
@@ -1740,6 +1764,7 @@ The detector functions are L1 (`F1.DT.*`); their *execution* and per-detector st
 | `F5.DT.05` | `DT-08` secret-to-VCS and `DT-13` write-then-exec joins | Cross-plane joins over the causal window |
 | `F5.DT.06` | `DT-09` session risk: deterministic accumulator with decay; exposes `aisme.session.risk` and the policy-severity value the prompt displays | Weights via `F1.DT.03` |
 | `F5.DT.07` | `DT-14` self-permission edits and `DT-15` unattributed provider flows | `.aisme/**` is `SELF_PROTECTION` |
+| `F5.DT.08` | **Benign-twin authoring**: one twin per detector, written *with* the detector | `I-15` weights a false positive and a miss equally, so the twin is not optional |
 
 **GATE F5**
 ```bash
@@ -1931,6 +1956,7 @@ cargo xtask sdk test-veto-e2e             # DENY verdict actually prevents the t
 | `F10.CORE.09` | `uniffi` bindings + generated Kotlin/Swift interfaces | Single source of truth for the FFI |
 | `F10.CORE.10` | **QUIC / HTTP-3**: UDP flow-shape features and QUIC-Initial parsing for SNI; the TCP assumption removed from the classifier | `DT-11` |
 | `F10.CORE.11` | **JA4 / JA4H client fingerprints** as features; a signed catalogue of known AI-SDK fingerprints shipped with `F10.CORE.03` | `DT-11` |
+| `F10.CORE.13` | **Flow-corpus generator** driving real client SDKs against local endpoints, emitting the §4.14.1 metadata-only schema | The corpus is regenerable; a captured one silently expires as QUIC and TLS stacks change |
 | `F10.CORE.12` | Classifier **confidence and degradation reason** surfaced to the UI: ECH means no SNI, DoH means no DNS name, QUIC means shape-only | `I-16` — never silent false confidence |
 | `F10.T.05` | **Test**: the tunnel never reads a payload byte. Instrumented packet path asserts zero payload accesses over the §4.11 corpus | The privacy invariant, as code. It was referenced by the plan and never defined |
 
@@ -2458,6 +2484,34 @@ The detection quality of the mobile engine is only as good as its corpus. This i
 | `T4.13.07` | **`RF-17` suppression does not blind** | A suppression rule matching a benign-looking pattern, with an exfiltration hidden inside it: the event is in the WAL with `suppressed_by`, its Merkle inclusion proof is valid, the verdict is identical to the un-suppressed run, and **zero** notifications are emitted. Plus the compile-time negative: a suppression targeting an `I-05` group or a `CRITICAL` verdict **fails to compile** |
 | `T4.13.08` | Twin silence | Every `BN-11`…`BN-16` twin produces no finding above `warn`, and none produces a block |
 | `T4.13.09` | Signed weights | A detector weight file with a broken signature is refused; the detector runs on the last-good weights and the refusal is a security event |
+
+### 4.14 Test assets: fixtures and corpora (normative)
+
+Three release blockers — the classifier gate (`T4.11.01`), the IRR gate (`T4.7.02`) and the correlation gate (`T4.6.01`) — read inputs that did not have a format. This section gives them one.
+
+**Every corpus is a directory with a `manifest.toml`** carrying `schema`, `version`, `entry_count`, `sha256` of the content, `produced_by`, `licence`, and — for anything derived from real observation — `provenance` and `consent_basis`. `verify-docs` checks the hash; **every gate records the corpus version in its report**, so a result is always attributable to an input. A corpus is a gate input, so an unversioned corpus edit can turn a red build green.
+
+| Corpus | Format | Size | Produced by | Provenance |
+|---|---|---|---|---|
+| `redteam` | Annex C TOML, one file per scenario | 24 classes × ≥ 3 instances | Written with the detector (`F5.DT.*`) | Synthetic |
+| `benign` | Same TOML with `expect.verdict = "allow"\|"warn"` and `max_prompts` | 16 workflows + one twin per detector | Recorded from real workflows on the team's own machines | Synthetic or self-recorded |
+| `annex-g` | A **view**, not a corpus: `redteam ∪ benign` filtered by `detector` | — | Generated | — |
+| `flows` | Parquet, **metadata only** — schema below | ≥ 10 000 | `F10.CORE.13` generator | Generated (see below) |
+| `mobile-apps` | A `flows` subset labelled by app category | ≥ 2 000 | Same | Same |
+
+#### 4.14.1 The flow corpus is synthetic-first
+
+The earlier text asked for 10 000 flows "captured from real devices". Even metadata-only, that is personal data in an EU-targeted product whose own invariants forbid a relay from seeing plaintext (`I-07`). Three tiers, in this order, and **a gate may only require tier 1**:
+
+1. **Generated — primary.** A traffic generator drives real client SDKs (Anthropic, OpenAI, Google, Mistral, Ollama) and real negatives (a video player, a messaging client, a package manager) against **local or first-party endpoints**, recording only what the classifier consumes. No third party's traffic, no consent question, and — the engineering argument, which is the stronger one — **reproducible and regenerable**. A captured corpus silently expires as QUIC adoption and provider TLS stacks change; a generated one is rebuilt.
+2. **Self-recorded — supplementary.** Team members' own devices, opt-in, metadata only, documented retention.
+3. **Third-party capture — `[CUT]`.** Not collected.
+
+The row schema is enumerated and **has no payload field**: `ts`, `direction`, `bytes`, `packets`, `proto`, `dst_ip_class`, `dst_port`, `sni_hash`, `dns_name_hash`, `ja4`, `ja4h`, `inter_arrival_us[]`, `frame_sizes[]`, `label`, `app_category`. So `T4.11.05` — "zero payload inspection" — is enforced by **the shape of the data**, not only by the code that reads it. That is the strongest form the invariant can take.
+
+#### 4.14.2 Fixture contracts
+
+Each fixture ships a `fixture.toml` declaring `provides` (what a test may assume), `ground_truth` (the file a test compares against) and `build` (the reproducible command). `fx-sse-server` declares its token stream in `ground_truth/sse-tokens.json`: four tests currently compare against "known content" that lives nowhere.
 
 ---
 

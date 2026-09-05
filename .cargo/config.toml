@@ -1,0 +1,5 @@
+# `cargo xtask <command>` is how every gate in this project runs. There is no
+# hosted CI (I-27), so this alias is the single entry point for builds, tests,
+# budget certification and the phase gates. Command surface: plan Annex H.
+[alias]
+xtask = "run --quiet --package xtask --"

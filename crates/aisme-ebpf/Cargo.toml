@@ -1,0 +1,16 @@
+[package]
+name = "aisme-ebpf"
+version = "0.1.0"
+edition = "2021"
+# GPL-2.0-only, not the workspace Apache-2.0: a BPF program calling a `gpl_only`
+# helper must declare a GPL licence and the kernel verifier enforces it at load
+# time. See LICENSE.md and ADR-06.
+license = "GPL-2.0-only"
+publish = false
+
+# Not a workspace member: this crate targets bpfel-unknown-none through
+# -Z build-std=core with the nightly pinned in its own rust-toolchain.toml.
+# `cargo xtask build-ebpf` builds it (F0.REPO.03); `cargo check --workspace`
+# must not try to.
+
+[dependencies]

@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0
 //! `cargo xtask doctor` — host prerequisites for phase F0.
 //!
 //! Reports and never installs. Installing packages on a developer's machine is

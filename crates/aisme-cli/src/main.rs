@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0
 //! The `aisme` command line: run, status, policy, verify, pair.
 //!
 //! `aisme run -- <cmd>` is the documented default onboarding path and the primary

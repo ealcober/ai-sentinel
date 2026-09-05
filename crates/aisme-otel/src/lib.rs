@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0
 //! `OpenTelemetry` export and semantic conventions.
 //!
 //! Prompts and chain-of-thought are excluded from export by default; hashes and

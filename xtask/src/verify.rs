@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0
 //! The hermetic checks: no VM, no network, no fixture beyond the repository,
 //! and they run in seconds (Annex H §H.3). All four are in `commit`.
 
@@ -451,11 +452,53 @@ pub(crate) fn docs() -> u8 {
         },
     );
 
-    println!("\n  Owed by F0.GATE.08, not checked here: SPDX headers, the read-order lists,");
-    println!("  the DoD ADR line, STATE.md's §7.3 headings, ADR contiguity, the Part I index,");
-    println!("  NN_ naming, phase-table sums, Cargo.lock and layers.toml tracked, the §B.9");
-    println!("  monotone maps, budget claims resolving to keys, and §-reference title prefixes.");
+    cross_document_checks(&mut r, &plan);
+
     r.finish("verify-docs")
+}
+
+/// The `F0.GATE.08` list. Each check names itself and its failure reason, so a
+/// red gate says which document disagrees with which.
+fn cross_document_checks(r: &mut Report, plan: &str) {
+    use crate::docgate as g;
+    println!("\n  cross-document checks (F0.GATE.08):");
+    let checks: Vec<(&str, Result<(), String>)> = vec![
+        ("SPDX headers match the LICENSE.md map", g::spdx_headers()),
+        (
+            "the read order agrees between CLAUDE.md and AGENTS.md",
+            g::read_order_agrees(),
+        ),
+        (
+            "the definition of done still requires the ADR re-read",
+            g::dod_has_adr_line(),
+        ),
+        (
+            "STATE.md carries its §7.3 headings, in order",
+            g::state_headings(),
+        ),
+        ("ADR numbers are contiguous", g::adrs_contiguous()),
+        ("NN_slug.md naming under docs/, and no NN_-", g::nn_naming()),
+        (
+            "the phase addends sum to the stated critical path",
+            g::phase_sums(plan),
+        ),
+        ("Cargo.lock and layers.toml are tracked", g::tracked_files()),
+        (
+            "every § reference resolves to a heading",
+            g::section_refs(plan),
+        ),
+        (
+            "[CUT] items are echoed in the threat model's non-goals",
+            g::cuts_in_threat_model(plan),
+        ),
+    ];
+    for (label, outcome) in checks {
+        let detail = outcome.err();
+        r.check(detail.is_none(), label, || detail.unwrap_or_default());
+    }
+    println!("\n  Still owed by F0.GATE.08: the Part VI tree regenerated from layers.toml");
+    println!("  (--tree), the §B.9 verdict maps proven monotone, and every budget claim in");
+    println!("  prose resolving to a budgets.toml key.");
 }
 
 /// The command names in Annex H §H.4, in plan order.

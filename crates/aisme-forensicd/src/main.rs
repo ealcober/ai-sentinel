@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0
 //! The cold-path daemon: `DuckDB`, `Parquet`, the Merkle chain, `OTLP` export.
 //!
 //! Everything expensive lives here so the hot path stays inside its budget.

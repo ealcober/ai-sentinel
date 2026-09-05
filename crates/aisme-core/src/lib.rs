@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0
 //! The engine: ontology, the three traits, policy IR, taint algebra, detectors.
 //!
 //! This crate has no I/O, no async runtime, no `cfg(target_os)` and no platform

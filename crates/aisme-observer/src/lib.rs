@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0
 //! Observer schema and scoring.
 //!
 //! Schema and scoring only; the HTTP client lives in `aisme-forensicd`. The

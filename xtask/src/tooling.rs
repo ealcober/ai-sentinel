@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0
 //! Commands that need tooling outside the Rust toolchain.
 //!
 //! These are implemented, not pending: the code below is what runs once the tool

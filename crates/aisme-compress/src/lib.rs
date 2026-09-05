@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0
 //! Deterministic SAC-lite semantic compression, stages L2 through L5.
 //!
 //! Deterministic by construction: the same input yields the same output, which is

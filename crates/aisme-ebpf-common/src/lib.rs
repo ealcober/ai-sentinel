@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0-only OR BSD-2-Clause
 //! Wire types shared between the BPF programs and user space.
 //!
 //! `no_std`, zero dependencies, layout-stable: this crate is compiled into

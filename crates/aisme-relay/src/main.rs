@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0
 //! Blind store-and-forward relay.
 //!
 //! It sees ciphertext and routing metadata, never plaintext telemetry, verdicts or

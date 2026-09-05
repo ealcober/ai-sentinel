@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0-only
 //! The BPF programs.
 //!
 //! Built for `bpfel-unknown-none` by `cargo xtask build-ebpf`, never by

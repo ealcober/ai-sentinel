@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0
 //! The hot-path daemon. Budget: 50 MB RSS, under 3% CPU, T0 p99 under 15 µs.
 //!
 //! Depends on adapters only through the `aisme-core` traits. `src/platform` is the

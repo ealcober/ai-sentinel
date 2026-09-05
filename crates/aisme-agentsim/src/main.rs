@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0
 //! Agent simulator that drives the reference workload.
 //!
 //! Deterministic replay is what makes a budget number reproducible (plan §2.22).

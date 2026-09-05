@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0
 //! The Annex H inventory, as data.
 //!
 //! Generated from plan Annex H §H.4 and checked back against it by

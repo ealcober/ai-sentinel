@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0
 //! Corpus and fixture manifests — plan §4.14.
 //!
 //! A corpus is a gate input, so an unversioned corpus edit can turn a red build

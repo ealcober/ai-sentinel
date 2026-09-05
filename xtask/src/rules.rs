@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0
 //! Architecture rules `A-01`…`A-06` (`F0.GATE.06`) and the forbidden-dependency
 //! gate (`F0.GATE.05`). Both run inside `cargo xtask verify-layering`.
 //!

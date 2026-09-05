@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0
 //! Build, test, budget certification and gate orchestration.
 //!
 //! Every gate in this project runs locally through this binary; there is no hosted
@@ -19,6 +20,7 @@
 mod annex_h;
 mod assets;
 mod budgets;
+mod docgate;
 mod doctor;
 mod gate;
 mod rules;

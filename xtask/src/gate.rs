@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0
 //! `gate --level` — the composite.
 //!
 //! Runs one level's members and reports **each member's result**, never a summary

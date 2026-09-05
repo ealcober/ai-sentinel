@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0
 //! Measuring a budget (`F0.GATE.04`) and checking the copies agree (`F0.GATE.07`).
 //!
 //! §2.22 states the rule this enforces: budget values live in exactly two places,

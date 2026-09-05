@@ -465,6 +465,10 @@ fn cross_document_checks(r: &mut Report, plan: &str) {
     let checks: Vec<(&str, Result<(), String>)> = vec![
         ("SPDX headers match the LICENSE.md map", g::spdx_headers()),
         (
+            "manifest licences match the LICENSE.md map",
+            g::manifest_licences(),
+        ),
+        (
             "the read order agrees between CLAUDE.md and AGENTS.md",
             g::read_order_agrees(),
         ),

@@ -2,7 +2,11 @@
 name = "aisme-ebpf-common"
 version = "0.1.0"
 edition.workspace = true
-license.workspace = true
+# NOT the workspace Apache-2.0. The same repr(C) structs are compiled into the
+# GPL kernel side and linked into the Apache user-space side, so the crate is
+# dual-licensed and each side takes the licence it needs — the arrangement libbpf
+# uses for the same reason. LICENSE.md, ADR-06.
+license = "GPL-2.0-only OR BSD-2-Clause"
 repository.workspace = true
 rust-version.workspace = true
 publish = false

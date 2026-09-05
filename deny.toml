@@ -32,18 +32,23 @@ allow = [
     "ISC",
     "Unicode-3.0",
     "Zlib",
-    "GPL-2.0",
+    "GPL-2.0-only",
 ]
 confidence-threshold = 0.9
+# The list is deliberately wider than today's dependency set: it is the policy,
+# not an inventory. cargo-deny warns about each allowance nothing uses yet, and
+# that warning would train the reader to ignore the licence section.
+unused-allowed-license = "allow"
 
-[[licenses.exceptions]]
-# Our own crate, dual-licensed for the reason above.
-name = "aisme-ebpf-common"
-allow = ["GPL-2.0", "BSD-2-Clause"]
 
 [bans]
 multiple-versions = "warn"
+# A `foo = "*"` from crates.io is a supply-chain risk: it resolves to whatever was
+# published last. A `{ path = "../x" }` inside this workspace is not that, and
+# every crate here is `publish = false`, so pinning versions on them would be
+# ceremony nobody reads.
 wildcards = "deny"
+allow-wildcard-paths = true
 # I-01 and I-02: AISME never modifies an observed process, and never hides from
 # it. These are the crates that would do it, banned at the supply chain rather
 # than only in review.

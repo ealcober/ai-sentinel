@@ -20,6 +20,65 @@ fn fail(v: &[String]) -> Result<(), String> {
     }
 }
 
+/// The SPDX id `LICENSE.md` maps a path to.
+fn expected_spdx(path: &str) -> &'static str {
+    if path.starts_with("crates/aisme-ebpf-common") {
+        "GPL-2.0-only OR BSD-2-Clause"
+    } else if path.starts_with("crates/aisme-ebpf") {
+        "GPL-2.0-only"
+    } else {
+        "Apache-2.0"
+    }
+}
+
+/// Every crate's **manifest** declares the licence `LICENSE.md` maps it to.
+///
+/// The source headers and the manifest are two different claims, and only the
+/// manifest is what `cargo deny`, crates.io and every downstream consumer read.
+/// `license.workspace = true` silently resolves to the workspace Apache-2.0,
+/// which is wrong for the two crates the kernel forces to be GPL.
+pub(crate) fn manifest_licences() -> Result<(), String> {
+    let workspace = read("Cargo.toml");
+    let ws_licence = workspace
+        .lines()
+        .find_map(|l| l.trim().strip_prefix("license = "))
+        .map(|v| v.trim().trim_matches('"').to_owned())
+        .unwrap_or_default();
+
+    let mut bad = Vec::new();
+    let mut dirs: Vec<String> = std::fs::read_dir("crates")
+        .into_iter()
+        .flatten()
+        .flatten()
+        .map(|e| e.path().to_string_lossy().replace('\\', "/"))
+        .collect();
+    dirs.push("xtask".to_owned());
+    dirs.sort();
+
+    for dir in dirs {
+        let manifest = format!("{dir}/Cargo.toml");
+        let body = read(&manifest);
+        if body.is_empty() {
+            continue;
+        }
+        let declared = if body.contains("license.workspace = true") {
+            ws_licence.clone()
+        } else {
+            body.lines()
+                .find_map(|l| l.trim().strip_prefix("license = "))
+                .map(|v| v.trim().trim_matches('"').to_owned())
+                .unwrap_or_default()
+        };
+        let want = expected_spdx(&dir);
+        if declared != want {
+            bad.push(format!(
+                "{manifest} declares `{declared}`, LICENSE.md maps it to `{want}`"
+            ));
+        }
+    }
+    fail(&bad)
+}
+
 /// Every source file carries the SPDX id `LICENSE.md` maps its path to.
 ///
 /// The two eBPF crates are not Apache-2.0 and the kernel is why: a BPF program

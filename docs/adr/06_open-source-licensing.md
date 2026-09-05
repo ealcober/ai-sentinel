@@ -43,5 +43,5 @@ The project is released as open source. The owner's stated goal has two parts: g
 
 - [ ] Register the trademarks **AISME** and **AI Sentinel**, since the licence explicitly does not cover them.
 - [ ] `F0.GATE.08` (`verify-docs`) checks the SPDX header of every source file against the map in `LICENSE.md`, and fails on a missing or contradicting header.
-- [ ] `F0.GATE.03` configures `cargo-deny` for licence policy; its allow-list must reflect the map, and must reject an Apache-2.0-only dependency inside `aisme-ebpf-common`.
+- [x] `F0.GATE.03` configures `cargo-deny` (`deny.toml`); its allow-list mirrors the map and `cargo deny check` passes all four sections. What actually protects `aisme-ebpf-common` from an Apache-2.0-only dependency is stronger than a licence rule: rule `A-03` requires it to have **zero** dependencies, and `cargo xtask verify-layering` enforces that. A licence allow-list can only judge a dependency that exists.
 - [ ] Decide the commercial question before merging the first external contribution.

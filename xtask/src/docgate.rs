@@ -459,3 +459,215 @@ pub(crate) fn cuts_in_threat_model(plan: &str) -> Result<(), String> {
         Err("the plan marks [CUT] items but the threat model states no non-goals".into())
     }
 }
+
+/// Every backend's declared verdict map in Annex B §B.9 is monotone.
+///
+/// The verdicts are a chain, `allow < warn < escalate < deny`. A backend that
+/// cannot enforce a verdict declares what it degrades to, and that map must be
+/// order-preserving — otherwise §B.9's proof that `f(max S) = max f(S)` fails and
+/// the compiler could not degrade rule-by-rule.
+pub(crate) fn verdict_maps_monotone(plan: &str) -> Result<(), String> {
+    let order = |v: &str| match v {
+        "allow" => Some(0),
+        "warn" => Some(1),
+        "escalate" => Some(2),
+        "deny" => Some(3),
+        _ => None,
+    };
+    let Some(start) = plan.find("| Backend | `allow` | `warn` | `escalate` | `deny` |") else {
+        return Err("§B.9's backend map table is missing".into());
+    };
+    let mut bad = Vec::new();
+    let mut rows = 0;
+    for line in plan[start..]
+        .lines()
+        .skip(2)
+        .take_while(|l| l.starts_with('|'))
+    {
+        let cells: Vec<&str> = line.split('|').map(str::trim).collect();
+        let Some(backend) = cells.get(1) else {
+            continue;
+        };
+        let mapped: Vec<Option<u8>> = (2..6)
+            .map(|i| {
+                cells.get(i).and_then(|c| {
+                    // Cells carry emphasis and a parenthetical: "**deny** (fail closed)".
+                    c.replace(['*', '`'], "")
+                        .split_whitespace()
+                        .next()
+                        .and_then(|w| order(w.trim()))
+                })
+            })
+            .collect();
+        if mapped.iter().any(Option::is_none) {
+            bad.push(format!("{backend}: a cell is not one of the four verdicts"));
+            continue;
+        }
+        rows += 1;
+        let v: Vec<u8> = mapped.into_iter().flatten().collect();
+        if v.windows(2).any(|w| w[0] > w[1]) {
+            bad.push(format!("{backend}: map {v:?} is not order-preserving"));
+        }
+    }
+    if rows == 0 {
+        bad.push("no backend rows parsed".into());
+    }
+    fail(&bad)
+}
+
+/// Every `budgets.toml` key named in prose resolves to a key that exists.
+///
+/// A sentence claiming a budget is enforced is easy to write and reads as done.
+/// Only keys are checked, identified by their first segment being a table in
+/// `budgets.toml`, so an `OTel` metric name like `aisme.permission.prompts_per_day`
+/// is correctly left alone.
+pub(crate) fn prose_budget_keys() -> Result<(), String> {
+    let budgets = read("budgets.toml");
+    let sections: BTreeSet<&str> = budgets
+        .lines()
+        .filter_map(|l| l.trim().strip_prefix('[')?.split(['.', ']']).next())
+        .collect();
+    if sections.is_empty() {
+        return Err("budgets.toml declares no tables".into());
+    }
+
+    // §5.6 defines OpenTelemetry attribute names, and `process.pid`,
+    // `process.executable.name` and `process.command_args` are OTel's, not ours.
+    // They collide with budgets.toml's `[process]` table by pure coincidence, so
+    // the scan skips that section rather than blacklisting the names.
+    let plan_body = read("docs/01_phase5_implementation_plan.md");
+    let otel = plan_body.find("### 5.6").map(|i| {
+        (
+            i,
+            plan_body[i + 8..]
+                .find("\n### ")
+                .map_or(plan_body.len(), |j| i + 8 + j),
+        )
+    });
+
+    let mut bad = Vec::new();
+    for doc in [
+        "docs/01_phase5_implementation_plan.md",
+        "CLAUDE.md",
+        "README.md",
+        "docs/ai/invariants.md",
+        "docs/ai/STATE.md",
+    ] {
+        let body = read(doc);
+        let mut offset = 0usize;
+        for (idx, token) in body.split('`').enumerate() {
+            let here = offset;
+            offset += token.len() + 1;
+            if idx % 2 == 0 {
+                continue;
+            }
+            if doc.ends_with("plan.md") {
+                if let Some((start, end)) = otel {
+                    if here >= start && here < end {
+                        continue;
+                    }
+                }
+            }
+            let key = token.trim();
+            let mut parts = key.split('.');
+            let (Some(head), Some(last)) = (parts.next(), key.rsplit('.').next()) else {
+                continue;
+            };
+            let shaped = key.split('.').count() >= 2
+                && key
+                    .chars()
+                    .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || "._".contains(c));
+            if !shaped || !sections.contains(head) {
+                continue;
+            }
+            // The key exists if its leaf is assigned anywhere under that table.
+            if !budgets.lines().any(|l| {
+                l.trim_start().starts_with(&format!("{last} "))
+                    || l.trim_start().starts_with(&format!("{last}="))
+            }) {
+                bad.push(format!(
+                    "{doc} names `{key}`, which budgets.toml does not define"
+                ));
+            }
+        }
+    }
+    bad.sort();
+    bad.dedup();
+    fail(&bad)
+}
+
+/// The Part VI crate tree lists exactly the crates that exist, with their layer.
+///
+/// This is a consistency check, not a regeneration: the tree's third column is
+/// human prose describing what each crate is for, and regenerating it would
+/// delete the only part a reader needs.
+/// Is this crate under `[excluded]` in `layers.toml` rather than layered?
+fn excluded(layers: &str, crate_name: &str) -> bool {
+    let Some(section) = layers.split("[excluded]").nth(1) else {
+        return false;
+    };
+    let section = section.split("\n[").next().unwrap_or(section);
+    section
+        .lines()
+        .any(|l| l.split('=').next().is_some_and(|k| k.trim() == crate_name))
+}
+
+pub(crate) fn part_vi_tree(plan: &str) -> Result<(), String> {
+    let layers = read("layers.toml");
+    let layer_of = |crate_name: &str| -> Option<String> {
+        layers.lines().find_map(|l| {
+            let (k, v) = l.split_once('=')?;
+            (k.trim() == crate_name).then(|| v.split('"').nth(1).unwrap_or("").to_owned())
+        })
+    };
+
+    let mut listed = BTreeSet::new();
+    let mut bad = Vec::new();
+    for line in plan.lines() {
+        let Some(rest) = line.split("── ").nth(1) else {
+            continue;
+        };
+        let Some((name, tail)) = rest.split_once('/') else {
+            continue;
+        };
+        if !tail.trim_start().starts_with('[') || name.contains(' ') {
+            continue;
+        }
+        let tag: String = tail
+            .trim_start()
+            .chars()
+            .skip(1)
+            .take_while(|c| *c != ']')
+            .collect();
+        if !Path::new("crates").join(name).is_dir() {
+            continue; // a tree entry outside crates/, such as driver/ or mobile/
+        }
+        listed.insert(name.to_owned());
+        match layer_of(name) {
+            Some(layer) if tag == layer => {}
+            // An excluded crate carries a prose note where a layer would be;
+            // the tree only has to say it is out, not repeat the note.
+            Some(_) if excluded(&layers, name) && tag.starts_with("POST") => {}
+            Some(layer) => bad.push(format!(
+                "the tree marks {name} `[{tag}]`, layers.toml says {layer}"
+            )),
+            // `[excluded]` in layers.toml is a note, not a layer, so the tree
+            // only has to agree that the crate is out: `[--]` for the eBPF crate
+            // that builds separately, `[POST …]` for the deferred driver.
+            None if tag.starts_with("--") || tag.starts_with("POST") => {}
+            None => bad.push(format!(
+                "the tree marks {name} `[{tag}]` but layers.toml omits it"
+            )),
+        }
+    }
+
+    for entry in std::fs::read_dir("crates").into_iter().flatten().flatten() {
+        let name = entry.file_name().to_string_lossy().into_owned();
+        if entry.path().is_dir() && !listed.contains(&name) {
+            bad.push(format!(
+                "crates/{name} exists but the Part VI tree does not list it"
+            ));
+        }
+    }
+    fail(&bad)
+}

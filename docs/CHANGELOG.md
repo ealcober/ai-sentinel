@@ -10,6 +10,8 @@ All notable changes to this repository. Format: [Keep a Changelog](https://keepa
 - **Phase F0 in progress.** No product code yet. Next: `F0.REPO.01`/`F0.REPO.05` (the Cargo workspace), then `F0.REPO.02`, `F0.REPO.03` and `F0.REPO.06`.
 
 ### Added
+- **`F0.GATE.08` completed** — the last three checks: Annex B §B.9's verdict maps proven **monotone** (the property §B.9's degradation proof rests on), every `budgets.toml` key named in prose resolving to a key that exists, and the Part VI tree agreeing with `crates/` and `layers.toml`. `verify-docs` now runs fifteen cross-document checks and owes none.
+- `telemetry.series_per_host` in `budgets.toml` and §2.22 — `T4.4.18` asserted a 200-series cap against a key nobody defined.
 - **`F0.DOC.01`** — the eleven seed memories of plan §7.4 in `docs/ai/memory/`, transcribed rather than reconstructed, each carrying the frontmatter, a `**How to apply:**` line the table does not supply, and a non-empty source. `verify-docs` checks them against the plan's own table, count included.
 
 ### Fixed

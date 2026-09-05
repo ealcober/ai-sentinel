@@ -77,6 +77,9 @@ t2_p95_ms  = { direction = "min", target = 1200, hard = 2500 }
 
 [telemetry]
 drop_rate_pct = { direction = "min", target = 0.0, hard = 0.01 }
+# Metric cardinality. An unbounded label set is how a telemetry backend starts
+# dropping series, and a dropped series reads as "nothing happened" (T4.4.18).
+series_per_host = { direction = "min", target = 150, hard = 200 }
 
 [quality]
 # Detection quality gates — see plan §4.6, §4.7, §4.11.

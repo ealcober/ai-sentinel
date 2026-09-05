@@ -926,6 +926,7 @@ Differences from the research's design: FUSE-RPC is absent, the Frida patching e
 | Benign corpus blocks / escalations | 0 / 0 | **0 / 2** | `I-15`; a release blocker (§4.8.2) |
 | Prompts per developer-day | ≤ 1 | **3** | Prompt fatigue (`01_permission-model.md` §6) |
 | Warns per developer-day | ≤ 10 | 30 | A warn costs attention, not a decision (§4.1 of the same note) |
+| Distinct metric time series per host | ≤ 150 | 200 | Reference workload (`T4.4.18`) |
 | Hot-loop allocations, steady state | 0/s | **0/s** | `dhat`, 1 h run (`T4.4.03`) |
 | RSS growth slope | 0 MB/day | 0.5 MB/day | Last 48 h of the 72 h soak (`T4.4.02`) |
 | T0 latency p999 — L3 | ≤ 25 µs | 50 µs | 1M intercepted syscalls |
@@ -2814,7 +2815,7 @@ Written in `docs/ops/`, one file per scenario, each with symptom → diagnosis �
 
 ## Part VI — Project folder structure
 
-This layout exists in the repository; `verify-docs --tree` regenerates it from `layers.toml` and the tree, so it cannot drift.
+This layout exists in the repository, and `verify-docs` checks it against `crates/` and `layers.toml`: every crate on disk is listed, every listed crate exists, and the `[Ln]` tag matches the declared layer. It **checks** rather than regenerates, because the third column is prose describing what each crate is for — regenerating the block would delete the only part a reader needs.
 
 ```
 AI-SYSTEM-MONITOR/
@@ -2893,7 +2894,7 @@ recomputes its `sha256` and names the version it certified.
 
 **Layout rules:**
 
-1. **`crates/aisme-agentd` is a budgeted crate.** Adding a dependency there requires justification (`DEP.SUP.06`). Cold-path work belongs in `forensicd`. The tree above is generated from `layers.toml` by `verify-docs --tree`, so it cannot drift.
+1. **`crates/aisme-agentd` is a budgeted crate.** Adding a dependency there requires justification (`DEP.SUP.06`). Cold-path work belongs in `forensicd`. The tree above is checked against `layers.toml` by `verify-docs --tree`, so it cannot drift.
 2. **`aisme-ebpf-common` is shared with kernel code** — it must stay `no_std` and layout-stable. Changing a struct there is a wire-format change requiring a version bump.
 3. **Platform crates implement traits from `aisme-core`.** No platform-specific type ever appears in `aisme-core`'s public API. This is what keeps `ADR-02` reversible. The composition root `aisme-agentd::platform` is the single exception, and it is the only place `cfg(target_os)` may appear (§3.2).
 4. **`tests/corpus/` is a first-class asset**, versioned and reviewed like code. The benign corpus is the false-positive gate and the red-team corpus doubles as the IRR corpus.

@@ -499,14 +499,23 @@ fn cross_document_checks(r: &mut Report, plan: &str) {
             "[CUT] items are echoed in the threat model's non-goals",
             g::cuts_in_threat_model(plan),
         ),
+        (
+            "Annex B §B.9 verdict maps are monotone",
+            g::verdict_maps_monotone(plan),
+        ),
+        (
+            "budget keys named in prose exist in budgets.toml",
+            g::prose_budget_keys(),
+        ),
+        (
+            "the Part VI tree matches crates/ and layers.toml",
+            g::part_vi_tree(plan),
+        ),
     ];
     for (label, outcome) in checks {
         let detail = outcome.err();
         r.check(detail.is_none(), label, || detail.unwrap_or_default());
     }
-    println!("\n  Still owed by F0.GATE.08: the Part VI tree regenerated from layers.toml");
-    println!("  (--tree), the §B.9 verdict maps proven monotone, and every budget claim in");
-    println!("  prose resolving to a budgets.toml key.");
 }
 
 /// The command names in Annex H §H.4, in plan order.

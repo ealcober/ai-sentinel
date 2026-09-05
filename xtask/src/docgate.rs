@@ -330,6 +330,94 @@ pub(crate) fn tracked_files() -> Result<(), String> {
     }
 }
 
+/// The seed memories of plan §7.4 exist, are well formed, and cite a source.
+///
+/// The count comes from the plan's own table rather than a constant here: a row
+/// added there without a file is exactly the drift this checks for.
+pub(crate) fn seed_memories(plan: &str) -> Result<(), String> {
+    const TYPES: [&str; 5] = [
+        "platform-limit",
+        "toolchain",
+        "performance",
+        "domain",
+        "process",
+    ];
+    let expected: Vec<String> = section(plan, "### 7.4 ")
+        .lines()
+        .filter_map(|l| {
+            let rest = l.strip_prefix("| `")?;
+            let (slug, after) = rest.split_once('`')?;
+            // Digits belong in a slug: wsl2-capabilities, hardware-keys-are-p256,
+            // landlock-l2-file-deny. Excluding them silently shrank this check to
+            // six of the eleven seeds.
+            let is_slug = slug
+                .chars()
+                .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-');
+            (after.starts_with(" |") && is_slug).then(|| slug.to_owned())
+        })
+        .collect();
+    if expected.is_empty() {
+        return Err("no seed rows found in plan §7.4".into());
+    }
+    // A check that quietly covers a subset is worse than no check, so the number
+    // of files on disk must equal the number of rows in the plan.
+    let on_disk = std::fs::read_dir("docs/ai/memory")
+        .into_iter()
+        .flatten()
+        .flatten()
+        .filter(|e| {
+            e.path()
+                .extension()
+                .is_some_and(|x| x.eq_ignore_ascii_case("md"))
+        })
+        .count();
+    if on_disk != expected.len() {
+        return Err(format!(
+            "plan §7.4 lists {} seeds, docs/ai/memory holds {on_disk} files",
+            expected.len()
+        ));
+    }
+
+    let mut bad = Vec::new();
+    for slug in &expected {
+        let path = format!("docs/ai/memory/{slug}.md");
+        let body = read(&path);
+        if body.is_empty() {
+            bad.push(format!("{path} is missing or empty"));
+            continue;
+        }
+        if !body.starts_with("---\n") {
+            bad.push(format!("{path} has no frontmatter"));
+            continue;
+        }
+        for field in ["name:", "description:", "type:"] {
+            if !body.contains(&format!("\n{field}")) {
+                bad.push(format!("{path} lacks `{field}`"));
+            }
+        }
+        let declared_type = body
+            .lines()
+            .find_map(|l| l.strip_prefix("type: "))
+            .map_or("", str::trim);
+        if !TYPES.contains(&declared_type) {
+            bad.push(format!(
+                "{path} has type `{declared_type}`, not one of {TYPES:?}"
+            ));
+        }
+        if !body.contains(&format!("name: {slug}")) {
+            bad.push(format!("{path} does not name itself `{slug}`"));
+        }
+        match body.split("**Source:**").nth(1) {
+            None => bad.push(format!("{path} cites no source")),
+            Some(rest) if rest.lines().next().unwrap_or("").trim().is_empty() => {
+                bad.push(format!("{path} has an empty source"));
+            }
+            Some(_) => {}
+        }
+    }
+    fail(&bad)
+}
+
 /// Every `§n.m` the plan cites resolves to a heading it contains.
 pub(crate) fn section_refs(plan: &str) -> Result<(), String> {
     let headings: BTreeSet<String> = plan

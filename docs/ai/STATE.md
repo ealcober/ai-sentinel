@@ -42,6 +42,7 @@
 | **Threat model**: ranked adversaries, trust boundaries, collected non-goals | `docs/security/01_threat-model.md` |
 | Phase Entry/Exit contracts and the eight-item freeze list | Plan §3.7.1 |
 | **Final coherence seal**: three audits plus a host probe, 134 findings, gate lines executed, host prerequisites (`F0.REPO.06`) | `docs/04_final_coherence_seal.md` |
+| **`F0.DOC.01`** — the eleven §7.4 seed memories in `docs/ai/memory/`, each with the frontmatter, a `**How to apply:**` line and a non-empty source. `verify-docs` checks the count against the plan's own table, so a row added there without a file is caught | `docs/ai/memory/` |
 | **`F0.GATE.03`** validated — `cargo deny check` passes all four sections. Its first run failed `bans` and exposed a real licensing defect: `crates/aisme-ebpf-common/Cargo.toml` declared the workspace Apache-2.0 while its SPDX header and `LICENSE.md` say `GPL-2.0-only OR BSD-2-Clause`. Fixed, and `verify-docs` gained the manifest-licence check that catches it | `deny.toml`, `xtask/src/docgate.rs` |
 | **`F0.GATE.08`** mostly — ten cross-document checks inside `verify-docs`: SPDX headers against the `LICENSE.md` map (28 files now carry one), read order, the DoD ADR line, §7.3 headings, ADR contiguity, `NN_` naming, phase sums, tracked files, § references, `[CUT]` echoes. **Three still owed**: `--tree` regeneration, §B.9 monotone maps, prose budget claims | `xtask/src/docgate.rs` |
 | **`F0.GATE.04`** / **`F0.GATE.07`** — `verify-budgets` measures what has an artefact (`process.agentd.binary.size_mb` = 0.29 MB against a 12 MB ceiling) and **fails on a breach**; the drift check runs on every invocation, comparing §2.22, `budgets.toml` and the two root documents in a canonical unit | `xtask/src/budgets.rs` |
@@ -58,12 +59,11 @@
 
 **Phase F0.** Ordered; task IDs from Plan Part III.
 
-**`F0.WSL.01`, `F0.REPO.01`, `F0.REPO.05`, `F0.REPO.03`, `F0.REPO.06`, `F0.ASSET.01` and `F0.ASSET.02` are done.** `F0.REPO.02`'s eBPF half is blocked, see below. What remains, in order:
+**Done in F0:** `F0.WSL.01`, `F0.REPO.01`, `F0.REPO.05`, `F0.REPO.03`, `F0.REPO.06`, `F0.ASSET.01`, `F0.ASSET.02`, `F0.DOC.01`, and `F0.GATE.01` (partial) through `F0.GATE.08`. `F0.REPO.02`'s eBPF half is blocked, see below. What remains, in order:
 
-1. `F0.GATE.04`…`F0.GATE.08` — budget gate, forbidden-dependency gate, dependency-direction gate, doc-drift gate, `verify-docs`. **All exist before F1 code lands.** All run locally (`I-27`).
-2. `F0.VM.01` / `F0.VM.02` / `F0.WSL.02` — VM images and the kernel matrix with the expected tier asserted per kernel, including WSL2 with and without systemd.
-3. `F0.DOC.01` — write the **eleven** seed memories from Plan §7.4 (fact, why it matters, source — transcribe, do not reconstruct).
-4. `F0.VER.*` — the remaining rows of §F0.4, any order, appended to `docs/reports/01_f0-verification.md`. **`F0.VER.04` and `F0.VER.18` hold; `F0.VER.21` fails with a known remedy; `F0.VER.15` is `DEPRECATED`.** `F0.VER.16` and `F0.VER.19` are blocked only on the toolchain. **Every live row has a recorded outcome at GATE F0.**
+1. `F0.VM.01` / `F0.VM.02` / `F0.WSL.02` — VM images and the kernel matrix with the expected tier asserted per kernel, including WSL2 with and without systemd. **Blocked on the host prerequisites below**; `cargo xtask vm up` already exits 2 with the remedy.
+2. `F0.VER.*` — the remaining rows of §F0.4, any order, appended to `docs/reports/01_f0-verification.md`. **`F0.VER.01` fails, `F0.VER.04` and `F0.VER.18` hold, `F0.VER.21` fails with a known remedy, `F0.VER.15` is `DEPRECATED`.** `F0.VER.16` and `F0.VER.19` need only `bpf-linker`.
+3. **Three `verify-docs` checks still owed by `F0.GATE.08`**: the Part VI tree regenerated from `layers.toml` (`--tree`), the §B.9 verdict maps proven monotone, and every budget claim in prose resolving to a `budgets.toml` key. The command names them on every run.
 
 Already in place, not F0 work: `F0.REPO.00` (repository), `F0.SEC.01` (`docs/security/01_threat-model.md`), `ADR-04` and `ADR-05`, `docs/adr/00_template.md`.
 

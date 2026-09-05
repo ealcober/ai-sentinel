@@ -26,4 +26,6 @@ Measured by `F0.WSL.01` on 2026-09-05 against kernel `6.18.33.1-microsoft-standa
 
 **How to apply:** probe with the **Landlock syscall and `/proc/config.gz`**, never with `cat /sys/kernel/security/lsm` — securityfs is unmounted on stock WSL2, so that read returns `ENOENT` and a literal reading reports "no LSM list", which is an absence read as a value (general rule 9) and would misreport the tier as `L1`. When the installer offers the L3 upgrade on WSL2, it edits `.wslconfig` on the Windows side, which the Linux daemon cannot do for the user: it prints the exact line and the `wsl --shutdown` that applies it.
 
+**Source:** §2.16.1, `F0.VER.04`, and the measurement itself in `docs/reports/01_f0-verification.md`
+
 Related: [[wsl2-has-no-tpm]], [[landlock-l2-file-deny]], [[cgroup-connect-l2-net-deny]]

@@ -9,6 +9,9 @@ All notable changes to this repository. Format: [Keep a Changelog](https://keepa
 ### State
 - **Phase F0 in progress.** No product code yet. Next: `F0.REPO.01`/`F0.REPO.05` (the Cargo workspace), then `F0.REPO.02`, `F0.REPO.03` and `F0.REPO.06`.
 
+### Added
+- **`F0.DOC.01`** — the eleven seed memories of plan §7.4 in `docs/ai/memory/`, transcribed rather than reconstructed, each carrying the frontmatter, a `**How to apply:**` line the table does not supply, and a non-empty source. `verify-docs` checks them against the plan's own table, count included.
+
 ### Fixed
 - **`crates/aisme-ebpf-common` declared the wrong licence.** Its manifest carried `license.workspace = true`, resolving to Apache-2.0, while its SPDX header and `LICENSE.md` both say `GPL-2.0-only OR BSD-2-Clause` — the crate the whole of `ADR-06` turns on, wrong in the one place `cargo deny`, crates.io and every downstream consumer read. Found by the first `cargo deny check` ever run.
 

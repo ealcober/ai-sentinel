@@ -481,6 +481,10 @@ fn cross_document_checks(r: &mut Report, plan: &str) {
             g::state_headings(),
         ),
         ("ADR numbers are contiguous", g::adrs_contiguous()),
+        (
+            "the §7.4 seed memories exist and cite a source",
+            g::seed_memories(plan),
+        ),
         ("NN_slug.md naming under docs/, and no NN_-", g::nn_naming()),
         (
             "the phase addends sum to the stated critical path",

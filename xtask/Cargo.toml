@@ -8,6 +8,11 @@ rust-version.workspace = true
 publish = false
 
 [dependencies]
+# L4 tooling. `I-21` forbids serde_json on the hot path — that ban is scoped to
+# aisme-agentd, and the forbidden-dependency gate (F0.GATE.05) enforces it there.
+# Here they read layers.toml, budgets.toml and `cargo metadata`.
+toml = "0.8"
+serde_json = "1"
 
 [lints]
 workspace = true

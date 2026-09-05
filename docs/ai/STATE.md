@@ -42,6 +42,7 @@
 | **Threat model**: ranked adversaries, trust boundaries, collected non-goals | `docs/security/01_threat-model.md` |
 | Phase Entry/Exit contracts and the eight-item freeze list | Plan §3.7.1 |
 | **Final coherence seal**: three audits plus a host probe, 134 findings, gate lines executed, host prerequisites (`F0.REPO.06`) | `docs/04_final_coherence_seal.md` |
+| **`F0.REPO.03`** — `xtask`: all **71** Annex H commands parse, unimplemented ones exit 3 naming their task and phase. Working: `verify-layering`, `verify-budgets`, `verify-docs`, `verify-backlog`, `gate --level`, `dist`. `build-ebpf` and `vm *` are implemented and exit **2** with the remedy until their tooling exists | `xtask/src/` |
 | **`F0.REPO.02`**, root half — root toolchain **moved to `1.97.1`** and MSRV to `1.87`, because `F0.VER.01` **fails**: `aya 0.14.0` and `aya-ebpf 0.2.1` declare `rust-version 1.87.0` and `bpf-linker 0.11.0` is `edition 2024`. Workspace still passes `check`, `clippy -D warnings` and `fmt --check` under it. The eBPF nightly pin is **blocked**, see below | `rust-toolchain.toml`, `Cargo.toml` |
 | **`F0.REPO.01`** / **`F0.REPO.05`** — Cargo workspace: 19 members, each in its `layers.toml` layer, `aisme-ebpf` and `aisme-windows` excluded. `cargo check --workspace` and `cargo clippy -- -D warnings` both pass clean; the only inter-crate edge is `aisme-core → aisme-ebpf-common` (L1→L0) | `Cargo.toml`, `.cargo/config.toml`, 20 manifests |
 | **`F0.WSL.01`** — WSL2 capability probe. Landlock **ABI 7 and enforcing**; `CONFIG_BPF_LSM=y` compiled but `bpf` absent from the active LSM list; cgroup v2 only; BTF present; systemd PID 1; **no TPM**; `/dev/kvm` present, user not in group `kvm` | `docs/ai/memory/wsl2-capabilities.md`, `docs/reports/01_f0-verification.md` |
@@ -52,10 +53,9 @@
 
 **`F0.WSL.01` is done.** The order below is corrected against the dependency chain: `cargo xtask doctor` is `F0.REPO.06`'s deliverable, so it needs `F0.REPO.03`, which needs the workspace of `F0.REPO.01`. The plan says as much — `F0.REPO.06`'s Done-when is that **`F0.VM.01`** cannot start before `doctor` passes, not that the phase cannot.
 
-1. `F0.REPO.03` — `xtask`: the argument surface of **all 71 Annex H commands**, each unimplemented one exiting 3 with its owning task; working `build-ebpf`, `dist`, `vm *`, `verify-*`, `gate --level`.
-2. **`F0.REPO.06`** — host prerequisites and `cargo xtask doctor`. Measured on the owner's host on 2026-09-05: `/dev/kvm` present and the CPU reports `vmx`, but **the user is not in group `kvm`** (`F0.VER.21` fails until `usermod -aG kvm`), and `qemu-system-x86_64`, `virtme-ng`, `clang`, `bpf-linker`, `bpftool`, `strace`, `cargo-deny`, `tpm2-tools` and a nightly toolchain are all absent. **`doctor` gates `F0.VM.01`.** It also unblocks `F0.VER.16` and `F0.VER.19`, whose kernel prerequisites are all present and which lack only a loader.
-3. `F0.ASSET.01` / `F0.ASSET.02` — corpus manifests, the empty corpus tree and **the reference-trace manifest schema**; the recording itself runs after `F2.WS.08`, before GATE F2.
-6. `F0.GATE.04`…`F0.GATE.08` — budget gate, forbidden-dependency gate, dependency-direction gate, doc-drift gate, `verify-docs`. **All exist before F1 code lands.** All run locally (`I-27`).
+1. **`F0.REPO.06`** — host prerequisites and `cargo xtask doctor`. Measured on the owner's host on 2026-09-05: `/dev/kvm` present and the CPU reports `vmx`, but **the user is not in group `kvm`** (`F0.VER.21` fails until `usermod -aG kvm`), and `qemu-system-x86_64`, `virtme-ng`, `clang`, `bpf-linker`, `bpftool`, `strace`, `cargo-deny`, `tpm2-tools` and a nightly toolchain are all absent. **`doctor` gates `F0.VM.01`.** It also unblocks `F0.VER.16` and `F0.VER.19`, whose kernel prerequisites are all present and which lack only a loader.
+2. `F0.ASSET.01` / `F0.ASSET.02` — corpus manifests, the empty corpus tree and **the reference-trace manifest schema**; the recording itself runs after `F2.WS.08`, before GATE F2.
+3. `F0.GATE.04`…`F0.GATE.08` — budget gate, forbidden-dependency gate, dependency-direction gate, doc-drift gate, `verify-docs`. **All exist before F1 code lands.** All run locally (`I-27`).
 7. `F0.VM.01` / `F0.VM.02` / `F0.WSL.02` — VM images and the kernel matrix with the expected tier asserted per kernel, including WSL2 with and without systemd.
 8. `F0.DOC.01` — write the **eleven** seed memories from Plan §7.4 (fact, why it matters, source — transcribe, do not reconstruct).
 9. `F0.VER.*` — the remaining rows of §F0.4, any order, appended to `docs/reports/01_f0-verification.md`. **`F0.VER.04` and `F0.VER.18` hold; `F0.VER.21` fails with a known remedy; `F0.VER.15` is `DEPRECATED`.** `F0.VER.16` and `F0.VER.19` are blocked only on the toolchain. **Every live row has a recorded outcome at GATE F0.**
@@ -82,7 +82,7 @@ cargo +nightly install bpf-linker --no-default-features --features llvm-21
 
 The same install unblocks `F0.VER.16` (the cgroup `connect` attach test) and `F0.VER.19` (the `EventKind` range check under the verifier), whose kernel prerequisites are all present and which lack only a loader. Group membership for KVM (`F0.VER.21`) is `sudo usermod -aG kvm $USER` followed by a new login.
 
-**Not blocked by this:** `F0.REPO.03`, the `xtask` command surface, which needs nothing beyond the stable toolchain already in place.
+**Not blocked by this:** everything except `build-ebpf` and `vm *`, both of which already exist and exit 2 with the exact remedy.
 
 ## Open, not blocking
 

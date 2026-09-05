@@ -180,7 +180,7 @@ Claims this pass relied on but could not show with a command. Each is either an 
 | glibc issues `openat` for `open()` on the matrix VM images (musl not checked) | Verified on this host's glibc by disassembly; holds for glibc ≥ 2.26 |
 | Debian 12's stock LSM list includes `landlock` | `F0.VER.04` |
 | `docs/02` §R1 numbers are stable | The register is append-only by the report's own rule; `F0.VER.nn` depends on it |
-| The exact exit code of `verify-budgets` on stubs | No code exists; the GATE F0 comment now states the contract |
+| ~~The exact exit code of `verify-budgets` on stubs~~ | **Verified 2026-09-05 by `F0.REPO.03`**: exit 0, with all 42 metrics reporting `skipped: no artefact`. The GATE F0 comment was right |
 
 ## 6. Verdict
 

@@ -18,6 +18,7 @@
 
 mod annex_h;
 mod assets;
+mod budgets;
 mod doctor;
 mod gate;
 mod rules;

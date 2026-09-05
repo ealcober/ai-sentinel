@@ -2,7 +2,7 @@
 //! and they run in seconds (Annex H §H.3). All four are in `commit`.
 
 use crate::annex_h::COMMANDS;
-use crate::{PENDING, SKIP};
+use crate::SKIP;
 use std::collections::BTreeMap;
 use std::fmt::Write as _;
 use std::path::Path;
@@ -228,13 +228,7 @@ fn metadata() -> Option<serde_json::Value> {
 /// every one of them: inferring it from target-versus-hard is undefined when the
 /// two are equal, which is exactly the case for the `0/0` entries.
 pub(crate) fn budgets(args: &[&str]) -> u8 {
-    if args.contains(&"--drift") {
-        println!("PENDING F0.GATE.07 — the plan §2.22 ↔ budgets.toml ↔ README/CLAUDE.md");
-        println!("        drift comparison. `verify-budgets` without --drift checks the");
-        println!("        file's own shape and is implemented.");
-        return PENDING;
-    }
-    println!("verify-budgets — budgets.toml shape and artefact presence\n");
+    println!("verify-budgets — budgets.toml shape, measurement and drift\n");
     let mut r = Report::default();
 
     let Some(raw) = read("budgets.toml") else {
@@ -256,6 +250,7 @@ pub(crate) fn budgets(args: &[&str]) -> u8 {
     });
 
     let mut bad = Vec::new();
+    let mut hards: Vec<(String, f64)> = Vec::new();
     for (path, t) in &metrics {
         match t.get("direction").and_then(toml::Value::as_str) {
             Some("min" | "max") => {}
@@ -264,21 +259,86 @@ pub(crate) fn budgets(args: &[&str]) -> u8 {
             )),
             None => bad.push(format!("{path}: no direction")),
         }
+        if let Some(h) = t.get("hard").and_then(as_f64) {
+            hards.push((format!("{path}.hard"), h));
+        }
     }
     r.check(bad.is_empty(), "every metric declares a direction", || {
         bad.join("; ")
     });
 
-    println!(
-        "\n  {} metrics, none measured — no artefact exists yet:",
-        metrics.len()
+    // The drift check is hermetic and instant, so it runs every time rather than
+    // only behind its flag: a gate that has to be asked for a check is a gate
+    // that will not be asked. `--drift` runs it alone.
+    let failures = crate::budgets::drift(&read(PLAN).unwrap_or_default(), &hards);
+    r.check(
+        failures.is_empty(),
+        "§2.22, budgets.toml and the root documents agree (F0.GATE.07)",
+        || failures.join("; "),
     );
-    let mut line = String::new();
-    for (path, _) in &metrics {
-        let _ = writeln!(line, "    skipped: no artefact — {path}");
+    if args.contains(&"--drift") {
+        return r.finish("verify-budgets --drift");
     }
-    print!("{line}");
+
+    measure_and_report(&mut r, &metrics);
     r.finish("verify-budgets")
+}
+
+/// Compare every metric that has an artefact against its hard ceiling, and name
+/// every metric that has none. An absent artefact is skipped, never passed.
+fn measure_and_report(r: &mut Report, metrics: &[(String, &toml::value::Table)]) {
+    let measured = crate::budgets::measure();
+    let mut breaches = Vec::new();
+    let mut lines = String::new();
+
+    for (path, t) in metrics {
+        let Some(m) = measured.iter().find(|m| m.key == path) else {
+            let _ = writeln!(lines, "    skipped: no artefact — {path}");
+            continue;
+        };
+        let direction = t
+            .get("direction")
+            .and_then(toml::Value::as_str)
+            .unwrap_or("");
+        let hard = t.get("hard").and_then(as_f64).unwrap_or(f64::NAN);
+        if crate::budgets::breaches(direction, m.value, hard) {
+            breaches.push(format!(
+                "{path}: {:.2} {} exceeds hard {hard}",
+                m.value, m.unit
+            ));
+            let _ = writeln!(
+                lines,
+                "    BREACH  {path} = {:.2} {} (hard {hard})",
+                m.value, m.unit
+            );
+        } else {
+            let _ = writeln!(
+                lines,
+                "    ok      {path} = {:.2} {} (hard {hard})",
+                m.value, m.unit
+            );
+        }
+    }
+
+    println!(
+        "\n  {} metrics, {} measured:",
+        metrics.len(),
+        measured.len()
+    );
+    print!("{lines}");
+    r.check(
+        breaches.is_empty(),
+        "no measured metric breaches its hard ceiling",
+        || breaches.join("; "),
+    );
+}
+
+/// `hard` may be written as an integer or a float; both are the same budget.
+fn as_f64(v: &toml::Value) -> Option<f64> {
+    v.as_float().or_else(|| {
+        #[allow(clippy::cast_precision_loss)] // budgets are small integers
+        v.as_integer().map(|i| i as f64)
+    })
 }
 
 /// Walk the TOML tree collecting every table that looks like a metric.

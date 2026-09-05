@@ -176,21 +176,27 @@ mod tests {
     #[test]
     fn the_hash_covers_content_and_notices_a_change() {
         at_root();
-        let dir = "tests/corpus/redteam";
-        let before = content_hash(dir).unwrap();
-        let planted = std::path::Path::new(dir).join("rf-planted.toml");
+        // Its own directory, not a real corpus: another test hashes those, and
+        // tests run in parallel. Planting a file in shared state while a
+        // measurement is running is how a green suite stops meaning anything
+        // (general rule 11).
+        let dir = format!("target/tmp-hash-test-{}", std::process::id());
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(format!("{dir}/rf-01.toml"), "id = \"RF-01\"\n").unwrap();
+
+        let before = content_hash(&dir).unwrap();
+        let planted = format!("{dir}/rf-planted.toml");
         std::fs::write(&planted, "id = \"RF-planted\"\n").unwrap();
-        let after = content_hash(dir).unwrap();
+        let after = content_hash(&dir).unwrap();
         std::fs::remove_file(&planted).unwrap();
+        let restored = content_hash(&dir).unwrap();
+        std::fs::remove_dir_all(&dir).unwrap();
+
         assert_ne!(
             before, after,
             "adding a scenario did not change the corpus hash"
         );
-        assert_eq!(
-            content_hash(dir).unwrap(),
-            before,
-            "removing it did not restore the hash"
-        );
+        assert_eq!(restored, before, "removing it did not restore the hash");
     }
 
     #[test]

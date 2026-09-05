@@ -17,11 +17,13 @@
 //! the plan's own progress report rather than a pile of missing subcommands.
 
 mod annex_h;
+mod doctor;
 mod gate;
 mod tooling;
 mod verify;
 
 use annex_h::COMMANDS;
+use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
 /// Exit 2: a command that exists but cannot run here, with the reason.
@@ -29,7 +31,24 @@ pub(crate) const SKIP: u8 = 2;
 /// Exit 3: a command no phase has implemented yet.
 pub(crate) const PENDING: u8 = 3;
 
+/// The workspace root, resolved at compile time from this crate's location.
+///
+/// Every command reads `layers.toml`, `budgets.toml` and the plan by relative
+/// path, so they must run from the root. `cargo run` inherits the caller's
+/// directory, which means `cargo xtask verify-docs` from inside `crates/` would
+/// otherwise read nothing and report a clean pass over an empty file set — an
+/// absence read as a value (general rule 9).
+pub(crate) fn workspace_root() -> PathBuf {
+    Path::new(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .map_or_else(|| PathBuf::from("."), Path::to_path_buf)
+}
+
 fn main() -> ExitCode {
+    if let Err(e) = std::env::set_current_dir(workspace_root()) {
+        eprintln!("error: cannot enter the workspace root: {e}");
+        return ExitCode::FAILURE;
+    }
     let owned: Vec<String> = std::env::args().skip(1).collect();
     let words: Vec<&str> = owned.iter().map(String::as_str).collect();
 
@@ -88,6 +107,7 @@ fn run(name: &str, args: &[&str]) -> Option<u8> {
         "verify-budgets" => verify::budgets(args),
         "verify-docs" => verify::docs(),
         "verify-backlog" => verify::backlog(),
+        "doctor" => doctor::run(),
         "gate" => gate::run(args),
         "build-ebpf" => tooling::build_ebpf(),
         "dist" => tooling::dist(),

@@ -54,7 +54,7 @@ edition = "2021"
 # Map and reasoning: LICENSE.md, ADR-06.
 license = "Apache-2.0"
 repository = "https://github.com/ealcober/AI-SYSTEM-MONITOR"
-rust-version = "1.82"
+rust-version = "1.87"   # aya 0.14 and aya-ebpf 0.2 both declare 1.87.0 (F0.VER.01)
 
 [workspace.lints.rust]
 unsafe_op_in_unsafe_fn = "deny"

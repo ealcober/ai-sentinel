@@ -42,7 +42,7 @@
 | **Threat model**: ranked adversaries, trust boundaries, collected non-goals | `docs/security/01_threat-model.md` |
 | Phase Entry/Exit contracts and the eight-item freeze list | Plan §3.7.1 |
 | **Final coherence seal**: three audits plus a host probe, 134 findings, gate lines executed, host prerequisites (`F0.REPO.06`) | `docs/04_final_coherence_seal.md` |
-| **`F0.REPO.02`**, root half — `rust-toolchain.toml` verified true: `1.82.0`, `rustfmt`, `clippy`, `rust-src`, target installed, `cargo fmt --all --check` clean. The eBPF nightly pin is **blocked**, see below | `rust-toolchain.toml` |
+| **`F0.REPO.02`**, root half — root toolchain **moved to `1.97.1`** and MSRV to `1.87`, because `F0.VER.01` **fails**: `aya 0.14.0` and `aya-ebpf 0.2.1` declare `rust-version 1.87.0` and `bpf-linker 0.11.0` is `edition 2024`. Workspace still passes `check`, `clippy -D warnings` and `fmt --check` under it. The eBPF nightly pin is **blocked**, see below | `rust-toolchain.toml`, `Cargo.toml` |
 | **`F0.REPO.01`** / **`F0.REPO.05`** — Cargo workspace: 19 members, each in its `layers.toml` layer, `aisme-ebpf` and `aisme-windows` excluded. `cargo check --workspace` and `cargo clippy -- -D warnings` both pass clean; the only inter-crate edge is `aisme-core → aisme-ebpf-common` (L1→L0) | `Cargo.toml`, `.cargo/config.toml`, 20 manifests |
 | **`F0.WSL.01`** — WSL2 capability probe. Landlock **ABI 7 and enforcing**; `CONFIG_BPF_LSM=y` compiled but `bpf` absent from the active LSM list; cgroup v2 only; BTF present; systemd PID 1; **no TPM**; `/dev/kvm` present, user not in group `kvm` | `docs/ai/memory/wsl2-capabilities.md`, `docs/reports/01_f0-verification.md` |
 
@@ -66,16 +66,19 @@ Already in place, not F0 work: `F0.REPO.00` (repository), `F0.SEC.01` (`docs/sec
 
 ## Blocked
 
-**`F0.REPO.02`, the eBPF half only.** The root `rust-toolchain.toml` is verified: `1.82.0` with `rustfmt 1.7.1`, `clippy 0.1.82`, `rust-src` and the `x86_64-unknown-linux-gnu` target all present, and `cargo fmt --all --check` is clean. Its claim is true.
+**`F0.REPO.02`, the eBPF half only.** The root `rust-toolchain.toml` is pinned at `1.97.1` and verified: `rustfmt`, `clippy`, `rust-src` and the `x86_64-unknown-linux-gnu` target present, `cargo check --workspace`, `cargo clippy -- -D warnings` and `cargo fmt --all --check` all clean.
 
 `crates/aisme-ebpf/rust-toolchain.toml` still carries `channel = "nightly"` and `TODO(F0.REPO.02)`: the exact nightly, and **the Aya version it was validated against**. Validating means building the crate for `bpfel-unknown-none` through `-Z build-std=core`, which needs a nightly toolchain (none installed) and `bpf-linker` (absent). Writing a version nobody built against would be a claim entering the repository unverified, which general rule 1 and `CLAUDE.md` execution directive 7 both forbid.
 
-**What unblocks it** — the owner's action, since `doctor` reports and never installs (`F0.REPO.06`):
+**What unblocks it** — the owner's action, since `doctor` reports and never installs (`F0.REPO.06`). The nightly is installed; `bpf-linker` needs a system LLVM, and its own build script says `cargo install` is not the recommended route without one. On Ubuntu 26.04 the matching version is LLVM 21, which is what `llvm-dev` resolves to:
 
 ```bash
-rustup toolchain install nightly --component rust-src
-cargo install bpf-linker
+sudo apt install -y llvm-21-dev libpolly-21-dev libzstd-dev clang bpftool \
+                    qemu-system-x86 virtme-ng tpm2-tools strace
+cargo +nightly install bpf-linker --no-default-features --features llvm-21
 ```
+
+`bpf-linker 0.11.0` defaults to the `llvm-23` feature, which Ubuntu 26.04 does not carry, hence `--no-default-features --features llvm-21`. The `+nightly` is needed because the crate is `edition 2024`. That one `apt` line also covers the rest of `F0.REPO.06`: `bpftool` and `clang` for BTF, `qemu-system-x86` and `virtme-ng` for `F0.VM.*`, `tpm2-tools` for `F0.VER.12`, `strace` for the capture tests.
 
 The same install unblocks `F0.VER.16` (the cgroup `connect` attach test) and `F0.VER.19` (the `EventKind` range check under the verifier), whose kernel prerequisites are all present and which lack only a loader. Group membership for KVM (`F0.VER.21`) is `sudo usermod -aG kvm $USER` followed by a new login.
 

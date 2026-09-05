@@ -16,7 +16,7 @@
 
 | ID | Claim | Command run | Observed | Outcome |
 |---|---|---|---|---|
-| `F0.VER.01` | Rust 1.82 is recent enough for the Aya version F3 pins | — | | |
+| `F0.VER.01` | Rust 1.82 is recent enough for the Aya version F3 pins | `cargo info aya`, `cargo info aya-ebpf`; the `edition` field of `bpf-linker 0.11.0` | **`aya 0.14.0` and `aya-ebpf 0.2.1` both declare `rust-version: 1.87.0`**, and `bpf-linker 0.11.0` is `edition = "2024"`, which Cargo rejects below 1.85. The pin was 1.82.0, so `cargo install bpf-linker` failed inside the repository with *feature `edition2024` is required* | **`FAILS`** — root pin moved to `1.97.1`, `rust-version` to `1.87` |
 | `F0.VER.02` | `strip = "symbols"` preserves the `cargo-auditable` `.dep-v0` section | — | | |
 | `F0.VER.03` | `extracted/*.txt` carries all technical content of the `.docx` originals | — | | |
 | `F0.VER.04` **`[BLOCKING]`** | Landlock is active on the matrix kernels and in stock WSL2 | `landlock_create_ruleset(NULL,0,LANDLOCK_CREATE_RULESET_VERSION)`; then a real `restrict_self` in a forked child | **ABI 7.** `CONFIG_SECURITY_LANDLOCK=y`; `landlock` is first in `CONFIG_LSM`. Enforcement proven, not merely advertised: with `WRITE_FILE\|MAKE_REG` handled and one `PATH_BENEATH` rule, a write inside the allowed directory succeeded and a write outside returned **`EACCES`**. **Stock WSL2 only; the matrix kernels are `F0.VM.02`** | **`HOLDS`** (WSL2) |
@@ -39,6 +39,8 @@
 | `F0.VER.21` | KVM is usable inside the owner's WSL2 host | `stat /dev/kvm`; group membership; `/proc/cpuinfo` flags | `/dev/kvm` present, owned by group **`kvm`**; **the user is not in that group**, so it is not readable or writable today. CPU reports `vmx`, so nested virtualization is on at the Windows host | **`FAILS`** — remedy is `usermod -aG kvm`, owned by `F0.REPO.06` |
 
 ## What these outcomes decide
+
+0. **`F0.VER.01` is why this register exists.** The claim was written when Aya was not yet pinned, and it is wrong by five minor versions. The failure surfaced the moment a real dependency was fetched, not through review. The root toolchain is now `1.97.1` and the MSRV `1.87`, the floor Aya sets; the workspace compiles and passes `clippy -D warnings` unchanged under it. **The lesson worth keeping: checking that a pinned toolchain is installed is not checking that it is adequate.** The previous commit verified the first and reported the file's claim as true; only fetching Aya's manifest tested the second.
 
 1. **Tier L2 is real on WSL2, and proven rather than assumed.** `F0.VER.04` was `[BLOCKING]` because the L2 tier row, `F3.3`, `F2.WS.11` and risk `R-15` all rest on Landlock actually denying. It does: a write outside the allowed path returned `EACCES` under a real ruleset. `R-15` does not apply to WSL2.
 2. **WSL2 can reach L3 with a configuration change, not a kernel rebuild.** Plan §2.16.1 left this conditional open and asked F0 to settle it. `CONFIG_BPF_LSM=y` **is** compiled into the stock kernel, and `CONFIG_LSM` is `landlock,lockdown,yama,loadpin,safesetid,integrity,selinux,apparmor,tomoyo` — `bpf` is **not** in the active list. So WSL2 is **L2 by default**, exactly as the plan says, and reaching L3 needs only `kernelCommandLine=` in `.wslconfig` plus `wsl --shutdown`. The custom-bzImage fallback the plan held in reserve is not needed on this kernel.

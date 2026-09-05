@@ -1,7 +1,11 @@
 # Pinned for reproducibility across developer machines and the local gate hosts.
 # The eBPF crate (crates/aisme-ebpf) requires nightly for build-std targeting
 # bpfel-unknown-none; it declares its own override. Everything else is stable.
+#
+# The floor is set by Aya, not by taste: aya 0.14.0 and aya-ebpf 0.2.1 both declare
+# rust-version 1.87.0, and bpf-linker 0.11.0 is edition 2024, which needs Cargo 1.85.
+# Measured by F0.VER.01; Cargo.toml's rust-version carries that floor as the MSRV.
 [toolchain]
-channel = "1.82.0"
+channel = "1.97.1"
 components = ["rustfmt", "clippy", "rust-src"]
 targets = ["x86_64-unknown-linux-gnu"]

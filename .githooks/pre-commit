@@ -1,0 +1,8 @@
+#!/bin/sh
+# Pre-commit hook (F0.GATE.01). Runs the `commit` cadence, which is the ≤10 min
+# set of §4.12. Every gate runs locally; there is no hosted CI (I-27).
+#
+# Enable with:   git config core.hooksPath .githooks
+# Bypass once:   git commit --no-verify
+set -e
+exec cargo xtask gate --level commit

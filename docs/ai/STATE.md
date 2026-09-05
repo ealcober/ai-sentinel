@@ -42,6 +42,7 @@
 | **Threat model**: ranked adversaries, trust boundaries, collected non-goals | `docs/security/01_threat-model.md` |
 | Phase Entry/Exit contracts and the eight-item freeze list | Plan §3.7.1 |
 | **Final coherence seal**: three audits plus a host probe, 134 findings, gate lines executed, host prerequisites (`F0.REPO.06`) | `docs/04_final_coherence_seal.md` |
+| **`F0.GATE.01`** partial / **`F0.GATE.02`** / **`F0.GATE.03`** — `gate --level` runs the §4.12 toolchain steps too: `fmt --all --check` and `clippy -- -D warnings` (both PASS), and `cargo deny check`, which **SKIPs because cargo-deny is not installed**. `.githooks/pre-commit` exists and is **not enabled**: it would block every commit while `doctor` legitimately fails. `deny.toml` is written and **unvalidated** | `deny.toml`, `.githooks/pre-commit`, `xtask/src/gate.rs` |
 | **`F0.GATE.05`** / **`F0.GATE.06`** — the forbidden-dependency and dependency-direction gates, both inside `verify-layering`. `A-01`, `A-02`, `A-03`, `A-05` and the `serde_json`/`frida-*`/`bpf_probe_write_user` bans are mechanical; `A-04` needs the F1 public API and `A-06` is a review policy (`DEP.SUP.06`) | `xtask/src/rules.rs` |
 | **`F0.ASSET.01`** / **`F0.ASSET.02`** — the §4.14 manifest format on five asset directories, and the hash check inside `verify-docs`, which names the version it certified. The reference-trace manifest carries its schema; the recording is `F2.WS.08`'s | `tests/corpus/*/manifest.toml`, `tests/fixtures/reference-trace/manifest.toml` |
 | **`F0.REPO.06`** — `cargo xtask doctor`: 11 host prerequisites, each with its remedy and what it unblocks. Reports, never installs. **Exits 1 today — 4 of 11 present** on the owner's host, so its Done-when ("exits 0 on the owner's WSL2 host") is not met until the lines below are run | `xtask/src/doctor.rs` |
@@ -66,6 +67,10 @@ Already in place, not F0 work: `F0.REPO.00` (repository), `F0.SEC.01` (`docs/sec
 **Then F1, and treat it as the highest-leverage phase in the plan.** It ends with the interface freeze (§3.2), after which five tracks run in parallel against contracts that cannot move. An interface defect found in F1 costs hours; the same defect found in F6 invalidates three tracks. Do not compress it.
 
 ## Blocked
+
+**`F0.GATE.03` cannot be validated here.** `deny.toml` is written — advisories, a licence allow-list mirroring `LICENSE.md`, `frida-*`/`detour` bans for `I-01`/`I-02`, and a `crates.io`-only source policy — but **no run has ever exercised it**, so its correctness is a claim, not a measurement. `cargo install cargo-deny`, then `cargo xtask gate --level commit` turns the SKIP into a PASS or a real failure.
+
+**`F0.GATE.01`'s hook is deliberately not enabled.** `.githooks/pre-commit` runs `gate --level commit`, which fails today because `doctor` and `verify-backlog` fail for good reasons. Enabling it now (`git config core.hooksPath .githooks`) would block every commit on host provisioning. Enable it once `doctor` reaches 0.
 
 **`F0.REPO.02`, the eBPF half only.** The root `rust-toolchain.toml` is pinned at `1.97.1` and verified: `rustfmt`, `clippy`, `rust-src` and the `x86_64-unknown-linux-gnu` target present, `cargo check --workspace`, `cargo clippy -- -D warnings` and `cargo fmt --all --check` all clean.
 

@@ -44,6 +44,12 @@ const CHECKS: &[Check] = &[
         unblocks: "build-ebpf, F0.REPO.02's Aya pin, F0.VER.16, F0.VER.19",
     },
     Check {
+        group: "toolchains",
+        label: "cargo-deny",
+        remedy: "cargo install cargo-deny",
+        unblocks: "F0.GATE.03, the supply-chain and licence gate; deny.toml configures it",
+    },
+    Check {
         group: "kernel tooling",
         label: "bpftool",
         remedy: "sudo apt install -y bpftool",
@@ -131,6 +137,7 @@ fn probe(label: &str) -> bool {
         "nightly toolchain" => rustup_lists("nightly"),
         "rust-src on nightly" => nightly_has_rust_src(),
         "bpf-linker" => on_path("bpf-linker"),
+        "cargo-deny" => on_path("cargo-deny"),
         "bpftool" => on_path("bpftool"),
         "clang" => on_path("clang"),
         "qemu-system-x86_64" => on_path("qemu-system-x86_64"),

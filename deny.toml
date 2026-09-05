@@ -1,0 +1,60 @@
+# cargo-deny — supply-chain policy (F0.GATE.03). Runs locally like every other
+# gate (I-27); nothing here triggers on push.
+#
+# The licence allow-list mirrors LICENSE.md. The one line that matters:
+# `crates/aisme-ebpf-common` is GPL-2.0-only OR BSD-2-Clause because the same
+# repr(C) structs are compiled into the GPL kernel side and linked into the
+# Apache user-space side. An Apache-2.0-only dependency there would make the
+# crate undistributable under BSD, so it must stay dependency-free (rule A-03,
+# enforced separately by `cargo xtask verify-layering`).
+
+[graph]
+all-features = true
+
+[advisories]
+version = 2
+yanked = "deny"
+# Unmaintained crates are a warning, not a failure: the judgement belongs to the
+# dependency review of DEP.SUP.06, and a gate that fails on someone else's
+# archival notice fails on a day nobody changed anything.
+unmaintained = "workspace"
+
+[licenses]
+version = 2
+# Permissive licences compatible with Apache-2.0 distribution, plus the two the
+# kernel boundary requires. Anything outside this list is a decision, so it fails
+# and is taken deliberately.
+allow = [
+    "Apache-2.0",
+    "MIT",
+    "BSD-2-Clause",
+    "BSD-3-Clause",
+    "ISC",
+    "Unicode-3.0",
+    "Zlib",
+    "GPL-2.0",
+]
+confidence-threshold = 0.9
+
+[[licenses.exceptions]]
+# Our own crate, dual-licensed for the reason above.
+name = "aisme-ebpf-common"
+allow = ["GPL-2.0", "BSD-2-Clause"]
+
+[bans]
+multiple-versions = "warn"
+wildcards = "deny"
+# I-01 and I-02: AISME never modifies an observed process, and never hides from
+# it. These are the crates that would do it, banned at the supply chain rather
+# than only in review.
+deny = [
+    { name = "frida-gum" },
+    { name = "frida-sys" },
+    { name = "detour" },
+    { name = "retour" },
+]
+
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"
+allow-registry = ["https://github.com/rust-lang/crates.io-index"]

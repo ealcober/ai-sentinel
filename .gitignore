@@ -1,4 +1,7 @@
 /target
+# crates/aisme-ebpf is outside the workspace and builds with its own nightly, so
+# it has a target/ of its own that /target does not cover.
+/crates/aisme-ebpf/target
 **/*.rs.bk
 # Cargo.lock IS committed: this workspace ships binaries, and reproducible release
 # builds (plan DEP.BLD.05, DEP.SUP.07) and cargo-auditable manifests are meaningless
@@ -10,31 +13,80 @@
 *.sys
 *.obj
 *.o
+# The compiled BPF object; `cargo xtask build-ebpf` regenerates it and agentd
+# embeds it with include_bytes!.
+*.bpf.o
+# Generated from the running kernel's BTF by bpftool. Machine-specific by
+# definition, so committing one would pin the build to one developer's kernel.
+vmlinux.h
+
+# Profiling and coverage. These are measurements of one run on one machine; the
+# numbers that matter are recorded in docs/reports/, which IS committed.
+*.profraw
+*.profdata
+perf.data*
+flamegraph.svg
+dhat-heap.json
+/target-coverage
+
+# Disposable VM images and kernels (F0.VM.01, F0.VM.02). Large, regenerable by
+# `cargo xtask vm up`, and never a source of truth — I-12 requires them to be
+# restored from snapshot rather than curated.
+/vm
+*.qcow2
+*.img
+*.bzImage
+bzImage
 
 # Local state — never commit forensic data or keys
 *.wal
 *.parquet
 *.duckdb
 /local
-.aisme/
 *.pem
 *.key
 *.pfx
 *.cer
+*.p12
+*.jks
+*.keystore
+# Secrets in any of the shapes this project's own detectors look for. A security
+# product committing a .env is the demonstration nobody wants to give.
+.env
+.env.*
+!.env.example
 
-# Mobile
+# Session runtime state. `.aisme/scope.toml` is the exception: it is a declared,
+# narrow-only input a repository may legitimately commit (plan F7.PS.07), so it
+# is tracked while everything else the daemon writes there is not.
+.aisme/*
+!.aisme/scope.toml
+
+# Mobile — AI Sentinel (Android/Kotlin, iOS/Swift), thin shells over sentinel-core
 /mobile/android/build
 /mobile/android/.gradle
+/mobile/android/local.properties
+/mobile/android/.cxx
+*.apk
+*.aab
 /mobile/ios/build
 *.xcuserstate
+xcuserdata/
 DerivedData/
+/mobile/ios/Pods
 
-# UI
+# UI (React/TypeScript in a Tauri v2 shell — ADR-04)
 /ui/node_modules
 /ui/dist
+/ui/src-tauri/target
+/ui/src-tauri/gen
+*.tsbuildinfo
 
-# Editors / OS
+# Editors / OS. The Zone.Identifier files are a WSL2 artefact: NTFS alternate
+# data streams appear as siblings when a file is copied in from Windows, and
+# WSL2 is the Windows strategy (ADR-02), so every developer here will see them.
 .DS_Store
+Thumbs.db
 *.swp
 .idea/
 .vscode/

@@ -42,6 +42,7 @@
 | **Threat model**: ranked adversaries, trust boundaries, collected non-goals | `docs/security/01_threat-model.md` |
 | Phase Entry/Exit contracts and the eight-item freeze list | Plan §3.7.1 |
 | **Final coherence seal**: three audits plus a host probe, 134 findings, gate lines executed, host prerequisites (`F0.REPO.06`) | `docs/04_final_coherence_seal.md` |
+| **`F0.REPO.02` complete** — `crates/aisme-ebpf` pins `nightly-2026-01-01` (LLVM 21.1.8) validated against **aya-ebpf 0.2.1** and **bpf-linker 0.11.0**. `cargo xtask build-ebpf` produces a real `ELF 64-bit LSB relocatable, eBPF` with a `license` section. `doctor` now checks the nightly↔bpf-linker LLVM major match | `crates/aisme-ebpf/`, `xtask/src/doctor.rs` |
 | **`F0.VER.05`, `.13`, `.14`, `.20` measured** — `seccomp_unotify` returns `ENOSYS` when the listener closes; BLAKE3 is 6.4× SHA-256 on a 320 B leaf (4.4× native, no SHA-NI on this CPU); Landlock audit flags accepted; **Landlock net rules are TCP-only and enforce — there is no UDP bit, so QUIC is invisible to it** | `docs/reports/01_f0-verification.md` |
 | **`F0.GATE.08`** complete — fifteen cross-document checks. The last three: Annex B §B.9 verdict maps proven monotone, budget keys named in prose resolving to `budgets.toml`, and the Part VI tree matching `crates/` and `layers.toml` | `xtask/src/docgate.rs` |
 | **`F0.DOC.01`** — the eleven §7.4 seed memories in `docs/ai/memory/`, each with the frontmatter, a `**How to apply:**` line and a non-empty source. `verify-docs` checks the count against the plan's own table, so a row added there without a file is caught | `docs/ai/memory/` |
@@ -73,7 +74,7 @@ Already in place, not F0 work: `F0.REPO.00` (repository), `F0.SEC.01` (`docs/sec
 
 **`F0.GATE.01`'s hook is deliberately not enabled.** `.githooks/pre-commit` runs `gate --level commit`, which fails today because `doctor` and `verify-backlog` fail for good reasons. Enabling it now (`git config core.hooksPath .githooks`) would block every commit on host provisioning. Enable it once `doctor` reaches 0.
 
-**`F0.REPO.02`, the eBPF half only.** The root `rust-toolchain.toml` is pinned at `1.97.1` and verified: `rustfmt`, `clippy`, `rust-src` and the `x86_64-unknown-linux-gnu` target present, `cargo check --workspace`, `cargo clippy -- -D warnings` and `cargo fmt --all --check` all clean.
+**Only `/dev/kvm` write access, and it needs a new login.** `usermod -aG kvm` has been run — `getent group kvm` lists the owner — but a running session keeps the group set it started with. Log out and back in, then `cargo xtask doctor` reaches 0 and `F0.VER.21` becomes `HOLDS`. Until then `qemu` falls back to TCG, which is slower but correct, so `F0.VM.*` is not blocked, only slow.
 
 `crates/aisme-ebpf/rust-toolchain.toml` still carries `channel = "nightly"` and `TODO(F0.REPO.02)`: the exact nightly, and **the Aya version it was validated against**. Validating means building the crate for `bpfel-unknown-none` through `-Z build-std=core`, which needs a nightly toolchain (none installed) and `bpf-linker` (absent). Writing a version nobody built against would be a claim entering the repository unverified, which general rule 1 and `CLAUDE.md` execution directive 7 both forbid.
 

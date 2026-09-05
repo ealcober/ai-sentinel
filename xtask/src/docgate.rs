@@ -124,6 +124,11 @@ fn walk(dir: &Path, out: &mut Vec<String>) {
     for e in entries.flatten() {
         let p = e.path();
         if p.is_dir() {
+            // target/ holds build output, including vendored and generated Rust
+            // that carries no SPDX header of ours and never should.
+            if p.file_name().is_some_and(|n| n == "target") {
+                continue;
+            }
             walk(&p, out);
         } else if p.extension().is_some_and(|x| x.eq_ignore_ascii_case("rs")) {
             out.push(p.to_string_lossy().replace('\\', "/"));

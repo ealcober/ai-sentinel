@@ -34,6 +34,11 @@ fn walk(dir: &Path, out: &mut Vec<(PathBuf, String)>) {
     for entry in entries.flatten() {
         let path = entry.path();
         if path.is_dir() {
+            // Build output is not our source: scanning it would judge vendored
+            // core and generated bindings by rules written for this repository.
+            if path.file_name().is_some_and(|n| n == "target") {
+                continue;
+            }
             walk(&path, out);
         } else if path.extension().is_some_and(|e| e == "rs") {
             if let Ok(body) = std::fs::read_to_string(&path) {

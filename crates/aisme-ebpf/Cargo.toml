@@ -14,3 +14,6 @@ publish = false
 # must not try to.
 
 [dependencies]
+# Pinned exactly, not by caret: the toolchain in rust-toolchain.toml was validated
+# against this version and a silent minor bump would revalidate nothing.
+aya-ebpf = "=0.2.1"

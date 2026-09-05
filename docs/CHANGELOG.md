@@ -10,6 +10,8 @@ All notable changes to this repository. Format: [Keep a Changelog](https://keepa
 - **Phase F0 in progress.** No product code yet. Next: `F0.REPO.01`/`F0.REPO.05` (the Cargo workspace), then `F0.REPO.02`, `F0.REPO.03` and `F0.REPO.06`.
 
 ### Added
+- **`F0.REPO.02` complete.** `crates/aisme-ebpf` pins `nightly-2026-01-01`, validated by an actual build against **aya-ebpf 0.2.1** with **bpf-linker 0.11.0**; `cargo xtask build-ebpf` emits a real `ELF 64-bit LSB relocatable, eBPF` carrying the `license` section the verifier reads. The pin is old deliberately: **rustc's LLVM major must equal the one `bpf-linker` links**, and on this host that is 21.
+- `cargo xtask doctor` gained the LLVM-match check, and now checks **the pinned** nightly and its `rust-src` rather than any nightly — the previous form would have passed while the pinned toolchain was absent.
 - **Four more `F0.VER` rows measured**, all with raw syscalls and no new tooling. `F0.VER.05` **holds**: a syscall blocked by `SECCOMP_RET_USER_NOTIF` returns `ENOSYS` when the listener closes, so listener death is defined rather than a hang. `F0.VER.14` **holds** for presence: all three Landlock `LOG_*` flags are accepted on 6.18. `F0.VER.20` **holds and enforces**: a TCP port rule denies with `EACCES`, `handled_access_net` refuses any bit beyond TCP bind/connect with `EINVAL`, and **UDP passes untouched — Landlock cannot see QUIC**. `F0.VER.13` **holds** at 6.41× (4.40× native), and the caveat is the finding: this CPU has no SHA-NI.
 - `docs/ai/memory/hash-benchmarks-measure-the-cpu.md` — the durable lesson from `F0.VER.13`. `verify-docs` now validates every memory file, not only the eleven seeds, and lets the directory grow.
 - **`F0.GATE.08` completed** — the last three checks: Annex B §B.9's verdict maps proven **monotone** (the property §B.9's degradation proof rests on), every `budgets.toml` key named in prose resolving to a key that exists, and the Part VI tree agreeing with `crates/` and `layers.toml`. `verify-docs` now runs fifteen cross-document checks and owes none.
@@ -17,6 +19,7 @@ All notable changes to this repository. Format: [Keep a Changelog](https://keepa
 - **`F0.DOC.01`** — the eleven seed memories of plan §7.4 in `docs/ai/memory/`, transcribed rather than reconstructed, each carrying the frontmatter, a `**How to apply:**` line the table does not supply, and a non-empty source. `verify-docs` checks them against the plan's own table, count included.
 
 ### Fixed
+- **`cargo xtask build-ebpf` ignored the crate's own toolchain pin.** It passed `+nightly` explicitly and ran from the workspace root, so rustup resolved the root's stable channel; and `cargo run` exports `RUSTUP_TOOLCHAIN`, which the shim honours ahead of any `rust-toolchain.toml`. It now runs from the crate directory with those variables removed.
 - **`crates/aisme-ebpf-common` declared the wrong licence.** Its manifest carried `license.workspace = true`, resolving to Apache-2.0, while its SPDX header and `LICENSE.md` both say `GPL-2.0-only OR BSD-2-Clause` — the crate the whole of `ADR-06` turns on, wrong in the one place `cargo deny`, crates.io and every downstream consumer read. Found by the first `cargo deny check` ever run.
 
 ### Added

@@ -3,8 +3,18 @@
 # Aya version it was validated against, so a future toolchain bump is a deliberate,
 # testable change rather than a silent breakage.
 #
-# TODO(F0.REPO.02): set `channel` to the newest nightly for which the pinned Aya
-# version's build-std path works, and write that Aya version here.
+# Validated by F0.REPO.02 on 2026-09-06 against **aya-ebpf 0.2.1** and
+# **bpf-linker 0.11.0 built for LLVM 21**.
+#
+# The pin is old on purpose, and the rule behind it is the durable part:
+# **rustc's LLVM major must equal the LLVM bpf-linker was built against.**
+# bpf-linker reads the bitcode rustc emits, so a mismatch fails at link time with
+# "Unknown attribute kind (NNN)" and nothing earlier catches it. Measured on this
+# host: nightly-2026-01-01 -> LLVM 21.1.8, which is exactly what the installed
+# bpf-linker links. Newer nightlies moved to LLVM 22 (1.95 through 1.98) and then
+# 23 (1.100); moving the pin forward means rebuilding bpf-linker against the
+# matching LLVM first. `cargo xtask doctor` checks the pair; `cargo xtask
+# build-ebpf` is the test.
 [toolchain]
-channel    = "nightly"
+channel    = "nightly-2026-01-01"   # rustc 1.94.0-nightly, LLVM 21.1.8
 components = ["rust-src"]

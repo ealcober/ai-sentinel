@@ -28,14 +28,14 @@ const CHECKS: &[Check] = &[
     },
     Check {
         group: "toolchains",
-        label: "nightly toolchain",
-        remedy: "rustup toolchain install nightly --component rust-src",
-        unblocks: "crates/aisme-ebpf, which pins its own nightly",
+        label: "the nightly crates/aisme-ebpf pins",
+        remedy: "rustup toolchain install <the channel in crates/aisme-ebpf/rust-toolchain.toml> --component rust-src",
+        unblocks: "crates/aisme-ebpf; any other nightly is the wrong one",
     },
     Check {
         group: "toolchains",
-        label: "rust-src on nightly",
-        remedy: "rustup component add rust-src --toolchain nightly",
+        label: "rust-src on the pinned nightly",
+        remedy: "rustup component add rust-src --toolchain <the pinned channel>",
         unblocks: "-Z build-std=core for bpfel-unknown-none",
     },
     Check {
@@ -43,6 +43,12 @@ const CHECKS: &[Check] = &[
         label: "bpf-linker",
         remedy: "cargo +nightly install bpf-linker --no-default-features --features llvm-21",
         unblocks: "build-ebpf, F0.REPO.02's Aya pin, F0.VER.16, F0.VER.19",
+    },
+    Check {
+        group: "toolchains",
+        label: "the pinned nightly's LLVM matches bpf-linker's",
+        remedy: "rebuild bpf-linker for that LLVM, or move the pin to a nightly on the LLVM you have",
+        unblocks: "build-ebpf; a mismatch fails at link with \"Unknown attribute kind\" and nothing earlier catches it",
     },
     Check {
         group: "toolchains",
@@ -135,10 +141,11 @@ pub(crate) fn run() -> u8 {
 fn probe(label: &str) -> bool {
     match label {
         "rustc matches the root rust-toolchain.toml pin" => rustc_matches_pin(),
-        "nightly toolchain" => rustup_lists("nightly"),
-        "rust-src on nightly" => nightly_has_rust_src(),
+        "the nightly crates/aisme-ebpf pins" => pinned_channel().is_some_and(|c| rustup_lists(&c)),
+        "rust-src on the pinned nightly" => pinned_channel().is_some_and(|c| has_rust_src(&c)),
         "bpf-linker" => on_path("bpf-linker"),
         "cargo-deny" => on_path("cargo-deny"),
+        "the pinned nightly's LLVM matches bpf-linker's" => llvm_majors_match(),
         "bpftool" => on_path("bpftool"),
         "clang" => on_path("clang"),
         "qemu-system-x86_64" => on_path("qemu-system-x86_64"),
@@ -183,16 +190,71 @@ fn rustc_matches_pin() -> bool {
     output("rustc", &["--version"]).is_some_and(|v| v.contains(channel))
 }
 
+/// Does the eBPF crate's pinned nightly emit bitcode `bpf-linker` can read?
+///
+/// `bpf-linker` links the bitcode rustc produces, so their LLVM **major**
+/// versions must be equal. They are pinned in two different places by two
+/// different people, and the only symptom of a mismatch is a link-time
+/// "Unknown attribute kind (NNN)" that names neither.
+fn llvm_majors_match() -> bool {
+    let (Some(pin), Some(linker)) = (pinned_nightly_llvm(), bpf_linker_llvm()) else {
+        return false;
+    };
+    pin == linker
+}
+
+/// The LLVM major of the channel pinned in `crates/aisme-ebpf/rust-toolchain.toml`.
+fn pinned_nightly_llvm() -> Option<u32> {
+    let channel = pinned_channel()?;
+    let out = output("rustc", &[&format!("+{channel}"), "--version", "--verbose"])?;
+    llvm_major(&out)
+}
+
+/// The LLVM major `bpf-linker` was built against.
+///
+/// It does not print this: `bpf-linker --version` reports only its own crate
+/// version. The linked library is the fact, so read it from `ldd` — a build
+/// against `libLLVM.so.21.1` cannot read LLVM 23 bitcode whatever it calls
+/// itself.
+fn bpf_linker_llvm() -> Option<u32> {
+    let path = std::env::var_os("PATH").and_then(|paths| {
+        std::env::split_paths(&paths)
+            .map(|d| d.join("bpf-linker"))
+            .find(|p| p.is_file())
+    })?;
+    let out = output("ldd", &[&path.to_string_lossy()])?;
+    let lib = out.lines().find(|l| l.contains("libLLVM"))?;
+    let after = lib.split("libLLVM.so.").nth(1)?;
+    after.split('.').next()?.trim().parse().ok()
+}
+
+fn llvm_major(text: &str) -> Option<u32> {
+    let after = text.split("LLVM version: ").nth(1)?;
+    after.split('.').next()?.trim().parse().ok()
+}
+
 fn rustup_lists(toolchain: &str) -> bool {
     output("rustup", &["toolchain", "list"]).is_some_and(|s| s.contains(toolchain))
 }
 
-fn nightly_has_rust_src() -> bool {
+fn has_rust_src(toolchain: &str) -> bool {
     output(
         "rustup",
-        &["component", "list", "--toolchain", "nightly", "--installed"],
+        &["component", "list", "--toolchain", toolchain, "--installed"],
     )
     .is_some_and(|s| s.lines().any(|l| l.trim().starts_with("rust-src")))
+}
+
+/// The channel `crates/aisme-ebpf/rust-toolchain.toml` pins.
+///
+/// Checking for "a nightly" would pass while the pinned one is absent or lacks
+/// `rust-src`, which is the failure this exists to catch.
+fn pinned_channel() -> Option<String> {
+    let pin = std::fs::read_to_string("crates/aisme-ebpf/rust-toolchain.toml").ok()?;
+    pin.lines()
+        .find_map(|l| l.trim().strip_prefix("channel"))
+        .and_then(|r| r.split('"').nth(1))
+        .map(str::to_owned)
 }
 
 #[cfg(test)]

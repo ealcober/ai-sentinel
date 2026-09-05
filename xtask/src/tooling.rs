@@ -34,17 +34,29 @@ pub(crate) fn build_ebpf() -> u8 {
             "cargo +nightly install bpf-linker --no-default-features --features llvm-21",
         );
     }
+    // Run from the crate directory and do NOT pass `+nightly`. The crate pins its
+    // own toolchain in crates/aisme-ebpf/rust-toolchain.toml, rustup resolves that
+    // from the working directory, and an explicit `+nightly` would override the
+    // pin with whatever "nightly" happens to be today — which is how a validated
+    // LLVM pairing silently stops being the one that was validated.
     let status = Command::new("cargo")
+        .current_dir("crates/aisme-ebpf")
+        // `cargo run` exports RUSTUP_TOOLCHAIN (and RUSTC) for the toolchain it
+        // launched xtask with, and the rustup shim honours the environment ahead
+        // of any rust-toolchain.toml. Inherited, they pin the child to the
+        // workspace's stable and the crate's own pin is ignored — which fails as
+        // "-Z is only accepted on the nightly channel", nowhere near the cause.
+        .env_remove("RUSTUP_TOOLCHAIN")
+        .env_remove("RUSTC")
+        .env_remove("RUSTDOC")
+        .env_remove("CARGO")
         .args([
-            "+nightly",
             "build",
             "--release",
             "--target",
             "bpfel-unknown-none",
             "-Z",
             "build-std=core",
-            "--manifest-path",
-            "crates/aisme-ebpf/Cargo.toml",
         ])
         .status();
     match status {

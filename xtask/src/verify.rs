@@ -119,6 +119,7 @@ pub(crate) fn layering() -> u8 {
 
     let mut upward = Vec::new();
     let mut siblings = Vec::new();
+    let mut direct_deps: Vec<(String, String)> = Vec::new();
     for (name, pkg) in &members {
         let Some(&from) = layers.get(name) else {
             continue;
@@ -127,6 +128,7 @@ pub(crate) fn layering() -> u8 {
             let Some(dname) = dep["name"].as_str() else {
                 continue;
             };
+            direct_deps.push((name.clone(), dname.to_owned()));
             let Some(&to) = layers.get(dname) else {
                 continue;
             };
@@ -148,6 +150,8 @@ pub(crate) fn layering() -> u8 {
         || siblings.join("; "),
     );
 
+    architecture_rules(&mut r, &layers, &direct_deps);
+
     if let Some(root) = doc
         .get("composition_root")
         .and_then(|v| v.get("path"))
@@ -161,6 +165,48 @@ pub(crate) fn layering() -> u8 {
         println!("  ----  composition root: {root} — {state}");
     }
     r.finish("verify-layering")
+}
+
+/// `A-01`, `A-03`, `A-05` and the forbidden-dependency gate.
+///
+/// `A-02` is checked in `layering` itself, from `layers.toml`, because that is
+/// where each crate's layer is declared. These four need source or the resolved
+/// dependency graph, so they live in `rules`.
+fn architecture_rules(
+    r: &mut Report,
+    layers: &BTreeMap<String, u8>,
+    direct_deps: &[(String, String)],
+) {
+    // A-01, A-03 and A-05 need source or the resolved graph, so they live in
+    // `rules`. A-02 is the two checks above, which read layers.toml.
+    let adapters: std::collections::BTreeSet<String> = layers
+        .iter()
+        .filter(|(_, &l)| l == 2)
+        .map(|(k, _)| k.clone())
+        .collect();
+    for (label, outcome) in [
+        (
+            "A-01  aisme-core is platform-free",
+            crate::rules::a01_core_is_platform_free(direct_deps),
+        ),
+        (
+            "A-03  aisme-ebpf-common is no_std with zero deps",
+            crate::rules::a03_wire_is_no_std_zero_deps(direct_deps),
+        ),
+        (
+            "A-05  only the composition root names an adapter",
+            crate::rules::a05_composition_root_is_the_only_platform_module(&adapters),
+        ),
+        (
+            "F0.GATE.05  no forbidden dependency",
+            crate::rules::forbidden_dependencies(),
+        ),
+    ] {
+        let detail = outcome.err();
+        r.check(detail.is_none(), label, || detail.unwrap_or_default());
+    }
+    println!("  ----  A-04 (no platform type in aisme-core's public API) needs that API: F1");
+    println!("  ----  A-06 (review for L0-L2 deps and L3 unsafe) is a policy, owned by DEP.SUP.06");
 }
 
 fn metadata() -> Option<serde_json::Value> {

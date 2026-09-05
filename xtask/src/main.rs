@@ -20,6 +20,7 @@ mod annex_h;
 mod assets;
 mod doctor;
 mod gate;
+mod rules;
 mod tooling;
 mod verify;
 

@@ -359,9 +359,11 @@ pub(crate) fn seed_memories(plan: &str) -> Result<(), String> {
     if expected.is_empty() {
         return Err("no seed rows found in plan §7.4".into());
     }
-    // A check that quietly covers a subset is worse than no check, so the number
-    // of files on disk must equal the number of rows in the plan.
-    let on_disk = std::fs::read_dir("docs/ai/memory")
+    // Every seed row must have a file. The directory may hold more than the
+    // seeds — memory is meant to grow — so this is a subset check, not equality.
+    // What it must never become again is a check that silently covers fewer
+    // files than it claims to.
+    let on_disk: Vec<String> = std::fs::read_dir("docs/ai/memory")
         .into_iter()
         .flatten()
         .flatten()
@@ -370,16 +372,30 @@ pub(crate) fn seed_memories(plan: &str) -> Result<(), String> {
                 .extension()
                 .is_some_and(|x| x.eq_ignore_ascii_case("md"))
         })
-        .count();
-    if on_disk != expected.len() {
+        .filter_map(|e| {
+            e.path()
+                .file_stem()
+                .map(|s| s.to_string_lossy().into_owned())
+        })
+        .collect();
+    if on_disk.len() < expected.len() {
         return Err(format!(
-            "plan §7.4 lists {} seeds, docs/ai/memory holds {on_disk} files",
-            expected.len()
+            "plan §7.4 lists {} seeds, docs/ai/memory holds {} files",
+            expected.len(),
+            on_disk.len()
         ));
+    }
+    // Validate every file present, seed or not: a memory added later is read by
+    // the same sessions and must carry the same frontmatter.
+    let mut all = expected.clone();
+    for f in on_disk {
+        if !all.contains(&f) {
+            all.push(f);
+        }
     }
 
     let mut bad = Vec::new();
-    for slug in &expected {
+    for slug in &all {
         let path = format!("docs/ai/memory/{slug}.md");
         let body = read(&path);
         if body.is_empty() {

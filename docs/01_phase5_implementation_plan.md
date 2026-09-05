@@ -213,7 +213,7 @@ The cgroup hook matters for a second reason: at L2 a `connect` trapped to `secco
 
 L2 has its own SLA row (§2.22): **T0-L2 p99 ≤ 20 µs**, T1-L2 p99 ≤ 1 ms. **The CPU budget is certified at L2 and at L3 separately**; a latency claim without its tier is not a claim.
 
-*Landlock is **measured present and enforcing on the stock WSL2 kernel** (`F0.WSL.01`: ABI 7, `EACCES` outside the allowed path under a real ruleset); its presence on each matrix kernel is `F0.VM.02`, and the cgroup-hook attach semantics `F0.VER.16`. Where Landlock is absent the tier is **L2-**, the seccomp-only shape, and it is reported as such.*
+*Landlock's network rules match **TCP ports only**: `F0.VER.20` measured that `handled_access_net` has no UDP bit at all, so a QUIC flow is invisible to Landlock and the cgroup `connect` hook is what covers it. Landlock is **measured present and enforcing on the stock WSL2 kernel** (`F0.WSL.01`: ABI 7, `EACCES` outside the allowed path under a real ruleset); its presence on each matrix kernel is `F0.VM.02`, and the cgroup-hook attach semantics `F0.VER.16`. Where Landlock is absent the tier is **L2-**, the seccomp-only shape, and it is reported as such.*
 
 ---
 
@@ -636,7 +636,7 @@ What a local Merkle log actually provides: **tamper detection against anyone who
   *Why P-256 and not Ed25519 in hardware:* EdDSA is optional in the TPM 2.0 library specification and commodity discrete and firmware TPMs implement ECDSA P-256; iOS Secure Enclave keys are P-256 only; Android StrongBox is P-256/RSA. The curve follows what the hardware offers (`F0.VER.12` verifies this on the reference hardware).
   **WSL2 exposes no TPM** (`F0.VER.18`), so the platform chosen for Windows users is software-signed. For such installs external root anchoring is **on by default** — it is what carries non-repudiation when the key is not sealed.
 - **External root anchoring (this is what gives real non-repudiation):** every N blocks or every 60 s, the Merkle root is emitted to the OTel collector / corporate SIEM as an `aisme.forensic.root` event. An auditor compares the local chain against remotely witnessed roots. Without this the guarantee is weak; with it, rewriting history requires compromising the SIEM too.
-- BLAKE3 instead of SHA-256 for leaf hashing (≈5–10× faster, same security level; it matters on the ingest path). SHA-256 is retained only where interoperability demands it.
+- BLAKE3 instead of SHA-256 for leaf hashing, same security level; it matters on the ingest path. **Measured** (`F0.VER.13`, 320-byte leaf): **6.4×** on a stock build and **4.4×** with `target-cpu=native`. The spread is the point — the test CPU has **no SHA-NI**, and on a CPU that does, hardware SHA-256 closes most of the gap. BLAKE3 is the right default because it is fast everywhere rather than fast only where an extension exists. SHA-256 is retained only where interoperability demands it.
 
 ---
 
@@ -3306,7 +3306,7 @@ event   = "aisme.exfiltration.blocked"
 | | BPF trie (L3) | Landlock (L2 file) | cgroup connect (L2 net) | Sentinel (mobile) | Windows `[POST]` |
 |---|---|---|---|---|---|
 | `path_under`, `path_glob`, `path_class` | ✅ | ✅ | ❌ | ⚠️ SDK-reported | ✅ |
-| `dest_in`, `dest_not_in`, `port_in`, `proto` | ✅ | ⚠️ ports only, ABI ≥ 4 | ✅ | ✅ | ✅ |
+| `dest_in`, `dest_not_in`, `port_in`, `proto` | ✅ | ⚠️ **TCP ports only**, ABI ≥ 4 — no address matching and **no UDP** (`F0.VER.20`) | ✅ | ✅ | ✅ |
 | `exec_class`, `exec_path` | ✅ | ✅ (exec right) | ❌ | ❌ | ✅ |
 | `taint_*`, `not_declassified` | ✅ | ❌ | ✅ via the session map | ✅ | ✅ |
 | `tool_name`, `origin`, `instruction_bearing` | ❌ user space only | ❌ | ❌ | ✅ SDK | ❌ |

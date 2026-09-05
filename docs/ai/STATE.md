@@ -42,6 +42,7 @@
 | **Threat model**: ranked adversaries, trust boundaries, collected non-goals | `docs/security/01_threat-model.md` |
 | Phase Entry/Exit contracts and the eight-item freeze list | Plan §3.7.1 |
 | **Final coherence seal**: three audits plus a host probe, 134 findings, gate lines executed, host prerequisites (`F0.REPO.06`) | `docs/04_final_coherence_seal.md` |
+| **`F0.VER.05`, `.13`, `.14`, `.20` measured** — `seccomp_unotify` returns `ENOSYS` when the listener closes; BLAKE3 is 6.4× SHA-256 on a 320 B leaf (4.4× native, no SHA-NI on this CPU); Landlock audit flags accepted; **Landlock net rules are TCP-only and enforce — there is no UDP bit, so QUIC is invisible to it** | `docs/reports/01_f0-verification.md` |
 | **`F0.GATE.08`** complete — fifteen cross-document checks. The last three: Annex B §B.9 verdict maps proven monotone, budget keys named in prose resolving to `budgets.toml`, and the Part VI tree matching `crates/` and `layers.toml` | `xtask/src/docgate.rs` |
 | **`F0.DOC.01`** — the eleven §7.4 seed memories in `docs/ai/memory/`, each with the frontmatter, a `**How to apply:**` line and a non-empty source. `verify-docs` checks the count against the plan's own table, so a row added there without a file is caught | `docs/ai/memory/` |
 | **`F0.GATE.03`** validated — `cargo deny check` passes all four sections. Its first run failed `bans` and exposed a real licensing defect: `crates/aisme-ebpf-common/Cargo.toml` declared the workspace Apache-2.0 while its SPDX header and `LICENSE.md` say `GPL-2.0-only OR BSD-2-Clause`. Fixed, and `verify-docs` gained the manifest-licence check that catches it | `deny.toml`, `xtask/src/docgate.rs` |
@@ -62,7 +63,7 @@
 **Done in F0:** `F0.WSL.01`, `F0.REPO.01`, `F0.REPO.05`, `F0.REPO.03`, `F0.REPO.06`, `F0.ASSET.01`, `F0.ASSET.02`, `F0.DOC.01`, and `F0.GATE.01` (partial) through `F0.GATE.08`. `F0.REPO.02`'s eBPF half is blocked, see below. What remains, in order:
 
 1. `F0.VM.01` / `F0.VM.02` / `F0.WSL.02` — VM images and the kernel matrix with the expected tier asserted per kernel, including WSL2 with and without systemd. **Blocked on the host prerequisites below**; `cargo xtask vm up` already exits 2 with the remedy.
-2. `F0.VER.*` — the remaining rows of §F0.4, any order, appended to `docs/reports/01_f0-verification.md`. **`F0.VER.01` fails, `F0.VER.04` and `F0.VER.18` hold, `F0.VER.21` fails with a known remedy, `F0.VER.15` is `DEPRECATED`.** `F0.VER.16` and `F0.VER.19` need only `bpf-linker`.
+2. `F0.VER.*` — **9 of 21 rows recorded.** `F0.VER.01` and `.21` fail with known remedies, `.04`, `.05`, `.13`, `.14`, `.18`, `.20` hold, `.15` is `DEPRECATED`. `F0.VER.16` and `.19` need only `bpf-linker`; the rest need network access, a TPM, an Apple or Android device, or `cargo-auditable`.
 
 Already in place, not F0 work: `F0.REPO.00` (repository), `F0.SEC.01` (`docs/security/01_threat-model.md`), `ADR-04` and `ADR-05`, `docs/adr/00_template.md`.
 

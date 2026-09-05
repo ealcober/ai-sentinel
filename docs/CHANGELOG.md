@@ -7,7 +7,16 @@ All notable changes to this repository. Format: [Keep a Changelog](https://keepa
 ## [Unreleased]
 
 ### State
-- Plan sealed for implementation (`docs/04_final_coherence_seal.md`). No product code. Next: phase F0, starting with `F0.REPO.06` (host prerequisites, `cargo xtask doctor`) and the four `[BLOCKING]` verifications of plan §F0.4.
+- **Phase F0 in progress.** No product code yet. Next: `F0.REPO.01`/`F0.REPO.05` (the Cargo workspace), then `F0.REPO.02`, `F0.REPO.03` and `F0.REPO.06`.
+
+### Added
+- **`F0.WSL.01`** — WSL2 capability probe on kernel `6.18.33.1`. Landlock **ABI 7 and enforcing** (a write outside the allowed path returns `EACCES` under a real ruleset), `CONFIG_BPF_LSM=y` compiled with `bpf` absent from the active LSM list, cgroup v2 only, BTF present, systemd PID 1, **no TPM**, `/dev/kvm` present but the user is not in group `kvm`. Answers in `docs/ai/memory/wsl2-capabilities.md`; outcomes in `docs/reports/01_f0-verification.md`.
+- `docs/reports/01_f0-verification.md` — the §F0.4 outcome register, one row per `F0.VER.nn` with an `Outcome` column. **`F0.VER.04` and `F0.VER.18` hold, `F0.VER.21` fails** (remedy `usermod -aG kvm`, owned by `F0.REPO.06`), `F0.VER.16` and `F0.VER.19` are blocked on the toolchain alone.
+
+### Changed
+- Plan §2.16.1 records the measured WSL2 answers the plan asked F0 to obtain, and gains a Landlock row. Platform matrix, `DEP.INS.03` and Annex D state that WSL2 is **L2 by default and reaches L3 through `.wslconfig`**, with no custom kernel.
+- **Risk `R-08` closed** (WSL2 lacking `CONFIG_BPF_LSM`); `R-15` no longer applies to WSL2. `ADR-02`'s `F0.WSL.01` follow-up closed.
+- `STATE.md` "Next up" ordering corrected: `cargo xtask doctor` is `F0.REPO.06`'s deliverable and needs `F0.REPO.03` and the workspace, so it cannot precede them. The plan is unchanged on this — its Done-when gates `F0.VM.01`, not the phase.
 
 ## [0.2.0] — 2026-09-03 — sealed for implementation
 

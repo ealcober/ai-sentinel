@@ -213,7 +213,7 @@ The cgroup hook matters for a second reason: at L2 a `connect` trapped to `secco
 
 L2 has its own SLA row (§2.22): **T0-L2 p99 ≤ 20 µs**, T1-L2 p99 ≤ 1 ms. **The CPU budget is certified at L2 and at L3 separately**; a latency claim without its tier is not a claim.
 
-*Landlock's presence on each matrix kernel and on the stock WSL2 kernel is measured by `F0.VM.02` and `F0.WSL.01` (`F0.VER.04`); the cgroup-hook attach semantics by `F0.VER.16`. If Landlock is absent the tier is **L2-**, the seccomp-only shape, and it is reported as such.*
+*Landlock is **measured present and enforcing on the stock WSL2 kernel** (`F0.WSL.01`: ABI 7, `EACCES` outside the allowed path under a real ruleset); its presence on each matrix kernel is `F0.VM.02`, and the cgroup-hook attach semantics `F0.VER.16`. Where Landlock is absent the tier is **L2-**, the seccomp-only shape, and it is reported as such.*
 
 ---
 
@@ -584,11 +584,12 @@ Windows developers overwhelmingly run AI coding agents inside **WSL2, which is a
 
 | Capability | Status in WSL2 |
 |---|---|
-| eBPF programs, ring buffers, CO-RE | ✅ Stock kernel ships with BTF (`CONFIG_DEBUG_INFO_BTF`) |
+| eBPF programs, ring buffers, CO-RE | ✅ Stock kernel ships with BTF (`CONFIG_DEBUG_INFO_BTF=y`, `/sys/kernel/btf/vmlinux` present) |
+| **Landlock (tier L2 file deny)** | ✅ **ABI 7, enforcing.** Measured by `F0.WSL.01`: a write outside the allowed path returns `EACCES` under a real ruleset. This is what puts WSL2 at a usable L2 without a reboot |
 | tracepoints, kprobes, uprobes | ✅ |
 | `seccomp_unotify` (T1 channel) | ✅ |
 | cgroup v2 freezer (T2 channel) | ✅ where cgroup2 is mounted |
-| BPF-LSM (tier L3) | ⚠️ Requires `lsm=…,bpf` on the kernel command line, settable via `kernelCommandLine=` in `.wslconfig` **provided the stock kernel has `CONFIG_BPF_LSM=y`**. If it does not, `.wslconfig`'s `kernel=` accepts a custom bzImage. **Verify this in F0 — it decides whether WSL2 lands at L2 or L3.** |
+| BPF-LSM (tier L3) | ⚠️ Requires `lsm=…,bpf` on the kernel command line, settable via `kernelCommandLine=` in `.wslconfig`. **Measured** (`F0.WSL.01`, kernel `6.18.33.1`): `CONFIG_BPF_LSM=y` is compiled in, and `bpf` is **absent** from the active `CONFIG_LSM` list. So WSL2 is **L2 by default** and reaches L3 through `.wslconfig` plus `wsl --shutdown`, with no custom kernel. Where a WSL2 kernel is compiled without it, `.wslconfig`'s `kernel=` accepts a custom bzImage |
 
 **What does not work, and must be stated honestly in the UI (invariant `I-16`):**
 
@@ -2519,7 +2520,7 @@ The detection quality of the mobile engine is only as good as its corpus. This i
 | Debian | 12 | x86_64 | L2 or L2- per `F0.VER.04` (no BPF-LSM by default) |
 | Fedora | 40 | x86_64 | Full L3 |
 | RHEL/Alma | 9 | x86_64 | L2/L3 depending on kernel |
-| **WSL2** (Ubuntu 24.04) | on Win 11 23H2+ | x86_64 | **L2, or L3 if `CONFIG_BPF_LSM=y` — see `F0.WSL.01`** |
+| **WSL2** (Ubuntu 24.04) | on Win 11 23H2+ | x86_64 | **L2** by default; **L3** through `kernelCommandLine=` in `.wslconfig`, since `CONFIG_BPF_LSM=y` is compiled in (`F0.WSL.01`) |
 | Windows (native) | — | — | `[POST]` — deferred by ADR-02 |
 | Android | 12 – 15 | arm64 | Sentinel U + M |
 | iOS | 16 – 18 | arm64 | Sentinel U + M |
@@ -2686,7 +2687,7 @@ A third variant of this screen exists for **`L2-`** (no Landlock): it states the
 |---|---|---|
 | `DEP.INS.01` | **WSL2 detection** (`/proc/sys/kernel/osrelease` contains `microsoft`, or `/run/WSL` exists) and WSL-specific install path | Different guidance, different tier probe |
 | `DEP.INS.02` | systemd and non-systemd startup paths (`/etc/wsl.conf` `systemd=true` vs. `wsl.conf` boot command) | Both must work |
-| `DEP.INS.03` | Guidance for reaching L3 on WSL2 via `.wslconfig` `kernelCommandLine=`, or a custom kernel if `CONFIG_BPF_LSM` is absent | Gated on `F0.WSL.01` |
+| `DEP.INS.03` | Guidance for reaching L3 on WSL2 via `.wslconfig` `kernelCommandLine=` plus `wsl --shutdown`. `F0.WSL.01` measured `CONFIG_BPF_LSM=y` on the stock kernel, so the custom-kernel path is the fallback for older WSL2 kernels, not the main route | The `.wslconfig` edit is on the Windows side: the daemon prints the line, never applies it |
 | `DEP.INS.04` | **Coverage disclosure**: state explicitly that native Windows processes are not covered (`I-16`) | Non-negotiable honesty requirement |
 | `DEP.INS.05` | `/mnt/*` workspace handling: warn when the project root is on a Windows drive, since path semantics and performance differ | Common real-world setup |
 | `DEP.INS.06` | `RLIMIT_MEMLOCK` and `/proc/sys/kernel/unprivileged_bpf_disabled` handling | Frequent install failure |
@@ -3059,8 +3060,8 @@ Severity = impact if it happens. Likelihood after mitigation.
 | R-19 | **Prompt-delivery on Linux desktops** — no single stack, and Wayland cannot force focus | Med | Med | `aisme run` prompts in the terminal, which covers the common developer case, headless and WSL2; `aisme-uiagent` always pairs a modal with a notification; the ladder degrades to policy default, never to allow | F8b |
 | R-06 | **50 MB budget missed** under real load | High | Low | Two-process split (`H-03`); line-item budget; 72 h soak with growth-slope regression; zero-alloc hot loop | F1 |
 | R-07 | **eBPF verifier rejects programs on older kernels** | Med | Med | Kernel matrix in CI from commit #1; complexity budget at 60% of limit; documented degradation per capability | F3 |
-| R-08 | **WSL2 lacks `CONFIG_BPF_LSM`** → stuck at L2 | Low | Med | `F0.WSL.01` answers this in week 1. L2 still provides in-kernel file deny (Landlock) and network deny (cgroup connect hooks) with no reboot; custom kernel documented as opt-in for L3 | F0 |
-| R-15 | **Landlock absent** on a target kernel (Debian derivatives, or the stock WSL2 kernel) → `L2-`, seccomp trap volume under builds | Med | Med | `F0.WSL.01` / `F0.VM.02` probe it; `L2-` is reported honestly (`I-16`); the CPU gate runs at `L2-` too, so the cost is measured rather than assumed | F0, F3 |
+| R-08 ✅ | ~~**WSL2 lacks `CONFIG_BPF_LSM`** → stuck at L2~~ **Resolved** by `F0.WSL.01`: `CONFIG_BPF_LSM=y` is compiled into the stock kernel, so L3 is a `.wslconfig` line away. L2 remains the default and still provides in-kernel file deny (Landlock) and network deny (cgroup connect hooks) with no reboot | Low | Med | Closed 2026-09-05; the custom-kernel path stays documented for older WSL2 kernels | F0 |
+| R-15 | **Landlock absent** on a target kernel (Debian derivatives) → `L2-`, seccomp trap volume under builds. **No longer applies to WSL2**: `F0.WSL.01` measured ABI 7 and proved enforcement | Med | Med | `F0.VM.02` probes the matrix kernels; `L2-` is reported honestly (`I-16`); the CPU gate runs at `L2-` too, so the cost is measured rather than assumed | F0, F3 |
 | R-16 | **F2 overruns** its one week — eleven tasks on a real kernel | Med | Med | The scope table is binding; an overrun is absorbed by F3's start, never by cutting F2 tasks. The exit demo is the only criterion | F2 |
 | R-17 | ~~No self-hosted WSL2 runner~~ | — | — | **Withdrawn**: there is no hosted CI at all (`I-27`). Replaced by R-17′ | — |
 | R-17′ | **Local gate discipline erodes** — nobody runs `nightly` or `weekly` | Med | Med | `STATE.md` records the last run of each; `verify-docs` warns past 7 and 14 days; the release checklist refuses without a fresh weekly report | F0 |
@@ -3477,7 +3478,7 @@ must_appear_in_compressed_context = true   # anchor guarantee, T4.7.04
 | Hardware signing key | TPM 2.0 present | affects `key_hw`, not the tier | | | |
 | **Blocking capability** | | none | escalate/deny via seccomp only — every watched path decision traps | **in-kernel file deny + in-kernel network deny + seccomp escalation** | + LSM layer, harder to bypass |
 
-**WSL2** reaches **L2** if Landlock is active in the stock kernel (`F0.WSL.01`, `F0.VER.04`), otherwise `L2-`. L3 additionally needs `CONFIG_BPF_LSM=y` and `kernelCommandLine=` in `.wslconfig`. **WSL2 exposes no TPM**, so forensics there are software-signed and roots are anchored externally by default (`F0.VER.18`, risk R-18).
+**WSL2** reaches **L2** on the stock kernel: `F0.WSL.01` measured Landlock at ABI 7 and proved it denies (`F0.VER.04`). L3 additionally needs `bpf` in the active LSM list, which `kernelCommandLine=` in `.wslconfig` supplies because `CONFIG_BPF_LSM=y` is already compiled in. **WSL2 exposes no TPM**, so forensics there are software-signed and roots are anchored externally by default (`F0.VER.18`, risk R-18).
 
 ### D.2 Mobile (from §2.20.2)
 

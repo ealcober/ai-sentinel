@@ -176,7 +176,7 @@ Claims this pass relied on but could not show with a command. Each is either an 
 |---|---|
 | `virtme-ng` reports whether KVM acceleration is in use | Assumed from its documentation; `F0.VER.21` measures it |
 | Nested virtualization is enabled on the owner's Windows host | `/dev/kvm` exists inside WSL2, which is the observable consequence; not read from `.wslconfig` (the file has no such key, so the Windows 11 default applies) |
-| Landlock is *active*, not merely configured, on this WSL2 kernel | `CONFIG_SECURITY_LANDLOCK=y` and `CONFIG_LSM` include it in `/proc/config.gz`; the ruleset syscall was not run — `F0.VER.04` |
+| ~~Landlock is *active*, not merely configured, on this WSL2 kernel~~ | **Verified 2026-09-05 by `F0.WSL.01`**: ABI 7, and a real `restrict_self` returned `EACCES` for a write outside the allowed path. The lesson is that the config flag was the weaker evidence — `CONFIG_SECURITY_LANDLOCK=y` says the code is compiled, not that the LSM is enforcing; only the syscall says that |
 | glibc issues `openat` for `open()` on the matrix VM images (musl not checked) | Verified on this host's glibc by disassembly; holds for glibc ≥ 2.26 |
 | Debian 12's stock LSM list includes `landlock` | `F0.VER.04` |
 | `docs/02` §R1 numbers are stable | The register is append-only by the report's own rule; `F0.VER.nn` depends on it |

@@ -1,7 +1,7 @@
 # STATE — live project status
 
 > **Update this file at the end of every working session.** It is the first thing the next session reads.
-> Last updated: **2026-09-03** · Last nightly: — · Last weekly: — · Phase: **F0 ready to start — plan sealed (`docs/04_final_coherence_seal.md`)** · Code written: **none**
+> Last updated: **2026-09-05** · Last nightly: — · Last weekly: — · Phase: **F0 in progress** · Code written: **none**
 
 ## Where we are
 
@@ -42,21 +42,23 @@
 | **Threat model**: ranked adversaries, trust boundaries, collected non-goals | `docs/security/01_threat-model.md` |
 | Phase Entry/Exit contracts and the eight-item freeze list | Plan §3.7.1 |
 | **Final coherence seal**: three audits plus a host probe, 134 findings, gate lines executed, host prerequisites (`F0.REPO.06`) | `docs/04_final_coherence_seal.md` |
+| **`F0.WSL.01`** — WSL2 capability probe. Landlock **ABI 7 and enforcing**; `CONFIG_BPF_LSM=y` compiled but `bpf` absent from the active LSM list; cgroup v2 only; BTF present; systemd PID 1; **no TPM**; `/dev/kvm` present, user not in group `kvm` | `docs/ai/memory/wsl2-capabilities.md`, `docs/reports/01_f0-verification.md` |
 
 ## Next up
 
 **Phase F0.** Ordered; task IDs from Plan Part III.
 
-0. **`F0.REPO.06` — host prerequisites, before anything else.** On the owner's WSL2 host as of 2026-09-03: `/dev/kvm` exists and the CPU has VT-x, but the user is not in group `kvm`, and `qemu`, `virtme-ng`, `clang`, `bpf-linker` and a nightly toolchain are absent. `cargo xtask doctor` is the check; `F0.VER.21` records the KVM outcome.
-1. **The four `[BLOCKING]` verifications of §F0.4, in week 1** — `F0.VER.04` (Landlock), `F0.VER.16` (cgroup connect hook), `F0.VER.18` (WSL2 TPM), `F0.VER.12` (hardware curves). They do not confirm claims, they decide what plan rows say, and three phases plus a High/High risk rest on them. `F0.WSL.01` is where three of the four are measured.
-2. **`F0.WSL.01`** — probe the stock WSL2 kernel: `CONFIG_BPF_LSM`, **Landlock presence and ABI**, the cgroup connect hook, cgroup v2, systemd, and whether a TPM exists. Three of the four blocking verifications are measured here.
-3. `F0.ASSET.01` / `F0.ASSET.02` — corpus manifests, the empty corpus tree and **the reference-trace manifest schema**; the recording itself runs after `F2.WS.08`, before GATE F2.
-4. `F0.REPO.01` / `F0.REPO.05` — populate the Cargo workspace with each crate **in its §3.1 layer** (`layers.toml` is the source), dependency direction correct from the first commit.
-5. `F0.REPO.03` — `xtask`: the argument surface of **all 71 Annex H commands**, each unimplemented one exiting 3 with its owning task; working `build-ebpf`, `dist`, `vm *`, `verify-*`, `gate --level`.
+**`F0.WSL.01` is done.** The order below is corrected against the dependency chain: `cargo xtask doctor` is `F0.REPO.06`'s deliverable, so it needs `F0.REPO.03`, which needs the workspace of `F0.REPO.01`. The plan says as much — `F0.REPO.06`'s Done-when is that **`F0.VM.01`** cannot start before `doctor` passes, not that the phase cannot.
+
+1. `F0.REPO.01` / `F0.REPO.05` — populate the Cargo workspace with each crate **in its §3.1 layer** (`layers.toml` is the source), dependency direction correct from the first commit. The 20 crate directories and `xtask/` exist with empty `src/`; no manifest exists yet.
+2. `F0.REPO.02` — pin the toolchains, including the eBPF crate's nightly with `rust-src`.
+3. `F0.REPO.03` — `xtask`: the argument surface of **all 71 Annex H commands**, each unimplemented one exiting 3 with its owning task; working `build-ebpf`, `dist`, `vm *`, `verify-*`, `gate --level`.
+4. **`F0.REPO.06`** — host prerequisites and `cargo xtask doctor`. Measured on the owner's host on 2026-09-05: `/dev/kvm` present and the CPU reports `vmx`, but **the user is not in group `kvm`** (`F0.VER.21` fails until `usermod -aG kvm`), and `qemu-system-x86_64`, `virtme-ng`, `clang`, `bpf-linker`, `bpftool`, `strace`, `cargo-deny`, `tpm2-tools` and a nightly toolchain are all absent. **`doctor` gates `F0.VM.01`.** It also unblocks `F0.VER.16` and `F0.VER.19`, whose kernel prerequisites are all present and which lack only a loader.
+5. `F0.ASSET.01` / `F0.ASSET.02` — corpus manifests, the empty corpus tree and **the reference-trace manifest schema**; the recording itself runs after `F2.WS.08`, before GATE F2.
 6. `F0.GATE.04`…`F0.GATE.08` — budget gate, forbidden-dependency gate, dependency-direction gate, doc-drift gate, `verify-docs`. **All exist before F1 code lands.** All run locally (`I-27`).
 7. `F0.VM.01` / `F0.VM.02` / `F0.WSL.02` — VM images and the kernel matrix with the expected tier asserted per kernel, including WSL2 with and without systemd.
 8. `F0.DOC.01` — write the **eleven** seed memories from Plan §7.4 (fact, why it matters, source — transcribe, do not reconstruct).
-9. `F0.VER.01…20` — the remaining sixteen verification rows of §F0.4, any order. **Every row has a recorded outcome at GATE F0.**
+9. `F0.VER.*` — the remaining rows of §F0.4, any order, appended to `docs/reports/01_f0-verification.md`. **`F0.VER.04` and `F0.VER.18` hold; `F0.VER.21` fails with a known remedy; `F0.VER.15` is `DEPRECATED`.** `F0.VER.16` and `F0.VER.19` are blocked only on the toolchain. **Every live row has a recorded outcome at GATE F0.**
 
 Already in place, not F0 work: `F0.REPO.00` (repository), `F0.SEC.01` (`docs/security/01_threat-model.md`), `ADR-04` and `ADR-05`, `docs/adr/00_template.md`.
 
@@ -99,6 +101,6 @@ All ten owner questions are answered (`docs/02_…` §Owner answers). Each decis
 - **The hardest unsolved problems**, both with documented fallbacks so neither can block the MVP: prompt delivery on headless/GUI Linux (`docs/design/01_permission-model.md` §7.3) and F4 tier-D offset resolution on stripped BoringSSL.
 - **The benign corpus (§4.8.2) matters as much as the red team corpus.** A product that blocks `npm ci` is dead on arrival. Milestone M5 is the real go/no-go for exactly this reason.
 - The permission model note is `SPEC` (`docs/design/01_permission-model.md`) and carries the `warn` verdict and suppression rules. F1, F7 and F8 implement it.
-- **Two primitives make tier L2 real**: Landlock (in-kernel file deny) and `BPF_CGROUP_INET*_CONNECT` (in-kernel network deny). Both work without a reboot and without BPF-LSM, which matters because WSL2 — the Windows strategy — is L2 by default. Confirm with `F0.WSL.01`/`F0.VM.02` (`R1-04`, `R1-16`).
+- **Two primitives make tier L2 real**: Landlock (in-kernel file deny) and `BPF_CGROUP_INET*_CONNECT` (in-kernel network deny). Both work without a reboot and without BPF-LSM, which matters because WSL2 — the Windows strategy — is L2 by default. **Landlock is confirmed on WSL2** (`F0.WSL.01`: ABI 7, `EACCES` outside the allowed path under a real ruleset); the matrix kernels are `F0.VM.02`, and the cgroup hook still needs a loader (`F0.VER.16`).
 - **Every gate runs locally** (`I-27`). Do not propose GitHub Actions, self-hosted runners or scheduled cloud jobs. `.github/` does not exist and `verify-docs` fails if a push-triggered workflow appears.
-- **The report's R1 register is the F0 verification backlog.** Twenty live rows are asserted and unmeasured (`R1-01`…`R1-18` less the withdrawn `R1-15`, plus `F0.VER.19`…`21`); four of them decide how a row reads (`R1-04` Landlock, `R1-16` cgroup hooks, `R1-18` no TPM under WSL2, `R1-12` hardware curves). The register must be empty at GATE F0.
+- **The report's R1 register is the F0 verification backlog**, and its outcomes live in `docs/reports/01_f0-verification.md`. Sixteen live rows are still unmeasured (`R1-01`…`R1-18` less the withdrawn `R1-15`, plus `F0.VER.19`…`21`); four of them decide how a row reads (`R1-04` Landlock, `R1-16` cgroup hooks, `R1-18` no TPM under WSL2, `R1-12` hardware curves). The register must be empty at GATE F0.

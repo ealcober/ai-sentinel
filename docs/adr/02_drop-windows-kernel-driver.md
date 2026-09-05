@@ -69,7 +69,7 @@ Both the first and second rows remove exactly the same cost and risk; the second
 - [x] Update plan §2.16 (`H-15` rewritten, §2.16.1 added), Part III (`F3` → `[POST]`, F0 tasks deprecated, effort table), Part IV (`§4.3` → `[POST]`, platform matrix).
 - [x] Update `README.md` platform claims and `docs/ai/invariants.md` (`I-11`, `I-13` marked inactive).
 - [x] Retain the `Sensor`/`Enforcer`/`Adjudicator` trait boundaries (§3.2).
-- [ ] **`F0.WSL.01`** — determine whether the stock WSL2 kernel ships `CONFIG_BPF_LSM=y`. Decides tier L2 vs. L3 on WSL2.
+- [x] **`F0.WSL.01`** (2026-09-05) — the stock WSL2 kernel **does** ship `CONFIG_BPF_LSM=y`, with `bpf` absent from the active LSM list. WSL2 is **L2** by default and reaches **L3** through `kernelCommandLine=` in `.wslconfig`; no custom kernel is needed. Landlock is ABI 7 and enforcing, so the L2 tier is real there.
 - [ ] **`F0.WSL.02`** — WSL2 test images: with/without systemd, cgroup v1 and v2.
 - [ ] Add `/mnt/*` (9p/virtiofs) path canonicalization coverage to `T4.6.07`.
 - [ ] Handle NAT vs. mirrored WSL2 networking in the flow model.

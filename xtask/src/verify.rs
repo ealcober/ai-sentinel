@@ -328,6 +328,14 @@ pub(crate) fn docs() -> u8 {
         || format!("{dangling:?} are cited but not in Annex H"),
     );
 
+    println!("\n  corpus and fixture manifests (§4.14):");
+    let asset_failures = crate::assets::check();
+    r.check(
+        asset_failures.is_empty(),
+        "every manifest hash matches its content",
+        || asset_failures.join("; "),
+    );
+
     r.check(
         no_triggered_workflows(),
         "no workflow triggers on push, PR or schedule (I-27)",

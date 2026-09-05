@@ -1,0 +1,30 @@
+# Reference-trace fixture manifest — plan §4.14, task `F0.ASSET.02`. A fixture is a gate input, so an unversioned edit
+# can turn a red build green. `cargo xtask verify-docs` recomputes `sha256` and
+# fails when it disagrees with the content.
+#
+# `sha256` is over the fixture content, defined so it is reproducible: for every
+# file under this directory except `manifest.toml` and `.gitkeep`, sorted by
+# relative path, feed the path bytes, then a NUL, then the file bytes. An empty
+# fixture therefore hashes the empty string.
+# The one fixed, hashed input the CPU gate and the correlation gate share.
+#
+# The recording is NOT an F0 deliverable: `aisme run` is `F2.WS.08` and the trace
+# format is `F1.SIM.02`, so this file carries the schema and F0 leaves it empty.
+# `F0.ASSET.02` records it after `F2.WS.08` and before GATE F2, in observe-only
+# mode with no enforcement rule loaded, so recording perturbs nothing.
+
+schema = 1
+version = "0.0.0"
+entry_count = 0
+sha256 = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"   # the empty string: not recorded yet
+produced_by = "`aisme run` in observe-only mode (F2.WS.08), recorded by F0.ASSET.02"
+licence = "Apache-2.0"   # tests/ per LICENSE.md
+provenance = "a real Claude Code session on this repository — an actual working session, not a script"
+consent_basis = "the repository owner's own machine and own session"
+
+# Filled in when the recording happens. Empty strings mean "not recorded yet";
+# verify-docs requires them to be non-empty once entry_count > 0.
+agent = ""
+model = ""
+repository_commit = ""
+wallclock_seconds = 0

@@ -42,6 +42,7 @@
 | **Threat model**: ranked adversaries, trust boundaries, collected non-goals | `docs/security/01_threat-model.md` |
 | Phase Entry/Exit contracts and the eight-item freeze list | Plan §3.7.1 |
 | **Final coherence seal**: three audits plus a host probe, 134 findings, gate lines executed, host prerequisites (`F0.REPO.06`) | `docs/04_final_coherence_seal.md` |
+| **`F0.ASSET.01`** / **`F0.ASSET.02`** — the §4.14 manifest format on five asset directories, and the hash check inside `verify-docs`, which names the version it certified. The reference-trace manifest carries its schema; the recording is `F2.WS.08`'s | `tests/corpus/*/manifest.toml`, `tests/fixtures/reference-trace/manifest.toml` |
 | **`F0.REPO.06`** — `cargo xtask doctor`: 11 host prerequisites, each with its remedy and what it unblocks. Reports, never installs. **Exits 1 today — 4 of 11 present** on the owner's host, so its Done-when ("exits 0 on the owner's WSL2 host") is not met until the lines below are run | `xtask/src/doctor.rs` |
 | **`F0.REPO.03`** — `xtask`: all **71** Annex H commands parse, unimplemented ones exit 3 naming their task and phase. Working: `verify-layering`, `verify-budgets`, `verify-docs`, `verify-backlog`, `gate --level`, `dist`. `build-ebpf` and `vm *` are implemented and exit **2** with the remedy until their tooling exists | `xtask/src/` |
 | **`F0.REPO.02`**, root half — root toolchain **moved to `1.97.1`** and MSRV to `1.87`, because `F0.VER.01` **fails**: `aya 0.14.0` and `aya-ebpf 0.2.1` declare `rust-version 1.87.0` and `bpf-linker 0.11.0` is `edition 2024`. Workspace still passes `check`, `clippy -D warnings` and `fmt --check` under it. The eBPF nightly pin is **blocked**, see below | `rust-toolchain.toml`, `Cargo.toml` |
@@ -52,13 +53,12 @@
 
 **Phase F0.** Ordered; task IDs from Plan Part III.
 
-**`F0.WSL.01`, `F0.REPO.01`, `F0.REPO.05`, `F0.REPO.03` and `F0.REPO.06` are done.** `F0.REPO.02`'s eBPF half is blocked, see below. What remains, in order:
+**`F0.WSL.01`, `F0.REPO.01`, `F0.REPO.05`, `F0.REPO.03`, `F0.REPO.06`, `F0.ASSET.01` and `F0.ASSET.02` are done.** `F0.REPO.02`'s eBPF half is blocked, see below. What remains, in order:
 
-1. `F0.ASSET.01` / `F0.ASSET.02` — corpus manifests, the empty corpus tree and **the reference-trace manifest schema**; the recording itself runs after `F2.WS.08`, before GATE F2.
-2. `F0.GATE.04`…`F0.GATE.08` — budget gate, forbidden-dependency gate, dependency-direction gate, doc-drift gate, `verify-docs`. **All exist before F1 code lands.** All run locally (`I-27`).
-3. `F0.VM.01` / `F0.VM.02` / `F0.WSL.02` — VM images and the kernel matrix with the expected tier asserted per kernel, including WSL2 with and without systemd.
-4. `F0.DOC.01` — write the **eleven** seed memories from Plan §7.4 (fact, why it matters, source — transcribe, do not reconstruct).
-5. `F0.VER.*` — the remaining rows of §F0.4, any order, appended to `docs/reports/01_f0-verification.md`. **`F0.VER.04` and `F0.VER.18` hold; `F0.VER.21` fails with a known remedy; `F0.VER.15` is `DEPRECATED`.** `F0.VER.16` and `F0.VER.19` are blocked only on the toolchain. **Every live row has a recorded outcome at GATE F0.**
+1. `F0.GATE.04`…`F0.GATE.08` — budget gate, forbidden-dependency gate, dependency-direction gate, doc-drift gate, `verify-docs`. **All exist before F1 code lands.** All run locally (`I-27`).
+2. `F0.VM.01` / `F0.VM.02` / `F0.WSL.02` — VM images and the kernel matrix with the expected tier asserted per kernel, including WSL2 with and without systemd.
+3. `F0.DOC.01` — write the **eleven** seed memories from Plan §7.4 (fact, why it matters, source — transcribe, do not reconstruct).
+4. `F0.VER.*` — the remaining rows of §F0.4, any order, appended to `docs/reports/01_f0-verification.md`. **`F0.VER.04` and `F0.VER.18` hold; `F0.VER.21` fails with a known remedy; `F0.VER.15` is `DEPRECATED`.** `F0.VER.16` and `F0.VER.19` are blocked only on the toolchain. **Every live row has a recorded outcome at GATE F0.**
 
 Already in place, not F0 work: `F0.REPO.00` (repository), `F0.SEC.01` (`docs/security/01_threat-model.md`), `ADR-04` and `ADR-05`, `docs/adr/00_template.md`.
 

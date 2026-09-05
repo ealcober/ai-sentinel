@@ -1,0 +1,21 @@
+# Corpus manifest — plan §4.14. A corpus is a gate input, so an unversioned edit
+# can turn a red build green. `cargo xtask verify-docs` recomputes `sha256` and
+# fails when it disagrees with the content.
+#
+# `sha256` is over the corpus content, defined so it is reproducible: for every
+# file under this directory except `manifest.toml` and `.gitkeep`, sorted by
+# relative path, feed the path bytes, then a NUL, then the file bytes. An empty
+# corpus therefore hashes the empty string.
+
+# Labelled network flows for the Sentinel classifier. Parquet, metadata only: the row schema of §4.14.1 has no payload field, so `T4.11.05` is enforced by the shape of the data.
+
+schema = 1
+version = "0.0.0"
+entry_count = 0
+sha256 = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"   # the empty string: no entries yet
+produced_by = "`F10.CORE.13` generator, driving real client SDKs against local or first-party endpoints"
+licence = "Apache-2.0"   # tests/ per LICENSE.md
+provenance = "generated (§4.14.1 tier 1)"
+consent_basis = "not applicable — no self-recorded entries yet"
+
+# Target size before the gate that reads it may pass: >= 10 000 rows.

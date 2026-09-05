@@ -1,0 +1,21 @@
+# Corpus manifest — plan §4.14. A corpus is a gate input, so an unversioned edit
+# can turn a red build green. `cargo xtask verify-docs` recomputes `sha256` and
+# fails when it disagrees with the content.
+#
+# `sha256` is over the corpus content, defined so it is reproducible: for every
+# file under this directory except `manifest.toml` and `.gitkeep`, sorted by
+# relative path, feed the path bytes, then a NUL, then the file bytes. An empty
+# corpus therefore hashes the empty string.
+
+# BN-01…BN-18: 16 real developer workflows plus one twin per detector-bearing red-flag class.
+
+schema = 1
+version = "0.0.0"
+entry_count = 0
+sha256 = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"   # the empty string: no entries yet
+produced_by = "`F5.DT.08`, written with the detector it must stay silent for"
+licence = "Apache-2.0"   # tests/ per LICENSE.md
+provenance = "synthetic, with opt-in self-recorded supplements permitted (§4.14.1 tier 2)"
+consent_basis = "not applicable — no self-recorded entries yet"
+
+# Target size before the gate that reads it may pass: 16 workflows + one twin per detector.

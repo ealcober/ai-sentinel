@@ -2571,7 +2571,7 @@ The row schema is enumerated and **has no payload field**: `ts`, `direction`, `b
 
 #### 4.14.2 Fixture contracts
 
-Each fixture ships a `fixture.toml` declaring `provides` (what a test may assume), `ground_truth` (the file a test compares against) and `build` (the reproducible command). `fx-sse-server` declares its token stream in `ground_truth/sse-tokens.json`: four tests currently compare against "known content" that lives nowhere.
+Each fixture ships a `fixture.toml` declaring `provides` (what a test may assume), `ground_truth` (the file a test compares against) and `build` (the reproducible command). `fx-sse-server` declares its token stream in `ground_truth/sse-tokens.json`, which is what the four SSE tests compare against — "known content" has to live somewhere nameable or the comparison is unverifiable.
 
 ---
 
@@ -2878,10 +2878,15 @@ AI-SYSTEM-MONITOR/
 │
 ├── tests/
 │   ├── fixtures/                 fx-static-boringssl, fx-schannel, fx-sse-server…
+│   │   └── reference-trace/      The one fixed, hashed input (F0.ASSET.02)
 │   ├── corpus/flows/             10k labelled network flows (Sentinel)
-│   ├── corpus/benign/            BN-01…BN-16, incl. one benign twin per detector
+│   ├── corpus/mobile-apps/       A flows subset labelled by app category
+│   ├── corpus/benign/            BN-01…BN-18, incl. one benign twin per detector
 │   ├── corpus/redteam/           RF-01…RF-24 adversarial scenarios
 │   └── scenarios/                Ground-truth correlation harness scripts
+
+Every corpus and fixture directory carries a `manifest.toml` (§4.14); `verify-docs`
+recomputes its `sha256` and names the version it certified.
 │
 └── (no .github/) — every gate runs locally; nothing triggers on push (I-27)
 ```

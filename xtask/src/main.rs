@@ -17,6 +17,7 @@
 //! the plan's own progress report rather than a pile of missing subcommands.
 
 mod annex_h;
+mod assets;
 mod doctor;
 mod gate;
 mod tooling;

@@ -139,6 +139,12 @@ fn bin_targets() -> Option<Vec<String>> {
 }
 
 /// Provision and drive disposable VMs. Never touches the host kernel (`I-12`).
+///
+/// `I-12` is why these exist: no kernel-touching test ever runs on a host OS. It
+/// is also what makes them the *only* place `F0.VER.16` and `F0.VER.19` can be
+/// measured — both load a BPF program, this host reports
+/// `unprivileged_bpf_disabled = 2` and grants the shell no capabilities, and
+/// loading one on the host would violate the invariant even if it were possible.
 pub(crate) fn vm(name: &str) -> u8 {
     if !have("qemu-system-x86_64") {
         return missing("qemu-system-x86_64", "sudo apt install -y qemu-system-x86");
@@ -146,7 +152,31 @@ pub(crate) fn vm(name: &str) -> u8 {
     if !have("vng") && !have("virtme-ng") {
         return missing("virtme-ng", "sudo apt install -y virtme-ng");
     }
-    eprintln!("skip: `cargo xtask {name}` has its tooling but no VM images yet.");
-    eprintln!("      Images are F0.VM.01; the kernel matrix is F0.VM.02.");
+    if !Path::new("/dev/kvm").exists() {
+        eprintln!("note: /dev/kvm is absent; qemu falls back to TCG — correct, an order slower.");
+    } else if std::fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .open("/dev/kvm")
+        .is_err()
+    {
+        eprintln!("note: /dev/kvm is not writable in this session, so qemu falls back to TCG.");
+        eprintln!("      `usermod -aG kvm` has been run; a session keeps the groups it started");
+        eprintln!("      with, so this clears on the next login (F0.VER.21).");
+    }
+
+    eprintln!("skip: `cargo xtask {name}` has its tooling and no bootable kernel.");
+    eprintln!();
+    eprintln!("      Measured while implementing F0.VM.01, and none of it was in the plan:");
+    eprintln!("      * WSL2 has no /boot/vmlinuz — its kernel comes from the Windows side —");
+    eprintln!("        so virtme-ng cannot reuse the running kernel the way it does elsewhere.");
+    eprintln!("      * An Ubuntu distro kernel, fetched with `apt-get download` and unpacked");
+    eprintln!("        with `dpkg-deb -x` (both work without sudo), panics under virtme-ng at");
+    eprintln!("        mount_root_generic: 9p and virtiofs are modules there, and virtme-ng");
+    eprintln!("        needs them built in to mount the host rootfs.");
+    eprintln!("      * So the matrix wants kernels built for it — `vng --build` per version,");
+    eprintln!("        which is F0.VM.02's real shape and its real cost.");
+    eprintln!();
+    eprintln!("      F0.VM.01 owns the images; F0.VM.02 owns the kernel matrix.");
     SKIP
 }

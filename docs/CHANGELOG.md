@@ -9,7 +9,12 @@ All notable changes to this repository. Format: [Keep a Changelog](https://keepa
 ### State
 - **Phase F0 in progress.** No product code yet. Next: `F0.REPO.01`/`F0.REPO.05` (the Cargo workspace), then `F0.REPO.02`, `F0.REPO.03` and `F0.REPO.06`.
 
+### Fixed
+- **`F0.VER.16` and `F0.VER.19` were recorded as toolchain-blocked; they are VM-bound.** Both load a BPF program. This host reports `unprivileged_bpf_disabled = 2` and grants the shell no capabilities, and `I-12` forbids a kernel-touching test on a host OS regardless — so the toolchain was never what stood in the way. Installing it is what exposed the mistake.
+
 ### Added
+- **`cargo xtask vm up/run/probe` now reports exactly what is missing**, measured rather than guessed: WSL2 has no `/boot/vmlinuz` for `virtme-ng` to reuse, and an Ubuntu kernel fetched without `sudo` panics at `mount_root_generic` because 9p and virtiofs are modules there. `F0.VM.02` is therefore a **build** task — `vng --build` per matrix entry — and the plan row now says so.
+- `docs/ai/memory/virtme-ng-needs-a-kernel-built-for-it.md`.
 - **`F0.REPO.02` complete.** `crates/aisme-ebpf` pins `nightly-2026-01-01`, validated by an actual build against **aya-ebpf 0.2.1** with **bpf-linker 0.11.0**; `cargo xtask build-ebpf` emits a real `ELF 64-bit LSB relocatable, eBPF` carrying the `license` section the verifier reads. The pin is old deliberately: **rustc's LLVM major must equal the one `bpf-linker` links**, and on this host that is 21.
 - `cargo xtask doctor` gained the LLVM-match check, and now checks **the pinned** nightly and its `rust-src` rather than any nightly — the previous form would have passed while the pinned toolchain was absent.
 - **Four more `F0.VER` rows measured**, all with raw syscalls and no new tooling. `F0.VER.05` **holds**: a syscall blocked by `SECCOMP_RET_USER_NOTIF` returns `ENOSYS` when the listener closes, so listener death is defined rather than a hang. `F0.VER.14` **holds** for presence: all three Landlock `LOG_*` flags are accepted on 6.18. `F0.VER.20` **holds and enforces**: a TCP port rule denies with `EACCES`, `handled_access_net` refuses any bit beyond TCP bind/connect with `EINVAL`, and **UDP passes untouched — Landlock cannot see QUIC**. `F0.VER.13` **holds** at 6.41× (4.40× native), and the caveat is the finding: this CPU has no SHA-NI.

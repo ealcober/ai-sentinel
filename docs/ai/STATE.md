@@ -63,8 +63,8 @@
 
 **Done in F0:** `F0.WSL.01`, `F0.REPO.01`, `F0.REPO.05`, `F0.REPO.03`, `F0.REPO.06`, `F0.ASSET.01`, `F0.ASSET.02`, `F0.DOC.01`, and `F0.GATE.01` (partial) through `F0.GATE.08`. `F0.REPO.02`'s eBPF half is blocked, see below. What remains, in order:
 
-1. `F0.VM.01` / `F0.VM.02` / `F0.WSL.02` — VM images and the kernel matrix with the expected tier asserted per kernel, including WSL2 with and without systemd. **Blocked on the host prerequisites below**; `cargo xtask vm up` already exits 2 with the remedy.
-2. `F0.VER.*` — **9 of 21 rows recorded.** `F0.VER.01` and `.21` fail with known remedies, `.04`, `.05`, `.13`, `.14`, `.18`, `.20` hold, `.15` is `DEPRECATED`. `F0.VER.16` and `.19` need only `bpf-linker`; the rest need network access, a TPM, an Apple or Android device, or `cargo-auditable`.
+1. `F0.VM.01` / `F0.VM.02` / `F0.WSL.02` — VM images and the kernel matrix. **This is now the critical item**: it gates `F0.VER.16` and `F0.VER.19`, the last two measurable rows. `cargo xtask vm up` reports exactly what is missing. The measured shape: WSL2 has no `/boot/vmlinuz`, and a distro kernel panics under `virtme-ng` because 9p and virtiofs are modules there — so the matrix needs kernels **built** for it (`vng --build` per version), which is the cost `F0.VM.02` actually carries.
+2. `F0.VER.*` — **9 of 21 rows recorded.** `F0.VER.01` and `.21` fail with known remedies, `.04`, `.05`, `.13`, `.14`, `.18`, `.20` hold, `.15` is `DEPRECATED`. `F0.VER.16` and `.19` are **VM-bound, not toolchain-bound**: both load a BPF program, this host has `unprivileged_bpf_disabled = 2` and no capabilities, and `I-12` puts kernel tests in a VM anyway. The rest need network access, a TPM, an Apple or Android device, or `cargo-auditable`.
 
 Already in place, not F0 work: `F0.REPO.00` (repository), `F0.SEC.01` (`docs/security/01_threat-model.md`), `ADR-04` and `ADR-05`, `docs/adr/00_template.md`.
 

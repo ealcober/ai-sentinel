@@ -26,10 +26,10 @@ struct Image {
 }
 
 const IMAGES: &[Image] = &[
-    Image { name: "ubuntu-20.04", url: "https://cloud-images.ubuntu.com/focal/current/focal-server-cloudimg-amd64.img", expect: "5.4 (L1)" },
+    Image { name: "ubuntu-20.04", url: "https://cloud-images.ubuntu.com/focal/current/focal-server-cloudimg-amd64.img", expect: "5.4 (L2-)" },
     Image { name: "debian-11", url: "https://cloud.debian.org/images/cloud/bullseye/latest/debian-11-genericcloud-amd64.qcow2", expect: "5.10 (L2-)" },
     Image { name: "ubuntu-22.04", url: "https://cloud-images.ubuntu.com/jammy/current/jammy-server-cloudimg-amd64.img", expect: "5.15 (L2)" },
-    Image { name: "debian-12", url: "https://cloud.debian.org/images/cloud/bookworm/latest/debian-12-genericcloud-amd64.qcow2", expect: "6.1 (L2)" },
+    Image { name: "debian-12", url: "https://cloud.debian.org/images/cloud/bookworm/latest/debian-12-genericcloud-amd64.qcow2", expect: "6.1 (L3)" },
     Image { name: "ubuntu-24.04", url: "https://cloud-images.ubuntu.com/noble/current/noble-server-cloudimg-amd64.img", expect: "6.8 (L2/L3)" },
     Image { name: "fedora-40", url: "https://archives.fedoraproject.org/pub/archive/fedora/linux/releases/40/Cloud/x86_64/images/Fedora-Cloud-Base-Generic.x86_64-40-1.14.qcow2", expect: "6.8 (L3)" },
     Image { name: "ubuntu-26.04", url: "https://cloud-images.ubuntu.com/resolute/current/resolute-server-cloudimg-amd64.img", expect: "7.0 (L2/L3, Landlock audit)" },
@@ -47,6 +47,12 @@ pub(crate) fn run(name: &str, args: &[&str]) -> u8 {
             return SKIP;
         }
     }
+    // `vm probe --all` walks the catalogue: one boot per image, the tier line of
+    // each, and a table at the end — the "reports the tier and Landlock ABI per
+    // kernel" that GATE F0 asks for.
+    if name == "vm probe" && args.first() == Some(&"--all") {
+        return probe_all();
+    }
     let Some((&image_name, rest)) = args.split_first() else {
         eprintln!("usage: cargo xtask {name} <image> [-- command]");
         eprintln!(
@@ -55,6 +61,9 @@ pub(crate) fn run(name: &str, args: &[&str]) -> u8 {
         );
         return 1;
     };
+    if let Some(variant) = image_name.strip_prefix("wsl2-") {
+        return wsl2(name, variant, rest);
+    }
     let Some(image) = IMAGES.iter().find(|i| i.name == image_name) else {
         eprintln!("error: unknown image `{image_name}`; see `cargo xtask vm up` for the list.");
         return 1;
@@ -155,6 +164,44 @@ fn fresh_overlay(image: &Image) -> Result<PathBuf, String> {
     st.success()
         .then_some(overlay)
         .ok_or_else(|| "qemu-img create failed".into())
+}
+
+/// Every catalogued image in turn; a failing image does not stop the others.
+fn probe_all() -> u8 {
+    let mut rows = Vec::new();
+    let mut worst = 0;
+    for image in IMAGES {
+        println!("═══ {} (expects {})", image.name, image.expect);
+        let code = probe(image);
+        worst = worst.max(code);
+        let log = std::fs::read_to_string(Path::new(DIR).join(format!("{}.probe.log", image.name)))
+            .unwrap_or_default();
+        let field = |key: &str| {
+            log.lines()
+                .map(strip_ansi)
+                .find_map(|l| l.strip_prefix(key).map(|v| v.trim().to_owned()))
+                .unwrap_or_else(|| "?".to_owned())
+        };
+        rows.push((
+            image.name,
+            field("kernel:"),
+            field("landlock_abi:"),
+            field("tier:"),
+            image.expect,
+            code,
+        ));
+    }
+    println!(
+        "\n{:<14} {:<22} {:<12} {:<5} {:<30} result",
+        "image", "kernel", "ABI", "tier", "plan expects"
+    );
+    for (n, k, a, t, e, c) in &rows {
+        println!(
+            "{n:<14} {k:<22} {a:<12} {t:<5} {e:<30} {}",
+            if *c == 0 { "PASS" } else { "FAIL" }
+        );
+    }
+    worst
 }
 
 /// The capability probe plus, when the object exists, the two BPF rows. Output is
@@ -322,6 +369,10 @@ fn write_seed(image: &Image, script: &str) -> Result<PathBuf, String> {
 
 /// Reports the facts the tier is decided from (§2.17), then the tier itself.
 const TIER_PROBE: &str = r#"echo "kernel: $(uname -r)"
+# securityfs is not mounted on stock WSL2, and an unreadable list read as "no
+# LSM" would report L1 for a kernel that enforces Landlock (F0.WSL.01). Mount it;
+# if that fails, the compiled-in CONFIG_LSM is the next best evidence.
+mountpoint -q /sys/kernel/security 2>/dev/null || mount -t securityfs none /sys/kernel/security 2>/dev/null
 echo "lsm: $(cat /sys/kernel/security/lsm 2>/dev/null || echo unreadable)"
 python3 - <<'PY'
 import ctypes, gzip, os
@@ -330,6 +381,10 @@ abi = libc.syscall(ctypes.c_long(444), None, ctypes.c_size_t(0), ctypes.c_uint32
 cfg = gzip.open("/proc/config.gz", "rt").read() if os.path.exists("/proc/config.gz") else open("/boot/config-" + os.uname().release).read()
 k = lambda key: next((l for l in cfg.splitlines() if l.startswith(key + "=")), key + " not set")
 lsm = open("/sys/kernel/security/lsm").read().strip() if os.path.exists("/sys/kernel/security/lsm") else ""
+if not lsm:
+    m = [l for l in cfg.splitlines() if l.startswith("CONFIG_LSM=")]
+    lsm = m[0].split("=",1)[1].strip('"') if m else ""
+    print("lsm source: CONFIG_LSM (securityfs unavailable)")
 btf = os.path.exists("/sys/kernel/btf/vmlinux"); cg2 = " cgroup2 " in open("/proc/mounts").read()
 print("landlock_abi:", abi if abi > 0 else "unavailable")
 for key in ("CONFIG_BPF_LSM", "CONFIG_CGROUP_BPF", "CONFIG_DEBUG_INFO_BTF", "CONFIG_LSM"): print(k(key))
@@ -353,6 +408,13 @@ if ! command -v bpftool >/dev/null; then
     apt-get -qq update 2>&1 | tail -1
     apt-get -qq install -y bpftool 2>&1 | grep -E "^E:" | tail -1 || true
     command -v bpftool >/dev/null || apt-get -qq install -y linux-tools-common linux-tools-$(uname -r) 2>&1 | grep -E "^E:" | tail -1
+    # A Microsoft (WSL2) kernel has no linux-tools-<release>; Ubuntu's wrapper then
+    # refuses to run, but any versioned bpftool binary from linux-tools-generic is
+    # kernel-agnostic enough for load/attach.
+    if ! bpftool version >/dev/null 2>&1; then
+      apt-get -qq install -y linux-tools-generic >/dev/null 2>&1
+      B=$(ls /usr/lib/linux-tools/*/bpftool 2>/dev/null | head -1); [ -n "$B" ] && ln -sf "$B" /usr/local/bin/bpftool
+    fi
     if ! command -v bpftool >/dev/null && grep -qs "debian.org" /etc/apt/sources.list; then
       # An archived Debian release still answers `update` on deb.debian.org but its
       # security pool has been emptied (bpftool_5.10.262-1 404s there, measured on
@@ -398,6 +460,296 @@ PY
 echo "inside session cgroup:"; bash -c "echo \$\$ > $CG2/session/cgroup.procs; python3 /root/conn.py"
 echo "outside session cgroup:"; python3 /root/conn.py
 "#;
+
+/// `vm up|run|probe wsl2-<variant>` — a real WSL2 distribution, not a qemu guest.
+///
+/// WSL2 is the Windows strategy (`ADR-02`), and it is a different animal from the
+/// cloud images: there is no qemu, no serial port and no seed ISO. `wsl.exe` is
+/// reachable from inside a WSL2 shell through interop, so the host imports a
+/// distribution from Ubuntu's official WSL rootfs tarball, sets `/etc/wsl.conf`
+/// for the variant, and runs commands in it as root — output comes straight back.
+///
+/// Variants: `ubuntu-24.04` (systemd on, which is how `aisme run` expects to be
+/// launched) and `ubuntu-24.04-nosystemd` (the opt-out the plan says the daemon
+/// must survive, §2.16.1). The cgroup v1/v2 axis is **global** to WSL2 —
+/// `kernelCommandLine=` in the Windows-side `.wslconfig` plus `wsl --shutdown` —
+/// and a shutdown ends the shell this runs in, so that axis is the owner's to
+/// flip, and `vm probe` reports which mode it found.
+fn wsl2(name: &str, variant: &str, rest: &[&str]) -> u8 {
+    let Some(wsl) = ["wsl.exe", "/mnt/c/Windows/System32/wsl.exe"]
+        .into_iter()
+        .find(|w| w.contains('/') && Path::new(w).is_file() || !w.contains('/') && have(w))
+    else {
+        eprintln!("skip: wsl.exe is not reachable — this is not a WSL2 shell with interop (F0.WSL.02 runs on the owner's Windows machine)");
+        return SKIP;
+    };
+    let systemd = match variant {
+        "ubuntu-24.04" => true,
+        "ubuntu-24.04-nosystemd" => false,
+        other => {
+            eprintln!(
+                "error: unknown WSL2 variant `{other}`; use ubuntu-24.04 or ubuntu-24.04-nosystemd"
+            );
+            return 1;
+        }
+    };
+    let distro = format!("aisme-wsl2-{variant}");
+    if !registered(wsl, &distro) {
+        let code = wsl2_import(wsl, &distro, variant, systemd);
+        if code != 0 || name == "vm up" {
+            return code;
+        }
+    } else if name == "vm up" {
+        println!("PASS vm up wsl2-{variant}: {distro} already registered");
+        return 0;
+    }
+    let script = if name == "vm run" {
+        let cmd = rest
+            .iter()
+            .skip_while(|a| **a == "--")
+            .copied()
+            .collect::<Vec<_>>()
+            .join(" ");
+        if cmd.is_empty() {
+            eprintln!("usage: cargo xtask vm run wsl2-{variant} -- <command>");
+            return 1;
+        }
+        cmd
+    } else {
+        wsl2_probe_script()
+    };
+    wsl2_exec(wsl, &distro, name, variant, systemd, &script)
+}
+
+/// Fetch Ubuntu's official WSL rootfs once, `wsl.exe --import` it, set the
+/// variant's `/etc/wsl.conf`, and stop it so the setting takes effect on the next
+/// start. The install directory must be a Windows path; both live under `vm/`.
+fn wsl2_import(wsl: &str, distro: &str, variant: &str, systemd: bool) -> u8 {
+    let tarball = Path::new(DIR).join("wsl2-ubuntu-24.04.rootfs.tar.gz");
+    if !tarball.is_file() {
+        println!("fetching the Ubuntu WSL rootfs …");
+        let url = "https://cloud-images.ubuntu.com/wsl/releases/24.04/current/ubuntu-noble-wsl-amd64-wsl.rootfs.tar.gz";
+        let ok = Command::new("curl")
+            .args(["-fsSL", "-o"])
+            .arg(&tarball)
+            .arg(url)
+            .status();
+        if !ok.is_ok_and(|s| s.success()) {
+            eprintln!("skip: could not fetch {url}");
+            let _ = std::fs::remove_file(&tarball);
+            return SKIP;
+        }
+    }
+    // WSL will not place a distribution's VHDX inside another distribution's
+    // filesystem: an install directory under this repository (which lives on
+    // \\wsl.localhost\…) fails with Wsl/Service/ERROR_UNHANDLED_EXCEPTION, and
+    // the same command with both paths on NTFS succeeds (measured 2026-09-06).
+    // So the VHDX and the tarball go under %LOCALAPPDATA%\aisme\vm on the
+    // Windows side; `wsl.exe --unregister` is how they go away.
+    let Some(local) = windows_local_appdata() else {
+        eprintln!("FAIL: could not resolve %LOCALAPPDATA% through interop");
+        return 1;
+    };
+    let ntfs = Path::new(&local).join("aisme").join("vm");
+    let install = ntfs.join(format!("wsl2-{variant}"));
+    let ntfs_tar = ntfs.join("wsl2-ubuntu-24.04.rootfs.tar.gz");
+    if std::fs::create_dir_all(&install).is_err()
+        || (!ntfs_tar.is_file() && std::fs::copy(&tarball, &ntfs_tar).is_err())
+    {
+        eprintln!("FAIL: cannot stage under {}", ntfs.display());
+        return 1;
+    }
+    let (Some(win_install), Some(win_tar)) = (wslpath(&install), wslpath(&ntfs_tar)) else {
+        eprintln!("FAIL: wslpath could not translate the NTFS paths");
+        return 1;
+    };
+    println!("importing {distro} …");
+    // wsl.exe opens the tarball exclusively, so two imports from one tarball at
+    // the same moment fail with Wsl/ERROR_SHARING_VIOLATION (measured when both
+    // variants were started in parallel). Wait and retry rather than fail on it.
+    let mut imported = false;
+    for attempt in 1..=6 {
+        let out = Command::new(wsl)
+            .args(["--import", distro, &win_install, &win_tar, "--version", "2"])
+            .output();
+        match out {
+            Ok(o) if o.status.success() => {
+                imported = true;
+                break;
+            }
+            Ok(o) => {
+                let text = format!(
+                    "{}{}",
+                    String::from_utf8_lossy(&o.stdout),
+                    String::from_utf8_lossy(&o.stderr)
+                )
+                .replace('\0', "");
+                if text.contains("SHARING_VIOLATION") && attempt < 6 {
+                    eprintln!("  tarball busy (another import running); retry {attempt}/5 in 15 s");
+                    std::thread::sleep(std::time::Duration::from_secs(15));
+                    continue;
+                }
+                for line in text.lines().filter(|l| !l.trim().is_empty()).take(3) {
+                    eprintln!("  {line}");
+                }
+                break;
+            }
+            Err(e) => {
+                eprintln!("  wsl.exe did not run: {e}");
+                break;
+            }
+        }
+    }
+    if !imported {
+        eprintln!("FAIL: wsl.exe --import {distro} failed");
+        return 1;
+    }
+    let conf = format!(
+        "[boot]\nsystemd={}\n",
+        if systemd { "true" } else { "false" }
+    );
+    // binfmt_misc is one kernel-wide table shared by every distribution. After
+    // the systemd variant's first boot this distribution lost its `WSLInterop`
+    // entry (`exec format error` on every `.exe`), which is what
+    // `systemd-binfmt.service` does on start: it flushes the table before
+    // registering its own. Masking it in the guest before systemd ever runs is
+    // the attributed fix; the seal's unverified register carries the attribution.
+    let _ = Command::new(wsl)
+        .args(["-d", distro, "-u", "root", "--", "sh", "-c"])
+        .arg(format!(
+            "printf '%s' '{conf}' > /etc/wsl.conf && \
+             mkdir -p /etc/systemd/system && ln -sf /dev/null /etc/systemd/system/systemd-binfmt.service"
+        ))
+        .status();
+    let _ = Command::new(wsl).args(["--terminate", distro]).status();
+    println!("PASS vm up wsl2-{variant}: {distro} imported, systemd={systemd}");
+    0
+}
+
+/// The tier probe plus the WSL2-specific facts the plan asks about — cgroup mode
+/// and whether systemd is PID 1 — and, when the object is built, the BPF rows.
+fn wsl2_probe_script() -> String {
+    let mut s = String::from(TIER_PROBE);
+    s.push_str("echo \"cgroup2 mount: $(awk '$3==\"cgroup2\"{print $2; exit}' /proc/mounts)\"; echo \"cgroup v1 controllers: $(grep -c ' cgroup ' /proc/mounts)\"; echo \"pid1: $(cat /proc/1/comm)\"\n");
+    // The object itself is staged on NTFS by `wsl2_exec`, which is the only
+    // filesystem the target distribution shares with this one.
+    if Path::new(PROBE_OBJ).is_file() {
+        s.push_str(BPF_PROBE);
+    }
+    s
+}
+
+/// Run a script as root in the distribution and print what it printed.
+///
+/// The script goes to a file on NTFS and is run from there: an argv-embedded
+/// script does not survive `wsl.exe` — Windows argument quoting turns every `"`
+/// into `\"` and mangles redirections (measured: awk received literal
+/// backslashes and bash saw `2` as a stray token). NTFS is also the only
+/// filesystem the target distribution shares with this one; its `/mnt/c` path is
+/// the same on both sides.
+fn wsl2_exec(
+    wsl: &str,
+    distro: &str,
+    name: &str,
+    variant: &str,
+    systemd: bool,
+    script: &str,
+) -> u8 {
+    let Some(local) = windows_local_appdata() else {
+        eprintln!("FAIL: could not resolve %LOCALAPPDATA% through interop");
+        return 1;
+    };
+    let stage = Path::new(&local).join("aisme").join("vm");
+    if std::fs::create_dir_all(&stage).is_err() {
+        eprintln!("FAIL: cannot stage under {}", stage.display());
+        return 1;
+    }
+    let mut body = String::from("#!/bin/bash\n");
+    if Path::new(PROBE_OBJ).is_file() && std::fs::copy(PROBE_OBJ, stage.join("probe.o")).is_ok() {
+        let _ = writeln!(
+            body,
+            "cp '{}' /root/probe.o",
+            stage.join("probe.o").display()
+        );
+    }
+    body.push_str(script);
+    let script_path = stage.join(format!("run-{variant}.sh"));
+    if std::fs::write(&script_path, body).is_err() {
+        eprintln!("FAIL: cannot write {}", script_path.display());
+        return 1;
+    }
+    println!(
+        "running in {distro} ({}) …",
+        if systemd { "systemd" } else { "no systemd" }
+    );
+    let out = Command::new(wsl)
+        .current_dir("/mnt/c")
+        .args(["-d", distro, "-u", "root", "--", "bash"])
+        .arg(&script_path)
+        .output();
+    match out {
+        Ok(o) => {
+            let text = format!(
+                "{}{}",
+                String::from_utf8_lossy(&o.stdout),
+                String::from_utf8_lossy(&o.stderr)
+            );
+            for line in text.replace('\0', "").lines() {
+                println!("  {}", strip_ansi(line));
+            }
+            let code = u8::from(!o.status.success());
+            println!(
+                "{} vm {} wsl2-{variant}",
+                if code == 0 { "PASS" } else { "FAIL" },
+                name.trim_start_matches("vm ")
+            );
+            code
+        }
+        Err(e) => {
+            eprintln!("FAIL: wsl.exe did not run: {e}");
+            1
+        }
+    }
+}
+
+/// `%LOCALAPPDATA%` as a Linux path, asked of `cmd.exe` through interop.
+fn windows_local_appdata() -> Option<String> {
+    let out = Command::new("cmd.exe")
+        .args(["/c", "echo %LOCALAPPDATA%"])
+        .output()
+        .ok()?;
+    let win = String::from_utf8_lossy(&out.stdout)
+        .trim()
+        .replace('\r', "");
+    if win.is_empty() || win.contains('%') {
+        return None;
+    }
+    let out = Command::new("wslpath").arg("-u").arg(win).output().ok()?;
+    out.status
+        .success()
+        .then(|| String::from_utf8_lossy(&out.stdout).trim().to_owned())
+}
+
+fn registered(wsl: &str, distro: &str) -> bool {
+    Command::new(wsl)
+        .args(["--list", "--quiet"])
+        .output()
+        .is_ok_and(|o| {
+            String::from_utf8_lossy(&o.stdout)
+                .replace('\0', "")
+                .lines()
+                .any(|l| l.trim() == distro)
+        })
+}
+
+/// A WSL path as Windows sees it, via `wslpath -w`.
+fn wslpath(p: &Path) -> Option<String> {
+    let abs = std::fs::canonicalize(p).ok()?;
+    let out = Command::new("wslpath").arg("-w").arg(abs).output().ok()?;
+    out.status
+        .success()
+        .then(|| String::from_utf8_lossy(&out.stdout).trim().to_owned())
+}
 
 fn have(tool: &str) -> bool {
     std::env::var_os("PATH")

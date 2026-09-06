@@ -42,6 +42,7 @@
 | **Threat model**: ranked adversaries, trust boundaries, collected non-goals | `docs/security/01_threat-model.md` |
 | Phase Entry/Exit contracts and the eight-item freeze list | Plan §3.7.1 |
 | **Final coherence seal**: three audits plus a host probe, 134 findings, gate lines executed, host prerequisites (`F0.REPO.06`) | `docs/04_final_coherence_seal.md` |
+| **`cargo xtask vm probe --all`** — the GATE F0 line: seven images in one run, **7 of 7 PASS, exit 0**, summary table of kernel, Landlock ABI, tier and the plan's expectation per image. **`F0.WSL.02`, first half**: `vm up wsl2-ubuntu-24.04` imports and boots (NTFS staging, `wsl.conf`, systemd on); the probe's four WSL2-specific defects are measured and fixed, the corrected probe itself is unmeasured — see Blocked | `xtask/src/vm.rs`, `docs/reports/01_f0-verification.md` |
 | **`F0.VM.02` complete — the whole matrix** — seven images, seven tiers measured from the active LSM list, both BPF probes held on every kernel from 5.4 to 7.0. Two plan expectations fell: 5.4 is **L2-** (Ubuntu 20.04 ships BTF), Debian 12 is **L3 out of the box** (`bpf` active). Ubuntu is L2 by default on every release, Debian 12 and Fedora 40 are L3 | `docs/reports/01_f0-verification.md`, `docs/ai/memory/distro-default-lsm-lists.md` |
 | **`F0.VER.02`, `.07`** — `strip = "symbols"` keeps `.dep-v0`; embedded DuckDB costs **+44 MB** just to `connect()`, which is H-03 in one number. **`.12` recorded `UNVERIFIED`** with the hardware named; `verify-backlog` exits 2, not 1, for that case (§F0.4) | `docs/reports/01_f0-verification.md` |
 | **`F0.VER.03`, `.06`, `.08`, `.09`, `.10`, `.11`, `.17`** — verified against primary sources. Two corrections to the plan: **`gen_ai.system` is dead** (replaced by `gen_ai.provider.name`; the family moved to `semantic-conventions-genai` at *Development* stability) and **`bpf_probe_write_user` neither warns nor taints on mainline** — its real controls are `gpl_only` and kernel lockdown. The `.docx` extraction drops 11 table cells and 19 figures | `docs/reports/01_f0-verification.md` |
@@ -65,10 +66,10 @@
 
 **Phase F0.** Ordered; task IDs from Plan Part III.
 
-**Done in F0:** `F0.WSL.01`, `F0.REPO.01`, `F0.REPO.05`, `F0.REPO.03`, `F0.REPO.06`, `F0.ASSET.01`, `F0.ASSET.02`, `F0.DOC.01`, and `F0.GATE.01` (partial) through `F0.GATE.08`. `F0.REPO.02`'s eBPF half is blocked, see below. What remains, in order:
+**Done in F0:** `F0.WSL.01`, `F0.REPO.01`, `F0.REPO.02`, `F0.REPO.05`, `F0.REPO.03`, `F0.REPO.06`, `F0.ASSET.01`, `F0.ASSET.02`, `F0.DOC.01`, `F0.VM.01`, `F0.VM.02`, and `F0.GATE.01` (partial) through `F0.GATE.08`. What remains, in order:
 
-1. `F0.WSL.02` — WSL2 test images with and without systemd, cgroup v1 and v2. A different mechanism from the cloud images (`wsl.exe --import` from the Windows side), and the last F0 task that is not done.
-2. **GATE F0.** Every §F0.4 row is recorded — 21 of 21, `.12` as `UNVERIFIED` pending hardware — so `verify-backlog` exits 2 and the `commit` gate carries no FAIL. Run the GATE F0 block and paste its output.
+1. `F0.WSL.02` — second half. The systemd variant imports and boots; what is left is one owner action (re-register interop or re-login, see Blocked), then `cargo xtask vm probe wsl2-ubuntu-24.04`, `vm up wsl2-ubuntu-24.04-nosystemd` and its probe, and the cgroup v1/v2 axis through `.wslconfig` — each outcome into `docs/reports/01_f0-verification.md`. The handoff note is `docs/ai/handoff/01_f0-wsl-02.md`.
+2. **GATE F0.** Run on 2026-09-06, line by line: **14 of 15 lines exit 0**; `verify-backlog` exits 2 (`SKIP`: 21 of 21 recorded, `.12` needs hardware this host lacks, the outcome §F0.4 specifies); `vm probe --all` 7 of 7 PASS; the one failing line is `vm up wsl2-ubuntu-24.04`, `FAIL: could not resolve %LOCALAPPDATA% through interop` — the blocker below. The gate closes when that line passes after the owner action; nothing else is owed.
 3. `F0.VER.*` — **21 of 21 rows recorded.** All four `[BLOCKING]` rows are settled except the hardware half of `.12`: `.04`, `.16`, `.18` hold; `.05`, `.13`, `.14`, `.19`, `.20`, `.21` hold; `.01` fails with the pin moved; `.15` is `DEPRECATED`. Only `.12`'s hardware half stays open (a TPM 2.0 host, an iOS device, an Android device), recorded as `UNVERIFIED`. Bun's key-log behaviour (`.09`) is the one sub-claim still open.
 
 Already in place, not F0 work: `F0.REPO.00` (repository), `F0.SEC.01` (`docs/security/01_threat-model.md`), `ADR-04` and `ADR-05`, `docs/adr/00_template.md`.
@@ -77,25 +78,17 @@ Already in place, not F0 work: `F0.REPO.00` (repository), `F0.SEC.01` (`docs/sec
 
 ## Blocked
 
-**`F0.GATE.01`'s hook is deliberately not enabled.** `.githooks/pre-commit` runs `gate --level commit`, which fails today because `doctor` and `verify-backlog` fail for good reasons. Enabling it now (`git config core.hooksPath .githooks`) would block every commit on host provisioning. Enable it once `doctor` reaches 0.
+**`F0.GATE.01`'s hook is not enabled.** `.githooks/pre-commit` runs `gate --level commit`, which reports 7 PASS · 0 FAIL · 1 SKIP · 1 PENDING today; enabling it is the owner's `git config core.hooksPath .githooks`. Enabling it now (`git config core.hooksPath .githooks`) would block every commit on host provisioning. Enable it once `doctor` reaches 0.
 
-Nothing. `cargo xtask doctor` reports 15 of 15 after the re-login.
-
-`crates/aisme-ebpf/rust-toolchain.toml` still carries `channel = "nightly"` and `TODO(F0.REPO.02)`: the exact nightly, and **the Aya version it was validated against**. Validating means building the crate for `bpfel-unknown-none` through `-Z build-std=core`, which needs a nightly toolchain (none installed) and `bpf-linker` (absent). Writing a version nobody built against would be a claim entering the repository unverified, which general rule 1 and `CLAUDE.md` execution directive 7 both forbid.
-
-**What unblocks it.** `cargo xtask doctor` prints this list, with what each item unblocks, and exits 1 while any is missing — that is the authoritative copy; the lines below are the same ones. The nightly is installed; `bpf-linker` needs a system LLVM, and its own build script says `cargo install` is not the recommended route without one. On Ubuntu 26.04 the matching version is LLVM 21, which is what `llvm-dev` resolves to:
+**WSL interop is gone from this distribution** (`F0.WSL.02`): `cmd.exe` and `wsl.exe` fail with `exec format error` because `/proc/sys/fs/binfmt_misc/` no longer holds the `WSLInterop` entry. It vanished after the imported `aisme-wsl2-ubuntu-24.04` first booted with systemd; binfmt_misc is one kernel-wide table, and `systemd-binfmt.service` flushes it on start — attributed, not measured (seal §5). **What unblocks it**, either one, both the owner's action:
 
 ```bash
-sudo apt install -y llvm-21-dev libpolly-21-dev libzstd-dev clang bpftool \
-                    qemu-system-x86 virtme-ng tpm2-tools strace
-cargo +nightly install bpf-linker --no-default-features --features llvm-21
+sudo sh -c 'echo ":WSLInterop:M::MZ::/init:PF" > /proc/sys/fs/binfmt_misc/register'
 ```
 
-`bpf-linker 0.11.0` defaults to the `llvm-23` feature, which Ubuntu 26.04 does not carry, hence `--no-default-features --features llvm-21`. The `+nightly` is needed because the crate is `edition 2024`. That one `apt` line also covers the rest of `F0.REPO.06`: `bpftool` and `clang` for BTF, `qemu-system-x86` and `virtme-ng` for `F0.VM.*`, `tpm2-tools` for `F0.VER.12`, `strace` for the capture tests.
+or `wsl --terminate <this distribution>` from Windows and a fresh login. `vm up wsl2-*` now masks `systemd-binfmt.service` in the imported guest before systemd ever runs there, so the next import tests the attribution: if interop survives the guest's first systemd boot, it holds.
 
-The same install unblocks `F0.VER.16` (the cgroup `connect` attach test) and `F0.VER.19` (the `EventKind` range check under the verifier), whose kernel prerequisites are all present and which lack only a loader. Group membership for KVM (`F0.VER.21`) is `sudo usermod -aG kvm $USER` followed by a new login.
-
-**Not blocked by this:** everything except `build-ebpf` and `vm *`, both of which already exist and exit 2 with the exact remedy.
+**Not blocked by this:** everything else. `cargo xtask doctor` reports 15 of 15; `vm probe --all` passes 7 of 7.
 
 ## Open, not blocking
 

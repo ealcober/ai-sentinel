@@ -56,6 +56,17 @@ In every row `kind_range` compiled to `r1 &= 0xF000; if r1 == 0x4000` and `conne
 
 Three of my own probe defects surfaced on older guests, each fixed and re-measured: `bpftool prog load` takes the first program in an object (so `loadall` and selection by id); kernel 5.4's libbpf refuses an object with a `.text` it cannot type (so `build-ebpf` strips it — zero relocations reference it, and 24.04 re-verified the stripped object); and a directory made under the v1 tmpfs is not a cgroup (so the probe reads the v2 mount from `/proc/mounts`). Two guest-side facts also cost a run each: `apt` races the boot-time `unattended-upgrades` lock, and bullseye's security pool has been emptied while `archive.debian.org` still serves it.
 
+## WSL2 images (`F0.WSL.02`)
+
+`cargo xtask vm up wsl2-ubuntu-24.04`, 2026-09-06: **imports and boots** (`PASS vm up wsl2-ubuntu-24.04: aisme-wsl2-ubuntu-24.04 imported, systemd=true`). Ubuntu's official WSL rootfs tarball, `wsl.exe --import` through interop, VHDX on NTFS under `%LOCALAPPDATA%\aisme\vm`, `/etc/wsl.conf` written and the distribution terminated so `[boot] systemd=true` applies. Its first `vm probe` run then measured four defects of the probe itself, each folded into `xtask/src/vm.rs`:
+
+1. **securityfs is unmounted**, so the tier rule read `lsm: unreadable` as "no LSM" and printed **L2-** for a kernel with Landlock ABI 7 — the exact absence-as-value `F0.WSL.01` warned about, reproduced by my own probe. The tier probe now mounts securityfs and, failing that, reads `CONFIG_LSM`.
+2. **An inline script does not survive `wsl.exe`**: Windows argument re-quoting turned awk's `\|` into a "backslash not last character" error and delivered `2>&1` as a bare `2`. The script now runs from a file on NTFS.
+3. **Another distribution sees only `/mnt/c`**: `cp` of `probe.o` from this distribution's path failed with `cannot stat`. The object is staged on NTFS.
+4. **`linux-tools-$(uname -r)` does not exist for the Microsoft kernel**, so `bpftool: command not found`. The installer falls back to the versioned binary of `linux-tools-generic`. The product-side reading is already the design: `loaderd` loads through `aya`, never through `bpftool`.
+
+Then this distribution lost its `WSLInterop` entry in `binfmt_misc` (`exec format error` on every `.exe`), which stops the corrected probe, the `nosystemd` import (its first, parallel, attempt failed with `ERROR_SHARING_VIOLATION`; imports are sequential with a retry now) and the cgroup axis. **The `vm probe wsl2-*` outcome is therefore unmeasured**, and the WSL2 rows are absent from the matrix table above by design: nothing is entered as measured that was not. The attribution of the lost entry to `systemd-binfmt.service` in the imported distribution is in the seal's unverified register, with the mask `vm up` now applies as the candidate fix.
+
 ## What these outcomes decide
 
 0. **`F0.VER.16` and `F0.VER.19` were never toolchain-blocked; they are VM-bound.** Both exercise the verifier, which means loading a BPF program. This host reports `unprivileged_bpf_disabled = 2` and the shell holds no capabilities, so a load needs privileges — and `I-12` forbids a kernel-touching test on a host OS even where it would succeed. Recording them as "blocked on the toolchain" was wrong, and installing the toolchain is what exposed it.

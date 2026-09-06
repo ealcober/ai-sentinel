@@ -174,11 +174,13 @@ Claims this pass relied on but could not show with a command. Each is either an 
 
 | Claim | Status |
 |---|---|
-| `virtme-ng` reports whether KVM acceleration is in use | Assumed from its documentation; `F0.VER.21` measures it |
-| Nested virtualization is enabled on the owner's Windows host | `/dev/kvm` exists inside WSL2, which is the observable consequence; not read from `.wslconfig` (the file has no such key, so the Windows 11 default applies) |
+| ~~`virtme-ng` reports whether KVM acceleration is in use~~ | **Moot, 2026-09-06**: the matrix does not use `virtme-ng` — distribution cloud images boot under plain `qemu`, and `vm probe` states KVM or TCG itself from whether `/dev/kvm` opens read-write (`F0.VM.01`) |
+| ~~Nested virtualization is enabled on the owner's Windows host~~ | **Verified 2026-09-06**: seven guests booted with `-enable-kvm -cpu host` inside WSL2 (`F0.VM.02`), which cannot happen without it |
 | ~~Landlock is *active*, not merely configured, on this WSL2 kernel~~ | **Verified 2026-09-05 by `F0.WSL.01`**: ABI 7, and a real `restrict_self` returned `EACCES` for a write outside the allowed path. The lesson is that the config flag was the weaker evidence — `CONFIG_SECURITY_LANDLOCK=y` says the code is compiled, not that the LSM is enforcing; only the syscall says that |
 | glibc issues `openat` for `open()` on the matrix VM images (musl not checked) | Verified on this host's glibc by disassembly; holds for glibc ≥ 2.26 |
-| Debian 12's stock LSM list includes `landlock` | `F0.VER.04` |
+| ~~Debian 12's stock LSM list includes `landlock`~~ | **Verified 2026-09-06 by `F0.VM.02`**, and it includes more than that: the active list is `lockdown,capability,landlock,yama,apparmor,tomoyo,bpf` — Landlock ABI 2 **and** BPF-LSM active, so Debian 12 is tier L3 out of the box. The seal's "L2 or L2-" hedge for that row was too pessimistic by two tiers |
+| `systemd-binfmt.service` in an imported WSL2 distribution flushes the kernel-wide `binfmt_misc` table, removing this distribution's `WSLInterop` entry | **Attributed, 2026-09-06** (`F0.WSL.02`): the entry vanished after `aisme-wsl2-ubuntu-24.04` first booted with systemd, and that unit flushes the table on start. `vm up wsl2-*` masks the unit in the guest; the next import after the owner re-registers interop measures whether the entry survives |
+| A WSL2 distribution reaches cgroup v1 through a `.wslconfig` `kernelCommandLine` setting rather than through what its init mounts | Unmeasured (`F0.WSL.02`): this host's `/proc/cmdline` carries no cgroup parameter and mounts v2 only, so the v1 variant's mechanism is still to be found before it can be a row |
 | `docs/02` §R1 numbers are stable | The register is append-only by the report's own rule; `F0.VER.nn` depends on it |
 | ~~The exact exit code of `verify-budgets` on stubs~~ | **Verified 2026-09-05 by `F0.REPO.03`**: exit 0, with all 42 metrics reporting `skipped: no artefact`. The GATE F0 comment was right |
 

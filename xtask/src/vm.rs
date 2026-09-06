@@ -470,11 +470,13 @@ echo "outside session cgroup:"; python3 /root/conn.py
 /// for the variant, and runs commands in it as root — output comes straight back.
 ///
 /// Variants: `ubuntu-24.04` (systemd on, which is how `aisme run` expects to be
-/// launched) and `ubuntu-24.04-nosystemd` (the opt-out the plan says the daemon
-/// must survive, §2.16.1). The cgroup v1/v2 axis is **global** to WSL2 —
-/// `kernelCommandLine=` in the Windows-side `.wslconfig` plus `wsl --shutdown` —
-/// and a shutdown ends the shell this runs in, so that axis is the owner's to
-/// flip, and `vm probe` reports which mode it found.
+/// launched), `ubuntu-24.04-nosystemd` (the opt-out the plan says the daemon
+/// must survive, §2.16.1) and `ubuntu-24.04-cgroupv1` (no systemd, and the
+/// per-distribution `[automount] cgroups=v1` of `wsl.conf` — microsoft/WSL#13546,
+/// merged 2025-10-03, which falls back to v2 when the kernel line carries
+/// `cgroup_no_v1=all`). `vm probe` reports the hierarchy it found, so a WSL
+/// build without that key shows up as `cgroup v1 controllers: 0` rather than as
+/// a silently wrong variant.
 fn wsl2(name: &str, variant: &str, rest: &[&str]) -> u8 {
     let Some(wsl) = ["wsl.exe", "/mnt/c/Windows/System32/wsl.exe"]
         .into_iter()
@@ -483,19 +485,20 @@ fn wsl2(name: &str, variant: &str, rest: &[&str]) -> u8 {
         eprintln!("skip: wsl.exe is not reachable — this is not a WSL2 shell with interop (F0.WSL.02 runs on the owner's Windows machine)");
         return SKIP;
     };
-    let systemd = match variant {
-        "ubuntu-24.04" => true,
-        "ubuntu-24.04-nosystemd" => false,
+    let (systemd, cgroups) = match variant {
+        "ubuntu-24.04" => (true, "v2"),
+        "ubuntu-24.04-nosystemd" => (false, "v2"),
+        "ubuntu-24.04-cgroupv1" => (false, "v1"),
         other => {
             eprintln!(
-                "error: unknown WSL2 variant `{other}`; use ubuntu-24.04 or ubuntu-24.04-nosystemd"
+                "error: unknown WSL2 variant `{other}`; use ubuntu-24.04, ubuntu-24.04-nosystemd or ubuntu-24.04-cgroupv1"
             );
             return 1;
         }
     };
     let distro = format!("aisme-wsl2-{variant}");
     if !registered(wsl, &distro) {
-        let code = wsl2_import(wsl, &distro, variant, systemd);
+        let code = wsl2_import(wsl, &distro, variant, systemd, cgroups);
         if code != 0 || name == "vm up" {
             return code;
         }
@@ -524,7 +527,7 @@ fn wsl2(name: &str, variant: &str, rest: &[&str]) -> u8 {
 /// Fetch Ubuntu's official WSL rootfs once, `wsl.exe --import` it, set the
 /// variant's `/etc/wsl.conf`, and stop it so the setting takes effect on the next
 /// start. The install directory must be a Windows path; both live under `vm/`.
-fn wsl2_import(wsl: &str, distro: &str, variant: &str, systemd: bool) -> u8 {
+fn wsl2_import(wsl: &str, distro: &str, variant: &str, systemd: bool, cgroups: &str) -> u8 {
     let tarball = Path::new(DIR).join("wsl2-ubuntu-24.04.rootfs.tar.gz");
     if !tarball.is_file() {
         println!("fetching the Ubuntu WSL rootfs …");
@@ -604,10 +607,16 @@ fn wsl2_import(wsl: &str, distro: &str, variant: &str, systemd: bool) -> u8 {
         eprintln!("FAIL: wsl.exe --import {distro} failed");
         return 1;
     }
-    let conf = format!(
+    // `cgroups=v2` is WSL's default, so the key is written only for v1: a WSL
+    // build that predates it warns on unknown keys, and there is no reason to
+    // provoke that for the default.
+    let mut conf = format!(
         "[boot]\nsystemd={}\n",
         if systemd { "true" } else { "false" }
     );
+    if cgroups == "v1" {
+        conf.push_str("[automount]\ncgroups=v1\n");
+    }
     // This first session runs before `wsl.conf` exists, so without systemd;
     // terminating it is harmless (see `hold_open` for why that matters).
     let _ = Command::new(wsl)
@@ -615,7 +624,7 @@ fn wsl2_import(wsl: &str, distro: &str, variant: &str, systemd: bool) -> u8 {
         .arg(format!("printf '%s' '{conf}' > /etc/wsl.conf"))
         .status();
     let _ = Command::new(wsl).args(["--terminate", distro]).status();
-    println!("PASS vm up wsl2-{variant}: {distro} imported, systemd={systemd}");
+    println!("PASS vm up wsl2-{variant}: {distro} imported, systemd={systemd}, cgroups={cgroups}");
     0
 }
 

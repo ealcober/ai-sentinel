@@ -39,6 +39,14 @@ const DIR: &str = "vm/images";
 
 /// The verification probe object, built by `build-ebpf` alongside the product crate.
 const PROBE_OBJ: &str = "tests/probes/ebpf/target/bpfel-unknown-none/release/aisme-ebpf-verify";
+/// A static `bpftool` for the WSL2 guests, fetched once from libbpf's releases.
+/// The cloud images keep their own kernel-matched package; a WSL2 guest has
+/// none (`linux-tools-<microsoft release>` does not exist), and installing the
+/// generic one through `apt` is the one first-time action the guest performs —
+/// the common factor of every interop loss measured in a non-systemd guest.
+const BPFTOOL_URL: &str =
+    "https://github.com/libbpf/bpftool/releases/download/v7.6.0/bpftool-v7.6.0-amd64.tar.gz";
+const BPFTOOL_BIN: &str = "vm/images/bpftool";
 
 pub(crate) fn run(name: &str, args: &[&str]) -> u8 {
     for tool in ["qemu-system-x86_64", "qemu-img", "genisoimage"] {
@@ -667,6 +675,15 @@ fn wsl2_exec(
         return 1;
     }
     let mut body = String::from("#!/bin/bash\n");
+    if let Some(bpftool) = static_bpftool() {
+        if std::fs::copy(&bpftool, stage.join("bpftool")).is_ok() {
+            let _ = writeln!(
+                body,
+                "install -m 755 '{}' /usr/local/bin/bpftool",
+                stage.join("bpftool").display()
+            );
+        }
+    }
     if Path::new(PROBE_OBJ).is_file() && std::fs::copy(PROBE_OBJ, stage.join("probe.o")).is_ok() {
         let _ = writeln!(
             body,
@@ -715,6 +732,44 @@ fn wsl2_exec(
             1
         }
     }
+}
+
+/// The static `bpftool`, fetched on first use; `None` says so and the guest
+/// script falls back to its package manager.
+fn static_bpftool() -> Option<PathBuf> {
+    let bin = Path::new(BPFTOOL_BIN);
+    if bin.is_file() {
+        return Some(bin.to_path_buf());
+    }
+    let _ = std::fs::create_dir_all(DIR);
+    let tarball = Path::new(DIR).join("bpftool.tar.gz");
+    println!("fetching a static bpftool from {BPFTOOL_URL} …");
+    let fetched = Command::new("curl")
+        .args(["-fsSL", "-o"])
+        .arg(&tarball)
+        .arg(BPFTOOL_URL)
+        .status()
+        .is_ok_and(|s| s.success());
+    // The release tarball carries the binary without its execute bit.
+    let extracted = fetched
+        && Command::new("tar")
+            .args(["xzf"])
+            .arg(&tarball)
+            .args(["-C", DIR, "bpftool"])
+            .status()
+            .is_ok_and(|s| s.success())
+        && Command::new("chmod")
+            .arg("755")
+            .arg(bin)
+            .status()
+            .is_ok_and(|s| s.success());
+    if !extracted {
+        eprintln!(
+            "WARN: no static bpftool ({BPFTOOL_URL}); the guest installs its own through apt"
+        );
+        return None;
+    }
+    Some(bin.to_path_buf())
 }
 
 /// Keep a systemd guest running for the rest of the session.

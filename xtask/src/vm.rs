@@ -632,8 +632,50 @@ fn wsl2_import(wsl: &str, distro: &str, variant: &str, systemd: bool, cgroups: &
         .arg(format!("printf '%s' '{conf}' > /etc/wsl.conf"))
         .status();
     let _ = Command::new(wsl).args(["--terminate", distro]).status();
+    // The first boot with that `wsl.conf` applied is where this distribution's
+    // `WSLInterop` entry goes (measured on five imports: a trivial session, no
+    // script, and the entry was gone three seconds later; every later boot of
+    // the same guest leaves it alone). Take that boot here, where it can be
+    // checked and repaired, rather than inside the first `vm probe`.
+    let _ = Command::new(wsl)
+        .current_dir("/mnt/c")
+        .args(["-d", distro, "-u", "root", "--", "true"])
+        .status();
+    std::thread::sleep(std::time::Duration::from_secs(5));
+    let interop = restore_interop();
     println!("PASS vm up wsl2-{variant}: {distro} imported, systemd={systemd}, cgroups={cgroups}");
-    0
+    interop
+}
+
+/// Whether this distribution can still start a `.exe`: the `WSLInterop` entry
+/// of the kernel-wide `binfmt_misc` table.
+fn interop_registered() -> bool {
+    Path::new("/proc/sys/fs/binfmt_misc/WSLInterop").is_file()
+}
+
+/// Put `WSLInterop` back when another distribution's boot removed it.
+///
+/// Registration needs root. With a password-less `sudo` it is done here;
+/// otherwise the exact line is printed and the caller exits 1, because
+/// nothing that follows can reach `wsl.exe`. Returns the exit code.
+fn restore_interop() -> u8 {
+    const LINE: &str = r#"echo ":WSLInterop:M::MZ::/init:PF" > /proc/sys/fs/binfmt_misc/register"#;
+    if interop_registered() {
+        return 0;
+    }
+    let restored = Command::new("sudo")
+        .args(["-n", "sh", "-c", LINE])
+        .status()
+        .is_ok_and(|s| s.success())
+        && interop_registered();
+    if restored {
+        println!("WSLInterop re-registered (the guest's first boot had removed it)");
+        return 0;
+    }
+    eprintln!(
+        "FAIL: this distribution lost its WSLInterop binfmt entry at the guest's first boot; re-register it as root and rerun:\n  sudo sh -c '{LINE}'"
+    );
+    1
 }
 
 /// The tier probe plus the WSL2-specific facts the plan asks about — cgroup mode
@@ -725,7 +767,7 @@ fn wsl2_exec(
                 if code == 0 { "PASS" } else { "FAIL" },
                 name.trim_start_matches("vm ")
             );
-            code
+            code.max(restore_interop())
         }
         Err(e) => {
             eprintln!("FAIL: wsl.exe did not run: {e}");

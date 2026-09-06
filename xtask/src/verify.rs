@@ -634,6 +634,7 @@ pub(crate) fn backlog() -> u8 {
 
     let mut recorded = Vec::new();
     let mut empty = Vec::new();
+    let mut unverified = Vec::new();
     for line in report.lines() {
         if !line.starts_with("| `F0.VER.") {
             continue;
@@ -645,6 +646,11 @@ pub(crate) fn backlog() -> u8 {
         let outcome = cells.get(cells.len() - 2).copied().unwrap_or("");
         if outcome.is_empty() {
             empty.push(id.to_owned());
+        } else if outcome.starts_with("**`UNVERIFIED`**") || outcome.starts_with("`UNVERIFIED`") {
+            // §F0.4: a row that needs hardware this host lacks is recorded with
+            // the hardware named and stays open — exit 2, not 1.
+            unverified.push(id.to_owned());
+            recorded.push(id.to_owned());
         } else {
             recorded.push(id.to_owned());
         }
@@ -661,8 +667,16 @@ pub(crate) fn backlog() -> u8 {
         println!("  {} with no row in the register: {absent:?}", absent.len());
     }
     if empty.is_empty() && absent.is_empty() {
-        println!("\nPASS verify-backlog — the register is empty");
-        return 0;
+        if unverified.is_empty() {
+            println!("\nPASS verify-backlog — the register is empty");
+            return 0;
+        }
+        println!(
+            "\nSKIP verify-backlog — every row is recorded; {} need hardware this host lacks: {}",
+            unverified.len(),
+            unverified.join(", ")
+        );
+        return SKIP;
     }
     eprintln!(
         "\nFAIL verify-backlog — {} row(s) without an outcome:",

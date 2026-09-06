@@ -31,7 +31,7 @@ const IMAGES: &[Image] = &[
     Image { name: "ubuntu-22.04", url: "https://cloud-images.ubuntu.com/jammy/current/jammy-server-cloudimg-amd64.img", expect: "5.15 (L2)" },
     Image { name: "debian-12", url: "https://cloud.debian.org/images/cloud/bookworm/latest/debian-12-genericcloud-amd64.qcow2", expect: "6.1 (L2)" },
     Image { name: "ubuntu-24.04", url: "https://cloud-images.ubuntu.com/noble/current/noble-server-cloudimg-amd64.img", expect: "6.8 (L2/L3)" },
-    Image { name: "fedora-40", url: "https://download.fedoraproject.org/pub/fedora/linux/releases/40/Cloud/x86_64/images/Fedora-Cloud-Base-Generic.x86_64-40-1.14.qcow2", expect: "6.8 (L3)" },
+    Image { name: "fedora-40", url: "https://archives.fedoraproject.org/pub/archive/fedora/linux/releases/40/Cloud/x86_64/images/Fedora-Cloud-Base-Generic.x86_64-40-1.14.qcow2", expect: "6.8 (L3)" },
     Image { name: "ubuntu-26.04", url: "https://cloud-images.ubuntu.com/resolute/current/resolute-server-cloudimg-amd64.img", expect: "7.0 (L2/L3, Landlock audit)" },
 ];
 
@@ -90,12 +90,18 @@ fn up(image: &Image) -> u8 {
     if !base.is_file() {
         println!("fetching {} …", image.url);
         let ok = Command::new("curl")
-            .args(["-sSL", "-o"])
+            .args(["-fsSL", "-o"])
             .arg(&base)
             .arg(image.url)
             .status();
-        if !ok.is_ok_and(|s| s.success()) {
-            eprintln!("skip: could not fetch {} (network?)", image.url);
+        // `-f` makes curl fail on an HTTP error instead of saving the error page as
+        // the image — a 404 body once reached `qemu-img create` before anything said
+        // so. The format check is the second line of defence for the same reason.
+        if !ok.is_ok_and(|s| s.success()) || !is_qcow2(&base) {
+            eprintln!(
+                "skip: {} did not yield a qcow2 image (HTTP error or wrong format)",
+                image.url
+            );
             let _ = std::fs::remove_file(&base);
             return SKIP;
         }
@@ -116,6 +122,18 @@ fn up(image: &Image) -> u8 {
             1
         }
     }
+}
+
+/// `qemu-img info` is the authority on what a file is; a byte count is not.
+fn is_qcow2(path: &Path) -> bool {
+    Command::new("qemu-img")
+        .args(["info", "--output=json"])
+        .arg(path)
+        .output()
+        .is_ok_and(|o| {
+            o.status.success()
+                && String::from_utf8_lossy(&o.stdout).contains("\"format\": \"qcow2\"")
+        })
 }
 
 fn base_path(image: &Image) -> PathBuf {
@@ -152,6 +170,12 @@ fn probe(image: &Image) -> u8 {
     boot(image, &script, "probe")
 }
 
+/// The guest script writes to `/dev/console`, not `/dev/ttyS0`: every cloud image
+/// here boots with `console=ttyS0` last on its command line, so `/dev/console`
+/// resolves to the serial port qemu captures — and it does so on Debian too,
+/// where a serial getty owns `/dev/ttyS0` and writes to the device by name
+/// never reached the log (measured on Debian 12, 2026-09-06).
+///
 /// Write the `NoCloud` seed, boot under KVM when available (TCG otherwise, said
 /// aloud), wait for the guest to power itself off, print the marked output.
 fn boot(image: &Image, script: &str, what: &str) -> u8 {
@@ -279,7 +303,7 @@ fn write_seed(image: &Image, script: &str) -> Result<PathBuf, String> {
         indented.push('\n');
     }
     let user_data = format!(
-        "#cloud-config\nwrite_files:\n{files}  - path: /root/run.sh\n    permissions: '0755'\n    content: |\n      #!/bin/bash\n      exec > /dev/ttyS0 2>&1\n      echo \"=====AISME-BEGIN=====\"\n{indented}      poweroff\nruncmd:\n  - [ /root/run.sh ]\n"
+        "#cloud-config\nwrite_files:\n{files}  - path: /root/run.sh\n    permissions: '0755'\n    content: |\n      #!/bin/bash\n      exec > /dev/console 2>&1\n      echo \"=====AISME-BEGIN=====\"\n{indented}      poweroff\nruncmd:\n  - [ /root/run.sh ]\n"
     );
     std::fs::write(dir.join("user-data"), user_data).map_err(|e| e.to_string())?;
     let iso = Path::new(DIR).join(format!("seed-{}.iso", image.name));
@@ -319,17 +343,46 @@ PY
 const BPF_PROBE: &str = r#"echo "--- bpftool"
 export DEBIAN_FRONTEND=noninteractive
 if ! command -v bpftool >/dev/null; then
-  (apt-get -qq update && apt-get -qq install -y linux-tools-common linux-tools-$(uname -r)) >/dev/null 2>&1 || dnf -q install -y bpftool >/dev/null 2>&1
+  # Debian ships it as `bpftool`; Ubuntu inside linux-tools-<release>; Fedora via dnf.
+  if command -v apt-get >/dev/null; then
+    # An archived Debian release 404s on deb.debian.org; its packages live on
+    # archive.debian.org under the same paths (measured on bullseye).
+    # Cloud images start unattended-upgrades and apt-daily at boot; they hold the
+    # dpkg lock for a while. Wait for it instead of racing it.
+    for i in $(seq 1 60); do fuser /var/lib/dpkg/lock-frontend >/dev/null 2>&1 || break; sleep 2; done
+    apt-get -qq update 2>&1 | tail -1
+    apt-get -qq install -y bpftool 2>&1 | grep -E "^E:" | tail -1 || true
+    command -v bpftool >/dev/null || apt-get -qq install -y linux-tools-common linux-tools-$(uname -r) 2>&1 | grep -E "^E:" | tail -1
+    if ! command -v bpftool >/dev/null && grep -qs "debian.org" /etc/apt/sources.list; then
+      # An archived Debian release still answers `update` on deb.debian.org but its
+      # security pool has been emptied (bpftool_5.10.262-1 404s there, measured on
+      # bullseye). archive.debian.org keeps both trees under the same paths.
+      sed -i 's|http://deb.debian.org/debian|http://archive.debian.org/debian|g; s|http://security.debian.org/debian-security|http://archive.debian.org/debian-security|g; /-updates/d' /etc/apt/sources.list
+      apt-get -qq -o Acquire::Check-Valid-Until=false update >/dev/null 2>&1
+      apt-get -qq install -y bpftool 2>&1 | tail -2
+    fi
+  else
+    dnf -q install -y bpftool >/dev/null 2>&1
+  fi
 fi
 echo "bpftool: $(bpftool version 2>/dev/null | head -1 || echo unavailable)"
 mountpoint -q /sys/fs/bpf || mount -t bpf bpf /sys/fs/bpf
 bpftool prog loadall /root/probe.o /sys/fs/bpf/probe 2>&1 && echo "loadall: OK" || echo "loadall: FAILED"
-echo "--- F0.VER.19 kind_range (verifier-accepted if listed; xlated shows the comparison)"
-bpftool prog show pinned /sys/fs/bpf/probe/kind_range 2>&1 | head -1
-bpftool prog dump xlated pinned /sys/fs/bpf/probe/kind_range 2>&1
+# Older bpftool (5.15) pins by section name, newer by program name; the program
+# id from `prog show` is the same on every version, so select by id.
+KR=$(bpftool prog show 2>/dev/null | awk '/ name kind_range /{sub(":","",$1); print $1; exit}')
+C4=$(bpftool prog show 2>/dev/null | awk '/ name connect4 /{sub(":","",$1); print $1; exit}')
+echo "--- F0.VER.19 kind_range (verifier-accepted if it has an id; xlated shows the comparison)"
+[ -n "$KR" ] && bpftool prog show id "$KR" 2>&1 | head -1 || echo "kind_range: not loaded"
+[ -n "$KR" ] && bpftool prog dump xlated id "$KR" 2>&1
 echo "--- F0.VER.16 connect4 on a session cgroup"
-mkdir -p /sys/fs/cgroup/session
-bpftool cgroup attach /sys/fs/cgroup/session connect4 pinned /sys/fs/bpf/probe/connect4 2>&1 && echo "attach: OK" || echo "attach: FAILED"
+# The v2 hierarchy is not always at /sys/fs/cgroup: a hybrid host (Ubuntu 20.04)
+# mounts it at /sys/fs/cgroup/unified, and a directory made under the v1 tmpfs
+# is not a cgroup at all ("can't open cgroup", measured). Ask /proc/mounts.
+CG2=$(awk '$3=="cgroup2"{print $2; exit}' /proc/mounts)
+echo "cgroup2 mount: ${CG2:-none}"
+mkdir -p "$CG2/session"
+[ -n "$C4" ] && bpftool cgroup attach "$CG2/session" connect4 id "$C4" 2>&1 && echo "attach: OK" || echo "attach: FAILED"
 cat > /root/conn.py <<'PY'
 import socket
 def t(port):
@@ -342,7 +395,7 @@ def t(port):
         s.close()
 print(f"  9998 -> {t(9998)}   9997 -> {t(9997)}")
 PY
-echo "inside session cgroup:"; bash -c 'echo $$ > /sys/fs/cgroup/session/cgroup.procs; python3 /root/conn.py'
+echo "inside session cgroup:"; bash -c "echo \$\$ > $CG2/session/cgroup.procs; python3 /root/conn.py"
 echo "outside session cgroup:"; python3 /root/conn.py
 "#;
 

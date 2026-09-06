@@ -158,6 +158,7 @@ fn build_probes() -> u8 {
         .status();
     match status {
         Ok(s) if s.success() => {
+            strip_probe_text();
             println!("PASS build-ebpf: verification probes built (tests/probes/ebpf)");
             0
         }
@@ -166,5 +167,38 @@ fn build_probes() -> u8 {
             eprintln!("skip: could not run cargo for the probes: {e}");
             SKIP
         }
+    }
+}
+
+/// Remove the probe object's `.text` section after linking.
+///
+/// bpf-linker leaves `compiler_builtins`' `memcpy`/`memset`/`memcmp` in `.text`;
+/// nothing in the two programs references them (zero relocations, checked on
+/// 2026-09-06), but the libbpf that ships with kernel 5.4 refuses any object
+/// whose `.text` it cannot type: "failed to guess program type based on ELF
+/// section name '.text'". Modern libbpf ignores it. Stripping the section makes
+/// one object load across the whole matrix; without `llvm-objcopy` the object is
+/// left as built and the 5.4 row will say so.
+fn strip_probe_text() {
+    const OBJ: &str = "tests/probes/ebpf/target/bpfel-unknown-none/release/aisme-ebpf-verify";
+    let tool = ["llvm-objcopy", "/usr/lib/llvm-21/bin/llvm-objcopy"]
+        .into_iter()
+        .find(|t| t.contains('/') && Path::new(t).is_file() || !t.contains('/') && have(t));
+    match tool {
+        Some(t) => {
+            let ok = Command::new(t)
+                .args(["--remove-section", ".text", OBJ, OBJ])
+                .status();
+            if ok.is_ok_and(|s| s.success()) {
+                println!(
+                    "      .text stripped from the probe object (loads on the 5.4-era libbpf)"
+                );
+            } else {
+                eprintln!("note: llvm-objcopy failed; probe object kept as built");
+            }
+        }
+        None => eprintln!(
+            "note: llvm-objcopy not found; probe object kept as built (the 5.4 row will show it)"
+        ),
     }
 }

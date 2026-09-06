@@ -608,18 +608,11 @@ fn wsl2_import(wsl: &str, distro: &str, variant: &str, systemd: bool) -> u8 {
         "[boot]\nsystemd={}\n",
         if systemd { "true" } else { "false" }
     );
-    // binfmt_misc is one kernel-wide table shared by every distribution. After
-    // the systemd variant's first boot this distribution lost its `WSLInterop`
-    // entry (`exec format error` on every `.exe`), which is what
-    // `systemd-binfmt.service` does on start: it flushes the table before
-    // registering its own. Masking it in the guest before systemd ever runs is
-    // the attributed fix; the seal's unverified register carries the attribution.
+    // This first session runs before `wsl.conf` exists, so without systemd;
+    // terminating it is harmless (see `hold_open` for why that matters).
     let _ = Command::new(wsl)
         .args(["-d", distro, "-u", "root", "--", "sh", "-c"])
-        .arg(format!(
-            "printf '%s' '{conf}' > /etc/wsl.conf && \
-             mkdir -p /etc/systemd/system && ln -sf /dev/null /etc/systemd/system/systemd-binfmt.service"
-        ))
+        .arg(format!("printf '%s' '{conf}' > /etc/wsl.conf"))
         .status();
     let _ = Command::new(wsl).args(["--terminate", distro]).status();
     println!("PASS vm up wsl2-{variant}: {distro} imported, systemd={systemd}");
@@ -678,6 +671,9 @@ fn wsl2_exec(
         eprintln!("FAIL: cannot write {}", script_path.display());
         return 1;
     }
+    if systemd {
+        hold_open(wsl, distro);
+    }
     println!(
         "running in {distro} ({}) …",
         if systemd { "systemd" } else { "no systemd" }
@@ -709,6 +705,33 @@ fn wsl2_exec(
             eprintln!("FAIL: wsl.exe did not run: {e}");
             1
         }
+    }
+}
+
+/// Keep a systemd guest running for the rest of the session.
+///
+/// `binfmt_misc` is one kernel-wide table shared by every distribution. When a
+/// guest in which `systemd-binfmt.service` has run *terminates*, the teardown
+/// clears that table, and this distribution loses `WSLInterop`: every `.exe`
+/// fails with `exec format error` until a new session is opened in it from
+/// Windows. Measured three times here, each loss within a second of the guest
+/// stopping, and independently by rancher-desktop#10049 — which also measured
+/// that masking the unit does not prevent it. Starting the guest is harmless,
+/// so a detached session holds it open and the owner terminates it last.
+fn hold_open(wsl: &str, distro: &str) {
+    let held = Command::new("sh")
+        .arg("-c")
+        .arg(format!(
+            "setsid '{wsl}' -d '{distro}' -- sleep infinity </dev/null >/dev/null 2>&1 &"
+        ))
+        .current_dir("/mnt/c")
+        .status();
+    if held.is_ok_and(|s| s.success()) {
+        println!(
+            "{distro} is held open: `wsl.exe --terminate {distro}` clears this distribution's interop, so run it last and open a new session here afterwards"
+        );
+    } else {
+        eprintln!("WARN: could not hold {distro} open; when it terminates, this distribution loses interop");
     }
 }
 

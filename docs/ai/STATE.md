@@ -68,7 +68,7 @@
 
 **Done in F0:** `F0.WSL.01`, `F0.REPO.01`, `F0.REPO.02`, `F0.REPO.05`, `F0.REPO.03`, `F0.REPO.06`, `F0.ASSET.01`, `F0.ASSET.02`, `F0.DOC.01`, `F0.VM.01`, `F0.VM.02`, and `F0.GATE.01` (partial) through `F0.GATE.08`. What remains, in order:
 
-1. `F0.WSL.02` — what is left: one owner action (re-register interop, see Blocked), then the decisive binfmt test (mask `systemd-binfmt.service` in the existing systemd guest, reboot it, watch the table), `vm up wsl2-ubuntu-24.04-nosystemd` and its probe, and the cgroup v1/v2 axis through `.wslconfig` — each outcome into `docs/reports/01_f0-verification.md`. The handoff note is `docs/ai/handoff/01_f0-wsl-02.md`.
+1. `F0.WSL.02` — what is left: one owner action (re-register interop, see Blocked), then `vm probe wsl2-ubuntu-24.04` with the guest held open (the entry must survive), `vm up wsl2-ubuntu-24.04-nosystemd` and its probe, and the cgroup v1/v2 axis through `.wslconfig` — each outcome into `docs/reports/01_f0-verification.md`. The handoff note is `docs/ai/handoff/01_f0-wsl-02.md`.
 2. **GATE F0.** Run on 2026-09-06, line by line: **14 of 15 lines exit 0**; `verify-backlog` exits 2 (`SKIP`: 21 of 21 recorded, `.12` needs hardware this host lacks, the outcome §F0.4 specifies); `vm probe --all` 7 of 7 PASS; the one failing line is `vm up wsl2-ubuntu-24.04`, `FAIL: could not resolve %LOCALAPPDATA% through interop` — the blocker below. The gate closes when that line passes after the owner action; nothing else is owed.
 3. `F0.VER.*` — **21 of 21 rows recorded.** All four `[BLOCKING]` rows are settled except the hardware half of `.12`: `.04`, `.16`, `.18` hold; `.05`, `.13`, `.14`, `.19`, `.20`, `.21` hold; `.01` fails with the pin moved; `.15` is `DEPRECATED`. Only `.12`'s hardware half stays open (a TPM 2.0 host, an iOS device, an Android device), recorded as `UNVERIFIED`. Bun's key-log behaviour (`.09`) is the one sub-claim still open.
 
@@ -80,13 +80,13 @@ Already in place, not F0 work: `F0.REPO.00` (repository), `F0.SEC.01` (`docs/sec
 
 **`F0.GATE.01`'s hook is not enabled.** `.githooks/pre-commit` runs `gate --level commit`, which reports 7 PASS · 0 FAIL · 1 SKIP · 1 PENDING today; enabling it is the owner's `git config core.hooksPath .githooks`. Enabling it now (`git config core.hooksPath .githooks`) would block every commit on host provisioning. Enable it once `doctor` reaches 0.
 
-**WSL interop is gone from this distribution** (`F0.WSL.02`): `cmd.exe` and `wsl.exe` fail with `exec format error` because `/proc/sys/fs/binfmt_misc/` no longer holds the `WSLInterop` entry. It has vanished twice, each time while the imported `aisme-wsl2-ubuntu-24.04` ran with systemd — the second time within a second of that guest's probe returning, with the entry still listed at that instant. binfmt_misc is one kernel-wide table, and `systemd-binfmt.service` flushes it on start — attributed, not measured (seal §5); that guest predates the mask `vm up` now writes. **What unblocks it**, either one, both the owner's action:
+**WSL interop is gone from this distribution** (`F0.WSL.02`): `cmd.exe` and `wsl.exe` fail with `exec format error` because `/proc/sys/fs/binfmt_misc/` no longer holds the `WSLInterop` entry. **Cause, verified**: binfmt_misc is one kernel-wide table, and the *termination* of a guest in which `systemd-binfmt.service` has run clears it for every distribution — three losses here, each within a second of `aisme-wsl2-ubuntu-24.04` stopping, and [rancher-desktop#10049](https://github.com/rancher-sandbox/rancher-desktop/issues/10049) measured the same, including that masking the unit does not help (seal §5). **What unblocks it**, the owner's action, either one:
 
 ```bash
 sudo sh -c 'echo ":WSLInterop:M::MZ::/init:PF" > /proc/sys/fs/binfmt_misc/register'
 ```
 
-or `wsl --terminate <this distribution>` from Windows and a fresh login. The decisive test, once interop is back and before anything else: `wsl.exe -d aisme-wsl2-ubuntu-24.04 -u root -- systemctl mask systemd-binfmt.service`, `wsl.exe --terminate aisme-wsl2-ubuntu-24.04`, run `cargo xtask vm probe wsl2-ubuntu-24.04` again and read `/proc/sys/fs/binfmt_misc/` for thirty seconds after it returns. Entry survives → the attribution holds and the mask `vm up` writes at import is the fix; entry gone → the cause is elsewhere in the guest's systemd boot and the register row says so.
+or a new session in this distribution opened from Windows. **What keeps it unblocked**: `vm probe wsl2-<systemd variant>` now holds the guest open with a detached `sleep infinity` session; terminate it (`wsl.exe --terminate aisme-wsl2-ubuntu-24.04`) only after the last interop call of the day, then open a new session here. Prediction for the next run: the entry survives the systemd probe, the nosystemd import and its probe, and vanishes only at that deliberate terminate.
 
 **Not blocked by this:** everything else. `cargo xtask doctor` reports 15 of 15; `vm probe --all` passes 7 of 7.
 

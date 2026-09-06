@@ -9,13 +9,13 @@ Measured by `F0.WSL.01` on 2026-09-05 against kernel `6.18.33.1-microsoft-standa
 | Capability | Measured |
 |---|---|
 | **Landlock** | **ABI 7**, `CONFIG_SECURITY_LANDLOCK=y`, first entry in `CONFIG_LSM`. **Enforcement proven**: under a real ruleset handling `WRITE_FILE\|MAKE_REG` with one `PATH_BENEATH` rule, a write inside the allowed directory succeeded and a write outside returned `EACCES` |
-| **BPF-LSM** | `CONFIG_BPF_LSM=y` is **compiled in**, but `bpf` is **absent** from the active `CONFIG_LSM` list (`landlock,lockdown,yama,loadpin,safesetid,integrity,selinux,apparmor,tomoyo`) |
+| **BPF-LSM** | `CONFIG_BPF_LSM=y` is **compiled in**, but `bpf` is **absent** both from `CONFIG_LSM` (`landlock,lockdown,yama,loadpin,safesetid,integrity,selinux,apparmor,tomoyo`) and from the **active** list, read from securityfs once mounted (`F0.WSL.02`): `capability,landlock,yama,safesetid,selinux,ima`. The two differ — `lockdown`, `loadpin`, `integrity`, `apparmor`, `tomoyo` compiled but inactive, `ima` active — so neither stands in for the other |
 | BPF and cgroup hooks | `CONFIG_BPF_SYSCALL=y`, `CONFIG_CGROUP_BPF=y` |
 | cgroup | **v2 only**, unified, no v1 controllers mounted. Root controllers: `cpuset cpu io memory hugetlb pids rdma` |
 | BTF | `/sys/kernel/btf/vmlinux` present, `CONFIG_DEBUG_INFO_BTF=y` — CO-RE works |
 | systemd | PID 1 is `systemd` on this install (`systemd=true` in `/etc/wsl.conf`); it stays **opt-in** on WSL2 generally |
 | **TPM** | **None.** `CONFIG_TPM` is not set, so there is no driver, and `/dev/` has no `tpm*` node |
-| securityfs | **Not mounted.** `/sys/kernel/security/lsm` does not exist |
+| securityfs | **Not mounted.** `/sys/kernel/security/lsm` does not exist until `mount -t securityfs none /sys/kernel/security`, which root can do (`F0.WSL.02` does) |
 | KVM | `/dev/kvm` present, group `kvm`, CPU reports `vmx`. The owner's user is not yet in that group |
 
 **Why it matters:** WSL2 is the Windows strategy (`ADR-02`), so these values decide what Windows developers actually get. Three consequences are load-bearing:

@@ -44,6 +44,7 @@ members = [
 exclude = [
     "crates/aisme-ebpf",    # own pinned nightly, built by `cargo xtask build-ebpf`
     "crates/aisme-windows", # [POST] deferred by ADR-02; specification in plan Annex F
+    "tests/probes/ebpf",    # §F0.4 verification probes; same pin and target as aisme-ebpf
 ]
 
 [workspace.package]

@@ -26,6 +26,7 @@ mod gate;
 mod rules;
 mod tooling;
 mod verify;
+mod vm;
 
 use annex_h::COMMANDS;
 use std::path::{Path, PathBuf};
@@ -116,7 +117,7 @@ fn run(name: &str, args: &[&str]) -> Option<u8> {
         "gate" => gate::run(args),
         "build-ebpf" => tooling::build_ebpf(),
         "dist" => tooling::dist(),
-        "vm up" | "vm run" | "vm probe" => tooling::vm(name),
+        "vm up" | "vm run" | "vm probe" => vm::run(name, args),
         _ => return None,
     })
 }

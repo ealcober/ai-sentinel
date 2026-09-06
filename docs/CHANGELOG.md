@@ -9,7 +9,16 @@ All notable changes to this repository. Format: [Keep a Changelog](https://keepa
 ### State
 - **Phase F0 in progress.** No product code yet. Next: `F0.REPO.01`/`F0.REPO.05` (the Cargo workspace), then `F0.REPO.02`, `F0.REPO.03` and `F0.REPO.06`.
 
+### Added
+- **`F0.VM.01`, and `F0.VM.02`'s 6.8 row** — `cargo xtask vm up/run/probe`. A distribution cloud image boots its own kernel under plain `qemu` (KVM when writable, TCG otherwise, said aloud), from a fresh qcow2 overlay every run — the restore-from-snapshot `I-12` asks for — with a NoCloud seed ISO carrying the commands. No `sudo`, no kernel build. Seven images catalogued; the distro kernels *are* the matrix. Ubuntu 24.04 measured: `6.8.0-138`, **tier L2** (Landlock ABI 4, `CONFIG_BPF_LSM=y` compiled, `bpf` absent from the active list, BTF, cgroup v2), matching its row.
+- **`F0.VER.16` holds**, measured inside that VM: `cgroup/connect4` attached to a session cgroup denies `connect()` with `EPERM` from inside it and nothing from outside, with the LSM list `lockdown,capability,landlock,yama,apparmor`.
+- **`F0.VER.19` holds**, and better than claimed: the one-comparison range check compiles to `r1 &= 0xF000; if r1 == 0x4000` and the verifier accepts it. **The first measurement was wrong** — `bpftool prog load` takes the first program in an object, so "load OK" had been `connect4` as a socket filter; `loadall` pins each by name and put `kind_range` itself through the verifier.
+- **`F0.VER.21` holds** after the owner's re-login: `doctor` opens `/dev/kvm` read-write, 15 of 15.
+- `tests/probes/ebpf/` — the two probe programs, excluded from the workspace, same pin as `crates/aisme-ebpf` (`verify-docs` checks the two channels agree), built by `cargo xtask build-ebpf`.
+- `doctor` checks `qemu-img` and `genisoimage`, which `vm` needs.
+
 ### Fixed
+- **My own conclusion of the day before fell**: "the matrix needs kernels built per version" was true only for `virtme-ng` with the host rootfs. The memory file is renamed `cloud-images-are-the-kernel-matrix.md` and says so where the wrong conclusion was written.
 - **`F0.VER.16` and `F0.VER.19` were recorded as toolchain-blocked; they are VM-bound.** Both load a BPF program. This host reports `unprivileged_bpf_disabled = 2` and grants the shell no capabilities, and `I-12` forbids a kernel-touching test on a host OS regardless — so the toolchain was never what stood in the way. Installing it is what exposed the mistake.
 
 ### Added

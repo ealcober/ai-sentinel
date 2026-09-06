@@ -1,0 +1,20 @@
+[package]
+name = "aisme-ebpf-verify"
+version = "0.1.0"
+edition = "2021"
+# tests/ is Apache-2.0 per LICENSE.md, and these two programs call no helper at
+# all — the verifier only demands a GPL declaration when a `gpl_only` helper is
+# used. The moment a probe needs one, it moves into crates/aisme-ebpf, which is
+# GPL-2.0-only for exactly that reason.
+license = "Apache-2.0"
+publish = false
+
+# Not a workspace member: same toolchain pin as crates/aisme-ebpf (verify-docs
+# checks the two channels agree), same target, same linker.
+
+[dependencies]
+aya-ebpf = "=0.2.1"
+
+[profile.release]
+panic = "abort"
+debug = 2

@@ -76,9 +76,21 @@ const CHECKS: &[Check] = &[
     },
     Check {
         group: "virtualisation",
+        label: "qemu-img",
+        remedy: "sudo apt install -y qemu-utils",
+        unblocks: "the fresh qcow2 overlay `vm up` boots — the restore-from-snapshot I-12 asks for",
+    },
+    Check {
+        group: "virtualisation",
+        label: "genisoimage",
+        remedy: "sudo apt install -y genisoimage",
+        unblocks: "the NoCloud seed ISO that carries commands into the guest",
+    },
+    Check {
+        group: "virtualisation",
         label: "virtme-ng",
         remedy: "sudo apt install -y virtme-ng",
-        unblocks: "F0.VM.02, the kernel matrix",
+        unblocks: "F0.VM.02 for a kernel no distribution ships; cloud images cover the rest",
     },
     Check {
         group: "virtualisation",
@@ -150,6 +162,8 @@ fn probe(label: &str) -> bool {
         "clang" => on_path("clang"),
         "qemu-system-x86_64" => on_path("qemu-system-x86_64"),
         "virtme-ng" => on_path("vng") || on_path("virtme-ng"),
+        "qemu-img" => on_path("qemu-img"),
+        "genisoimage" => on_path("genisoimage"),
         "/dev/kvm exists" => Path::new("/dev/kvm").exists(),
         // Opening it read-write is the property; group membership is only how it
         // is usually granted, and reading the group list would not prove access.

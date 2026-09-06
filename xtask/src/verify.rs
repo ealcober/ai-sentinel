@@ -504,6 +504,10 @@ fn cross_document_checks(r: &mut Report, plan: &str) {
             g::verdict_maps_monotone(plan),
         ),
         (
+            "the eBPF probes pin the same nightly as crates/aisme-ebpf",
+            g::probe_pin_matches_ebpf(),
+        ),
+        (
             "budget keys named in prose exist in budgets.toml",
             g::prose_budget_keys(),
         ),

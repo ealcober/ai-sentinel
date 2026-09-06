@@ -536,6 +536,29 @@ pub(crate) fn verdict_maps_monotone(plan: &str) -> Result<(), String> {
     fail(&bad)
 }
 
+/// The verification probes pin the same nightly as the product eBPF crate.
+///
+/// They share the target, the linker and the LLVM constraint, so a drift between
+/// the two pins would validate the toolchain against one and ship the other.
+pub(crate) fn probe_pin_matches_ebpf() -> Result<(), String> {
+    let channel = |path: &str| -> Option<String> {
+        read(path)
+            .lines()
+            .find_map(|l| l.trim().strip_prefix("channel"))
+            .and_then(|r| r.split('"').nth(1).map(str::to_owned))
+    };
+    match (
+        channel("crates/aisme-ebpf/rust-toolchain.toml"),
+        channel("tests/probes/ebpf/rust-toolchain.toml"),
+    ) {
+        (Some(a), Some(b)) if a == b => Ok(()),
+        (Some(a), Some(b)) => Err(format!(
+            "crates/aisme-ebpf pins {a}, tests/probes/ebpf pins {b}"
+        )),
+        _ => Err("one of the two rust-toolchain.toml files has no channel".into()),
+    }
+}
+
 /// Every `budgets.toml` key named in prose resolves to a key that exists.
 ///
 /// A sentence claiming a budget is enforced is easy to write and reads as done.

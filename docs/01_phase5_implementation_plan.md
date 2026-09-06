@@ -433,7 +433,7 @@ CHANNEL V (Verdicts) — low volume, bidirectional, does block
 - Aggregated (metric, not log): reads inside the workspace, `stat`, path resolutions.
 - Hard cardinality ceiling: using the full `file.path` as a **metric** attribute is forbidden (cardinality explosion); metrics use `aisme.path.class` ∈ {`workspace`, `home`, `system`, `secret`, `tmp`, `other`}. Full paths live only in Logs and the forensic store.
 
-**Semantic conventions:** use OTel's official `gen_ai.*` namespace where it exists (`gen_ai.system`, `gen_ai.operation.name`, `gen_ai.usage.input_tokens`, `gen_ai.usage.output_tokens`, `gen_ai.request.model`) plus standard `process.*`, `file.*`, `network.*`. Proprietary attributes live under `aisme.*`. **The research's `feature_mutation` is renamed `aisme.mutation`** to avoid colliding with the global namespace.
+**Semantic conventions:** use OTel's official `gen_ai.*` namespace where it exists. It lives in its own repository, `open-telemetry/semantic-conventions-genai`, at *Development* stability, and `gen_ai.system` is gone — replaced by **`gen_ai.provider.name`** (`F0.VER.10`) — so the names are `gen_ai.provider.name`, `gen_ai.operation.name`, `gen_ai.usage.input_tokens`, `gen_ai.usage.output_tokens`, `gen_ai.request.model`) plus standard `process.*`, `file.*`, `network.*`. Proprietary attributes live under `aisme.*`. **The research's `feature_mutation` is renamed `aisme.mutation`** to avoid colliding with the global namespace.
 
 ---
 
@@ -2731,7 +2731,7 @@ Implements the §2.10 correction. This is what a SOC actually consumes.
 
 | AISME concept | Signal | Key attributes |
 |---|---|---|
-| Agent turn | Trace (new `trace_id`) | `aisme.session.id`, `gen_ai.system`, `gen_ai.request.model` |
+| Agent turn | Trace (new `trace_id`) | `aisme.session.id`, `gen_ai.provider.name`, `gen_ai.request.model` |
 | ToolCall | Span | `gen_ai.operation.name`, `aisme.tool.name`, `aisme.toolcall.id` |
 | Process | Span | `process.pid`, `process.executable.name`, `process.command_args` |
 | File mutation | Log Record | `event.name=aisme.mutation`, `file.path`, `aisme.path.class`, `aisme.taint` |
@@ -2991,7 +2991,7 @@ Each row below is written so an F0 session **transcribes** rather than reconstru
 | `ios-extension-memory-ceiling` | platform-limit | `NEPacketTunnelProvider` is OS-killed near 50 MB | The flow table is the main consumer, and the forensic store must never live in the extension | §2.20.7, `budgets.toml` |
 | `android-full-screen-intent-restricted` | platform-limit | Android 14 restricts `USE_FULL_SCREEN_INTENT` to calling and alarm apps | Mobile prompts are heads-up notifications with action buttons; asking for the entitlement invites review rejection | `01_permission-model.md` §7.4 |
 | `seccomp-unotify-toctou` | domain | Never decide from user memory read in a notification. At L3 the LSM-resolved `struct file` is the path of record; at L2 the supervisor resolves the path and hands the target the fd with `ADDFD` | It is the difference between an enforcement point and a race | H-01, `F3.EN.12` |
-| `bpf-probe-write-user-is-experimental` | platform-limit | Documented as experimental; warns in the kernel log | Using it to hide from a monitored process is what would make the product a rootkit and end the compliance story | H-05 |
+| `bpf-probe-write-user-is-experimental` | platform-limit | Documented as experimental. Mainline no longer warns and never taints: the helper is `gpl_only` and kernel lockdown refuses it outright (`F0.VER.08`) | Using it to hide from a monitored process is what would make the product a rootkit and end the compliance story | H-05 |
 
 ### 7.5 ADR discipline
 

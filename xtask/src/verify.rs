@@ -517,6 +517,10 @@ fn cross_document_checks(r: &mut Report, plan: &str) {
             g::changelog_covers_commits(),
         ),
         (
+            "every `<task-id>` row citation resolves to that row",
+            g::task_citations_resolve(),
+        ),
+        (
             "the phase addends sum to the stated critical path",
             g::phase_sums(plan),
         ),

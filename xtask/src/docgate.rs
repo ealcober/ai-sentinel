@@ -367,6 +367,100 @@ pub(crate) fn changelog_covers_commits() -> Result<(), String> {
     )
 }
 
+/// Every `<task-id>` row citation resolves to a plan line naming that task.
+///
+/// The amplification documents verify their claims with `file:line`, which the
+/// project's rules require — and a line number is the one citation form that
+/// rots silently when the file it points into grows. Fourteen of them in
+/// `docs/05` pointed at the wrong row: seven had drifted when the plan gained
+/// lines, and the rest had been written approximately and never checked, which
+/// is an unverified claim wearing the clothes of a verified one.
+///
+/// The pattern is deliberately narrow — ``` `F2.WS.03` row (`:1621`) ``` — so it
+/// checks what it can check exactly: the cited line must contain the task ID.
+pub(crate) fn task_citations_resolve() -> Result<(), String> {
+    // Read once, here: the check runs a single time per invocation, so a
+    // cached static would buy nothing and cost a leak.
+    let plan_body = read(PLAN_PATH);
+    let plan: Vec<&str> = plan_body.lines().collect();
+    let mut bad = Vec::new();
+    for dir_entry in ["docs"] {
+        let Ok(entries) = std::fs::read_dir(dir_entry) else {
+            continue;
+        };
+        for e in entries.flatten() {
+            let path = e.path();
+            if path.extension().is_none_or(|x| x != "md") {
+                continue;
+            }
+            let Some(body) = read_opt(&path.to_string_lossy()) else {
+                continue;
+            };
+            for (id, n) in citations(&body) {
+                match plan.get(n.saturating_sub(1)) {
+                    Some(line) if line.contains(&id) => {}
+                    Some(_) | None => bad.push(format!(
+                        "{}: `{id}` is cited at plan line {n}, which does not name it",
+                        path.display()
+                    )),
+                }
+            }
+        }
+    }
+    bad.sort();
+    fail(&bad)
+}
+
+/// `` `F2.WS.03` row (`:1621`) `` and the same without the word `row`.
+fn citations(body: &str) -> Vec<(String, usize)> {
+    let mut out = Vec::new();
+    let bytes: Vec<char> = body.chars().collect();
+    let mut i = 0;
+    while i < bytes.len() {
+        // Find "`F" then read the id, then expect "` (`:" or "` row (`:".
+        if bytes[i] == '`' && bytes.get(i + 1) == Some(&'F') {
+            let start = i + 1;
+            let mut j = start;
+            while j < bytes.len() && bytes[j] != '`' {
+                j += 1;
+            }
+            let id: String = bytes[start..j].iter().collect();
+            let shaped = id.len() >= 7
+                && id.starts_with('F')
+                && id.matches('.').count() == 2
+                && id.chars().all(|c| c.is_ascii_alphanumeric() || c == '.');
+            if shaped {
+                // 24, not 12: the lookahead must clear "` row (`:" (9 chars) plus a
+                // four-digit line and its closing punctuation. At 12 it silently
+                // truncated 1620 to 162 and every citation "failed" against the
+                // wrong line — a check that reports a real defect for a fake
+                // reason is still a check that is wrong.
+                let rest: String = bytes[j..(j + 24).min(bytes.len())].iter().collect();
+                let after = rest.trim_start_matches('`').trim_start();
+                let after = after.strip_prefix("row").unwrap_or(after).trim_start();
+                if let Some(num) = after.strip_prefix("(`:") {
+                    let digits: String = num.chars().take_while(char::is_ascii_digit).collect();
+                    if let Ok(n) = digits.parse::<usize>() {
+                        out.push((id, n));
+                    }
+                }
+            }
+            i = j + 1;
+            continue;
+        }
+        i += 1;
+    }
+    out
+}
+
+/// Path of the plan the citations point into.
+const PLAN_PATH: &str = "docs/01_phase5_implementation_plan.md";
+
+/// `read`, but `None` rather than empty when the file is missing.
+fn read_opt(path: &str) -> Option<String> {
+    std::fs::read_to_string(path).ok()
+}
+
 /// The phase table sums to the critical path the plan states.
 pub(crate) fn phase_sums(plan: &str) -> Result<(), String> {
     let Some(line) = plan.lines().find(|l| l.contains("Critical path: F0")) else {

@@ -200,8 +200,8 @@ One thing the run shows that is not a regression: the guest prints `tier L1` eve
 `platform::probe()` still reports nothing measured until `F3.LD.01`. That is why `--load-sensor`
 exists as its own path rather than reading the composed sensor list.
 
-**Closing.** Verified against `docs/01_phase5_implementation_plan.md:1611` (the task row),
-`:1596` (the scope row naming `sys_enter_openat`), Annex D.1's ring-buffer row, and
+**Closing.** Verified against `docs/01_phase5_implementation_plan.md:1619` (the task row),
+`:1605` (the scope row naming `sys_enter_openat`), Annex D.1's ring-buffer row, and
 `docs/ai/memory/seccomp-unotify-toctou.md:7`. One claim of the skeleton needed narrowing rather
 than falling: "Events reach `agentd` with correct `RawEvent` layout" is not sufficient as a
 done-condition, because a path copied from user memory is not the path the kernel opens; the
@@ -293,8 +293,35 @@ parameter.
   allocator, not `dhat`, with the reason — the same correction already made for `rkyv`.
 - `docs/ai/STATE.md`, `docs/CHANGELOG.md`: the usual rows.
 
-**Closing.** Verified against the plan's `F2.WS.02` row (`:1613`), the scope table's Hot-loop row
-(`:1600`), `A-01` as `xtask/src/rules.rs:62` enforces it, and the existing measurement in
+### 6. Three claims of this point fell when it was challenged (2026-09-07)
+
+**Every `file:line` citation in this document pointed at the wrong line.** Fourteen of them.
+Seven had drifted when the plan grew — my own commits added the `seccomp_addfd` field block, the
+Annex D.1 rows and `--with-dist` — and the rest were written approximately and never checked, so
+the task-row citations for `F2.WS.03` through `F2.WS.11` each named the row *above* the one they
+meant. A citation is what this project accepts in place of an unverified claim, so fourteen that
+do not resolve are fourteen unverified claims wearing the clothes of verified ones. All corrected
+against the plan's current content, and **the class is now mechanical**: `verify-docs` fails when
+a ``` `<task-id>` row (`:N`) ``` citation names a line that does not contain that task ID, proven
+by breaking one deliberately and watching the gate name it.
+
+**`WalSink` does not exist.** This point says `aisme-agentd` will compose sensor → engine → WAL
+sink, "replacing `CountingSink` with the real `WalSink` from `F2.WS.07`" — which is **point 7**,
+five points later in this same batch. `grep` finds `CountingSink` and `MemorySink` in
+`aisme-core::mock` and no `WalSink` anywhere. The dependency is real and the ordering is wrong, so
+this point composes through the `EventSink` trait it already has and **point 7 swaps the
+implementation in**; nothing here waits on it, and point 7's text is where the swap is recorded.
+
+**The cache is not "sized from `budgets.toml`".** There is no such key: `budgets.toml`'s sections
+are process, kernel, mobile, relay, cpu and latency, and none of them sizes a cache. The component
+this point tells the resolver to imitate — the interner (`F1.EV.04`) — is sized **in code**, by a
+named constructor: `Interner::for_paths()` is `16 384 × 256` with its reasoning beside it. So the
+resolver's LRU is sized the same way, by a named constructor carrying its own justification, which
+is what "reuse the interner's shape rather than invent a second policy" actually means. Inventing
+a budget key would have been the second policy.
+
+**Closing.** Verified against the plan's `F2.WS.02` row (`:1620`), the scope table's Hot-loop row
+(`:1607`), `A-01` as `xtask/src/rules.rs:62` enforces it, and the existing measurement in
 `crates/aisme-core/tests/hot_loop_allocations.rs`. The skeleton's phrase "verified by `dhat`"
 falls: the property is measured by a counting allocator and will stay that way, for the reasons
 recorded when `F1.RT.03` closed. Open: nothing blocking; the `/mnt/c` resolution behaviour is a
@@ -378,7 +405,7 @@ test gains a third writer — the socket — and asserts the token is absent fro
 - `docs/design/02_aisme-run.md`: step 3 already registers the session over the socket; a line
   will note that the same socket carries declarations.
 
-**Closing.** Verified against the plan's `F2.WS.03` row (`:1615`), the F2 scope table (which
+**Closing.** Verified against the plan's `F2.WS.03` row (`:1621`), the F2 scope table (which
 excludes the cooperative sensor), Annex I.1's method list, and `crates/aisme-agentsim/src/replay.rs`
 as it stands. Nothing of the skeleton fell; what was missing was named: the task said "emits"
 without a channel, and this point fixes the channel as one new Annex I method with an explicit
@@ -473,7 +500,7 @@ publication path beside them.
   differently on any matrix kernel — inner-map replacement semantics changed across releases and
   that is exactly the kind of fact this project keeps.
 
-**Closing.** Verified against the plan's `F2.WS.04` row (`:1616`), the "Why each seam matters"
+**Closing.** Verified against the plan's `F2.WS.04` row (`:1622`), the "Why each seam matters"
 table that scopes kernel-side evaluation out of F2, §B.2 `PL-04`, and `F1.PL.03`'s
 `PolicyBackend` as implemented. Nothing of the skeleton fell; one silence was filled: "published
 atomically" had no mechanism anywhere in the plan, and this point fixes it as an array-of-maps
@@ -633,7 +660,7 @@ notifier (`SECCOMP_GET_NOTIF_SIZES`, present since 5.0) and reported `yes` on 5.
   first becomes code, and that the directory-rename form is why a freezer does not substitute.
 - `docs/ai/STATE.md`: `Q-13` moved from open to answered, with the date and the answer.
 
-**Closing.** Verified against the plan's `F2.WS.05` row (`:1617`), `F3.EN.12` (`:1711`), `H-01`,
+**Closing.** Verified against the plan's `F2.WS.05` row (`:1623`), `F3.EN.12` (`:1718`), `H-01`,
 `docs/ai/memory/seccomp-unotify-toctou.md:7`, §2.23's capability annotation, and the kernel
 versions of `ADDFD` (5.9) and `SECCOMP_ADDFD_FLAG_SEND` (5.14). `Q-13` is **answered**: the
 mechanism moves into F2, bounded to read-only `openat` at matching credentials, with everything
@@ -742,7 +769,7 @@ adjudicator, asserting the terminal outranks it.
   the reason.
 - Plan §F1.1's `DecisionPayload`: the new flag.
 
-**Closing.** Verified against the plan's `F2.WS.06` row (`:1618`),
+**Closing.** Verified against the plan's `F2.WS.06` row (`:1624`),
 `docs/design/01_permission-model.md` §7.3's prompt, §2.20.5's budgets, `F1.PA.03`'s ladder as
 implemented, and §4 of the `aisme run` note. The skeleton's claim that
 `AISME_TERMINAL_ANSWER` is "accepted for unattended gates" survives but not unconditionally: as
@@ -828,7 +855,7 @@ Safe and clear once three rules are fixed:
 - `docs/ops/`: the first runbook entry — where the WAL and the checkpoint live, and what to do
   when a segment is refused as foreign.
 
-**Closing.** Verified against the plan's `F2.WS.07` row (`:1619`), `F1.RT.05` as implemented in
+**Closing.** Verified against the plan's `F2.WS.07` row (`:1625`), `F1.RT.05` as implemented in
 `crates/aisme-core/src/wal.rs`, and §3.6's rule for the `agentd`↔`forensicd` pairing. Nothing of
 the skeleton fell; two silences were filled — where the resume point lives and when it is written
 — and the ordering chosen (checkpoint after work) makes the failure mode duplicate delivery
@@ -923,7 +950,7 @@ Safe and clear, with three properties pinned and one refusal:
 - `docs/design/02_aisme-run.md`: §3's table gains the method names, and §6's open item — a shell
   that later launches the agent — gains the note that F2 leaves it open deliberately.
 
-**Closing.** Verified against the plan's `F2.WS.08` row (`:1620`), `docs/design/02_aisme-run.md`
+**Closing.** Verified against the plan's `F2.WS.08` row (`:1626`), `docs/design/02_aisme-run.md`
 §3–§5, `F1.RT.07`'s delegated subtree as shipped in `deploy/systemd/aisme-agentd.service`, and
 `F7.PS.07`'s narrowing decision. Nothing fell; one silence was filled — the CLI cannot create the
 cgroup and must ask, which changes the protocol rather than the CLI's privileges — and one
@@ -1001,7 +1028,7 @@ Safe and clear with three rules:
 - `budgets.toml`: keys for the four figures under a `latency` section that already exists,
   with the F2 profile's ceilings drawn from §2.22's T1/T2 rows.
 
-**Closing.** Verified against the plan's `F2.WS.09` row (`:1621`), §2.22's latency rows,
+**Closing.** Verified against the plan's `F2.WS.09` row (`:1627`), §2.22's latency rows,
 Annex H's `bench-t0` ownership (`xtask/src/annex_h.rs:74`), and `F1.ON.03`'s clock normalization.
 The skeleton's row survives; what fell is the *name*: `bench-t0` at F2 measures no T0, and the
 command will say so in its own output rather than leaving a reader to infer a figure that does
@@ -1077,7 +1104,7 @@ Safe and clear, with two properties named:
 - `docs/ai/AGENTS.md`: `test-skeleton` added to the commands a session runs before claiming F2
   work is done.
 
-**Closing.** Verified against the plan's `F2.WS.10` row (`:1622`), §3.2's first consequence, and
+**Closing.** Verified against the plan's `F2.WS.10` row (`:1628`), §3.2's first consequence, and
 `F1.PA.02`/`F1.PA.06` as implemented. Nothing fell; the trap named — a gate that reimplements the
 slice proves only itself — is the reason the point fixes the substitution point at the composition
 root. Open: nothing.
@@ -1170,7 +1197,7 @@ Safe and clear, with four properties that must be explicit:
 - `docs/design/02_aisme-run.md` §3, step 5: the F2 subset named, so a reader knows what is
   implemented and what is `F3.EN.09`'s widening.
 
-**Closing.** Verified against the plan's `F2.WS.11` row (`:1623`), §2.2.1's argument for why L2
+**Closing.** Verified against the plan's `F2.WS.11` row (`:1629`), §2.2.1's argument for why L2
 cannot trap everything, `F0.VER.04`'s measurement (`docs/reports/01_f0-verification.md`), and
 `docs/design/02_aisme-run.md` §5's degradation table. Nothing of the skeleton fell; two silences
 were filled — how a denial nobody was notified about gets recorded honestly (a wire flag, not a
@@ -1311,7 +1338,7 @@ and **two tests execute the actual script** — one with a hash that cannot matc
 command never runs, and one with a matching hash, asserting it does. A guard exercised only inside
 a VM is a guard nobody has seen work.
 
-**Closing.** Verified against the plan's GATE F2 block (`:1637`), `xtask/src/vm.rs`'s `vm run`
+**Closing.** Verified against the plan's GATE F2 block (`:1644`), `xtask/src/vm.rs`'s `vm run`
 implementation (a guest-side shell command, nothing staged), `xtask/src/tooling.rs:80`'s `dist`
 (a host-side build), and `F1.RT.06`'s artefact convention. **One claim of the skeleton falls
 outright**: the gate as written cannot run, because four of its six lines invoke `aisme run`

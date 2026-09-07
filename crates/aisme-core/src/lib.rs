@@ -13,6 +13,7 @@ pub mod taint;
 pub use intern::{Interner, InternerStats, StrId, TooLong};
 pub use labels::{LabelError, TreeLabels};
 pub use ontology::{
-    BootNs, Digest, Edge, EdgeKind, Node, NodeId, NodeKind, PathClass, PermissionGroup, SessionId,
+    BootNs, DetectorId, Digest, Edge, EdgeKind, EvidenceRefs, InstructionSignals, Node, NodeId,
+    NodeKind, PathClass, PermissionGroup, ResultOrigin, SessionId, Severity, SuppressionOrigin,
 };
 pub use taint::{DecayPolicy, Declassification, Declassified, Taint};

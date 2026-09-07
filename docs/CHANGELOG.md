@@ -7,7 +7,26 @@ All notable changes to this repository. Format: [Keep a Changelog](https://keepa
 ## [Unreleased]
 
 ### State
-- **Phase F0 in progress.** No product code yet; the workspace, gates, assets, verification backlog and kernel matrix are in place. Next: the second half of `F0.WSL.02` (owner action first, `docs/ai/STATE.md` → Blocked), then the GATE F0 block, then F1.
+- **Phase F0 closed on 2026-09-07; F1 in progress.** GATE F0, run line by line on `134c8f7` with interop and KVM live:
+
+  ```
+  exit 0  cargo xtask doctor                                   (15 of 15)
+  exit 0  git rev-parse --is-inside-work-tree
+  exit 0  git ls-files --error-unmatch Cargo.lock layers.toml
+  exit 0  cargo check --workspace && cargo clippy --workspace -- -D warnings
+  exit 0  cargo xtask verify-layering
+  exit 0  cargo xtask verify-docs
+  exit 0  cargo xtask gate --level commit                      (7 PASS · 0 FAIL · 1 SKIP · 1 PENDING)
+  exit 2  cargo xtask verify-backlog                           (SKIP: 21 of 21 recorded; F0.VER.12 needs hardware this host lacks)
+  exit 0  cargo xtask verify-budgets
+  exit 0  cargo xtask vm up ubuntu-24.04
+  exit 0  cargo xtask vm up wsl2-ubuntu-24.04
+  exit 0  cargo xtask vm probe --all                           (7 of 7 PASS under KVM; every measured tier equals the plan's expectation)
+  exit 0  for f in docs/ai/AGENTS.md docs/ai/STATE.md docs/ai/invariants.md docs/adr/00_template.md; do test -f "$f" || exit 1; done
+  exit 0  test -f docs/ai/memory/wsl2-capabilities.md
+  exit 0  test $(ls docs/ai/memory/*.md | wc -l) -ge 11
+  exit 0  grep -qi read-only docs/ai/invariants.md
+  ```
 
 ### Added
 - **`cargo xtask vm probe --all`** runs the catalogue in one go and prints the kernel, Landlock ABI, measured tier and the plan's expectation per image: **7 of 7 PASS** on 2026-09-06, which is the GATE F0 line. The catalogue's expectations read what the measured `F0.VM.02` row says (5.4 → L2-, 6.1 → L3).

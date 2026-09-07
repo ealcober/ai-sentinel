@@ -12,6 +12,7 @@
 pub mod ast;
 pub mod backend;
 pub mod compile;
+pub mod diagnostics;
 pub mod encode;
 pub mod parse;
 
@@ -24,5 +25,6 @@ pub use compile::{
     compile, compile_with, Bindings, CompileError, CompileErrorKind, CompiledGrant, CompiledPolicy,
     CompiledRule, CompiledSuppression, GrantInput, GrantKind, Predicate, Settings, Term,
 };
+pub use diagnostics::{at_least_as_strict, over_blocking, Raises, Weakening};
 pub use encode::{digest, encode, PolicyDigest, POLICY_ENCODING_VERSION};
 pub use parse::{parse, ParseError};

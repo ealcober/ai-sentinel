@@ -79,7 +79,13 @@ pub(crate) fn test_policy_compiler(args: &[&str]) -> u8 {
     }
     let mut cmd = Command::new("cargo");
     cmd.args(["test", "-q", "-p", "aisme-core"]);
-    for suite in ["policy_parse", "policy_compile", "policy_determinism"] {
+    for suite in [
+        "policy_parse",
+        "policy_compile",
+        "policy_determinism",
+        "policy_backend",
+        "policy_diagnostics",
+    ] {
         cmd.args(["--test", suite]);
     }
     let Ok(output) = cmd.output() else {
@@ -92,7 +98,7 @@ pub(crate) fn test_policy_compiler(args: &[&str]) -> u8 {
         .filter_map(|l| l.strip_prefix("test result: "))
         .collect();
     if output.status.success()
-        && results.len() == 3
+        && results.len() == 5
         && results.iter().all(|r| !r.contains("0 passed"))
     {
         println!("PASS test-policy-compiler: {}", results.join(" · "));

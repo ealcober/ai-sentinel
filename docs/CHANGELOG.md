@@ -29,6 +29,7 @@ All notable changes to this repository. Format: [Keep a Changelog](https://keepa
   ```
 
 ### Added
+- **`F1.PA.06` — the composition root** (`aisme-agentd::platform`): the single module allowed to name adapters or use `cfg(target_os)`, composing sensors, enforcers and the adjudicator ladder from the capability set, never yielding zero of any of them. `verify-layering` reports it present. 2 tests.
 - **`F1.PA.04` / `F1.PA.05` — the tier function and the degradation state machine** (`aisme-core::tier`): Annex D.1's rows as code, `I-19`'s one-function-per-absence list, and `Serving`/`Degraded` transitions announced once each with the sentence the UI and SIEM get. 3 tests.
 - **`F1.PA.03` — `AdjudicatorLadder`**: preference-ordered delivery with per-channel budgets, `I-06` ceilings enforced by the ladder (a refused `allow` is recorded and the next rung decides), and a timeout path that applies the caller's session default locally and `deny` remotely. 5 tests.
 - **`F1.PA.02` — `MockSensor`, `NullEnforcer`, `PolicyAdjudicator`, `MemorySink`**: the complete pipeline with no kernel and no platform. **`F1.EV.03`'s producer-coverage clause now runs and passes** — the mock's `CATALOGUE` is an explicit list of every kind, so a new variant with no producer fails the check. 5 mock tests, 2 producer tests.

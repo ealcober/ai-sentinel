@@ -8,6 +8,10 @@ rust-version.workspace = true
 publish = false
 
 [dependencies]
+# L3 -> L1 and L0. Adapters are named only in src/platform, and only from
+# their own phase (A-05); nothing here reaches sideways.
+aisme-core = { path = "../aisme-core" }
+aisme-ebpf-common = { path = "../aisme-ebpf-common" }
 
 [lints]
 workspace = true

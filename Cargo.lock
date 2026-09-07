@@ -5,6 +5,10 @@ version = 4
 [[package]]
 name = "aisme-agentd"
 version = "0.1.0"
+dependencies = [
+ "aisme-core",
+ "aisme-ebpf-common",
+]
 
 [[package]]
 name = "aisme-agentsim"

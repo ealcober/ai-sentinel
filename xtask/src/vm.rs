@@ -393,11 +393,25 @@ if not lsm:
     m = [l for l in cfg.splitlines() if l.startswith("CONFIG_LSM=")]
     lsm = m[0].split("=",1)[1].strip('"') if m else ""
     print("lsm source: CONFIG_LSM (securityfs unavailable)")
-btf = os.path.exists("/sys/kernel/btf/vmlinux"); cg2 = " cgroup2 " in open("/proc/mounts").read()
+btf = os.path.exists("/sys/kernel/btf/vmlinux")
+cg2_mount = next((l.split()[1] for l in open("/proc/mounts") if l.split()[2] == "cgroup2"), None)
+cg2 = cg2_mount is not None
+# Annex D.1 separates L1 from L2- by what can trap a decision and what can
+# hold it, not by BTF. Both are measured, never inferred from uname: the
+# syscall answers for seccomp_unotify (SECCOMP_GET_NOTIF_SIZES, op 3) and the
+# cgroup2 mount answers for the freezer (cgroup.freeze, kernel >= 5.2).
+sizes = (ctypes.c_uint16 * 3)()
+unotify = libc.syscall(ctypes.c_long(317), ctypes.c_uint(3), ctypes.c_uint(0), ctypes.byref(sizes)) == 0
+freeze = cg2 and os.path.exists(os.path.join(cg2_mount, "cgroup.freeze"))
 print("landlock_abi:", abi if abi > 0 else "unavailable")
 for key in ("CONFIG_BPF_LSM", "CONFIG_CGROUP_BPF", "CONFIG_DEBUG_INFO_BTF", "CONFIG_LSM"): print(k(key))
 print("btf_vmlinux:", "present" if btf else "absent"); print("cgroup2:", "yes" if cg2 else "no")
-tier = "L3" if "bpf" in lsm.split(",") else "L2" if (abi > 0 and "landlock" in lsm and cg2) else "L2-" if btf else "L1"
+print("seccomp_unotify:", "yes" if unotify else "no"); print("cgroup_freeze:", "yes" if freeze else "no")
+# The product's rule, aisme-core::tier::tier_of, spelled the same way here so
+# the matrix measures what the engine will derive (Annex D.1).
+escalate = unotify and freeze
+deny_in_kernel = abi > 0 and "landlock" in lsm and cg2
+tier = "L3" if escalate and deny_in_kernel and "bpf" in lsm.split(",") else "L2" if escalate and deny_in_kernel else "L2-" if escalate else "L1"
 print("tier:", tier)
 PY
 "#;

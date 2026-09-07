@@ -5,7 +5,20 @@
 //! composition root — the only module permitted to name concrete adapters or use
 //! `cfg(target_os)` (plan §3.1).
 
+mod platform;
+
 fn main() {
-    // Phase F0: the crate exists and compiles. Behaviour arrives with its
-    // own task; see docs/ai/STATE.md for the current one.
+    // F1: the composition root exists and composes. The hot loop that drives
+    // it is F1.RT.03; until then, report what this machine would serve.
+    let caps = platform::probe();
+    println!(
+        "aisme-agentd: tier {}, {} sensor(s), {} enforcer(s), {} adjudicator rung(s)",
+        platform::tier(&caps).as_str(),
+        platform::sensors(&caps).len(),
+        platform::enforcers(&caps).len(),
+        platform::adjudicators(&caps).len()
+    );
+    for lost in aisme_core::tier::degradations(&caps) {
+        println!("  degraded: {lost}");
+    }
 }

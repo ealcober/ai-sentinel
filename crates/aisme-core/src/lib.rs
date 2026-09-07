@@ -6,10 +6,12 @@
 //! Android, iOS and the SDK (plan §3.1, rule `A-01`).
 
 pub mod intern;
+pub mod labels;
 pub mod ontology;
 pub mod taint;
 
 pub use intern::{Interner, InternerStats, StrId, TooLong};
+pub use labels::{LabelError, TreeLabels};
 pub use ontology::{
     BootNs, Digest, Edge, EdgeKind, Node, NodeId, NodeKind, PathClass, PermissionGroup, SessionId,
 };

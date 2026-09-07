@@ -78,6 +78,139 @@ impl Taint {
     }
 }
 
+/// The propagation and declassification algebra (`F1.ON.04`): pure
+/// functions over [`Taint`], in the order §2.14 states them. The policy (F7)
+/// decides *when* each applies; nothing here does I/O or reads a clock.
+impl Taint {
+    /// Categories that never decay within a process's lifetime.
+    pub const PERSISTENT: Taint = Taint(
+        Taint::SECRET_MATERIAL.0
+            | Taint::GENERATED_CODE.0
+            | Taint::EXTERNAL_EGRESS.0
+            | Taint::CREDENTIAL_ACCESS.0,
+    );
+
+    /// Categories that expire after [`DecayPolicy::untrusted_input_ttl_ns`]
+    /// without related activity.
+    pub const DECAYING: Taint = Taint::UNTRUSTED_INPUT;
+
+    /// The categories whose egress the Network Slam gates.
+    pub const SLAM_TRIGGERS: Taint = Taint(Taint::SECRET_MATERIAL.0 | Taint::CREDENTIAL_ACCESS.0);
+
+    /// `fork`/`clone`/`execve`: the child inherits everything, unknown bits
+    /// included — a category this binary does not name is still a category.
+    #[must_use]
+    pub const fn inherit(parent: Taint) -> Taint {
+        parent
+    }
+
+    /// A pipe or UNIX socket between two processes of the same session: the
+    /// receiver acquires the sender's categories. Whether the two are in the
+    /// same session is the caller's fact; the algebra is the union.
+    #[must_use]
+    pub const fn on_ipc(receiver: Taint, sender: Taint) -> Taint {
+        receiver.union(sender)
+    }
+
+    /// A write by a process labels the file with the writer's categories.
+    #[must_use]
+    pub const fn label_on_write(file: Taint, writer: Taint) -> Taint {
+        file.union(writer)
+    }
+
+    /// A read of a labelled file taints the reader with the file's label.
+    #[must_use]
+    pub const fn on_read(reader: Taint, file: Taint) -> Taint {
+        reader.union(file)
+    }
+
+    /// A network fetch — `git clone`, `curl -o`, a package install — labels
+    /// the target tree root as untrusted input. The fetching process carries
+    /// the same label, since its output is the fetch.
+    #[must_use]
+    pub const fn label_on_fetch(root: Taint) -> Taint {
+        root.union(Taint::UNTRUSTED_INPUT)
+    }
+
+    /// What survives at `now`, given when the process last did something
+    /// related: the decaying categories expire, the persistent ones do not.
+    #[must_use]
+    pub const fn decay(self, last_activity_ns: u64, now_ns: u64, policy: DecayPolicy) -> Taint {
+        let idle = now_ns.saturating_sub(last_activity_ns);
+        if idle > policy.untrusted_input_ttl_ns {
+            self.without(Taint::DECAYING)
+        } else {
+            self
+        }
+    }
+
+    /// Explicit declassification: release `categories` for `reason`, which
+    /// the caller records as a `declassified_by` edge. Returns what remains
+    /// and the record. Nothing else in the algebra removes a category.
+    #[must_use]
+    pub const fn declassify(
+        self,
+        categories: Taint,
+        reason: Declassification,
+    ) -> (Taint, Declassified) {
+        let released = Taint(self.0 & categories.0);
+        (self.without(categories), Declassified { released, reason })
+    }
+
+    /// The Network Slam's compound condition, §2.14: a slam-triggering
+    /// category is present **and** the destination is outside the session
+    /// allowlist **and** no declassification is in effect. Taint alone never
+    /// fires it, which is the whole correction of `H-13`.
+    #[must_use]
+    pub const fn slam_condition(self, destination_allowlisted: bool, declassified: bool) -> bool {
+        self.intersects(Taint::SLAM_TRIGGERS) && !destination_allowlisted && !declassified
+    }
+}
+
+/// How long the decaying categories live without related activity.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct DecayPolicy {
+    /// `UNTRUSTED_INPUT`'s time to live. §2.14 default: 300 s.
+    pub untrusted_input_ttl_ns: u64,
+}
+
+impl DecayPolicy {
+    /// §2.14's default: 300 seconds.
+    pub const DEFAULT: DecayPolicy = DecayPolicy {
+        untrusted_input_ttl_ns: 300 * 1_000_000_000,
+    };
+}
+
+impl Default for DecayPolicy {
+    fn default() -> DecayPolicy {
+        DecayPolicy::DEFAULT
+    }
+}
+
+/// The three explicit declassifications §2.14 admits. A permission grant is
+/// **not** one of them (owner decision): it answers the file question only,
+/// and egress stays gated by the compound condition.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum Declassification {
+    /// The secret file belongs to the workspace and is in `.gitignore`, and
+    /// the network destination is in the project allowlist.
+    GitignoredToAllowlisted,
+    /// The user marked the path as trusted in the UI.
+    UserTrustedPath,
+    /// The write targets a local file inside the workspace — not exfiltration.
+    LocalWriteInsideWorkspace,
+}
+
+/// What a declassification released, and why — the `declassified_by` edge's
+/// content.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Declassified {
+    /// The categories actually released (those that were set).
+    pub released: Taint,
+    /// The justification.
+    pub reason: Declassification,
+}
+
 impl core::ops::BitOr for Taint {
     type Output = Taint;
     fn bitor(self, rhs: Taint) -> Taint {
@@ -125,6 +258,82 @@ mod tests {
         assert!(!Taint::SECRET_MATERIAL.contains(all));
         assert!(Taint::SECRET_MATERIAL.intersects(all));
         assert_eq!(all.without(Taint::UNTRUSTED_INPUT).bits(), 0x1D);
+    }
+
+    #[test]
+    fn propagation_is_inheritance_and_union_in_every_direction() {
+        let secret = Taint::SECRET_MATERIAL;
+        let untrusted = Taint::UNTRUSTED_INPUT;
+        assert_eq!(Taint::inherit(secret | untrusted), secret | untrusted);
+        assert_eq!(Taint::on_ipc(Taint::EMPTY, secret), secret);
+        assert_eq!(Taint::label_on_write(Taint::EMPTY, secret), secret);
+        assert_eq!(Taint::on_read(untrusted, secret), secret | untrusted);
+        assert_eq!(Taint::label_on_fetch(Taint::EMPTY), untrusted);
+        // A category this binary does not name still propagates.
+        let unknown = Taint::from_bits(1 << 20);
+        assert_eq!(Taint::inherit(unknown), unknown);
+        assert!(Taint::on_read(Taint::EMPTY, unknown).contains(unknown));
+    }
+
+    #[test]
+    fn only_untrusted_input_decays_and_only_after_the_ttl() {
+        let policy = DecayPolicy::DEFAULT;
+        let all = Taint::ALL.iter().fold(Taint::EMPTY, |acc, c| acc | *c);
+        let ttl = policy.untrusted_input_ttl_ns;
+        assert_eq!(ttl, 300_000_000_000, "§2.14: 300 s");
+        assert_eq!(
+            all.decay(0, ttl, policy),
+            all,
+            "at the bound it still holds"
+        );
+        assert_eq!(
+            all.decay(0, ttl + 1, policy),
+            all.without(Taint::UNTRUSTED_INPUT)
+        );
+        assert_eq!(
+            Taint::SECRET_MATERIAL.decay(0, u64::MAX, policy),
+            Taint::SECRET_MATERIAL
+        );
+        // Activity resets the clock: last_activity later than now is idle 0.
+        assert_eq!(all.decay(ttl * 2, ttl, policy), all);
+        assert_eq!(Taint::PERSISTENT | Taint::DECAYING, all);
+    }
+
+    #[test]
+    fn declassification_is_explicit_and_recorded_and_a_grant_is_not_one() {
+        let taint = Taint::SECRET_MATERIAL | Taint::UNTRUSTED_INPUT;
+        let (left, record) = taint.declassify(
+            Taint::SECRET_MATERIAL | Taint::GENERATED_CODE,
+            Declassification::GitignoredToAllowlisted,
+        );
+        assert_eq!(left, Taint::UNTRUSTED_INPUT);
+        assert_eq!(record.released, Taint::SECRET_MATERIAL, "only what was set");
+        assert_eq!(record.reason, Declassification::GitignoredToAllowlisted);
+        // A grant answers the file question only: no function here takes one,
+        // and the taint a process carries into a granted read is what it
+        // carries out.
+        assert_eq!(Taint::on_read(taint, Taint::EMPTY), taint);
+    }
+
+    #[test]
+    fn the_slam_fires_on_the_compound_condition_never_on_taint_alone() {
+        let secret = Taint::SECRET_MATERIAL;
+        assert!(secret.slam_condition(false, false));
+        assert!(Taint::CREDENTIAL_ACCESS.slam_condition(false, false));
+        assert!(
+            !secret.slam_condition(true, false),
+            "allowlisted destination"
+        );
+        assert!(!secret.slam_condition(false, true), "declassified");
+        assert!(
+            !Taint::UNTRUSTED_INPUT.slam_condition(false, false),
+            "not a slam trigger"
+        );
+        assert!(!Taint::EMPTY.slam_condition(false, false));
+        // The §2.14 workflows that must not break: .env read by the test
+        // runner, then npm install against the registry — allowlisted.
+        let test_runner = Taint::on_read(Taint::EMPTY, secret);
+        assert!(!test_runner.slam_condition(true, false));
     }
 
     #[test]

@@ -13,4 +13,4 @@ pub use intern::{Interner, InternerStats, StrId, TooLong};
 pub use ontology::{
     BootNs, Digest, Edge, EdgeKind, Node, NodeId, NodeKind, PathClass, PermissionGroup, SessionId,
 };
-pub use taint::Taint;
+pub use taint::{DecayPolicy, Declassification, Declassified, Taint};

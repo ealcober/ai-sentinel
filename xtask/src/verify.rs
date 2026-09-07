@@ -52,6 +52,41 @@ fn read(path: &str) -> Option<String> {
 // ---------------------------------------------------------------- layering
 
 /// Layer of a crate, as `L0`…`L4` from `layers.toml`.
+/// The `A-02` violations in a dependency graph: edges that point upward, and
+/// sibling edges inside L2.
+///
+/// A pure function over (layer table, direct edges) so the rule can be run on
+/// a graph that is not this workspace's — which is what `F1.PA.07` asks for:
+/// the gate must fail on a planted `aisme-core -> aisme-linux` edge, and a
+/// check nobody has seen fail is a check nobody should trust.
+pub(crate) fn direction_violations(
+    layers: &BTreeMap<String, u8>,
+    edges: &[(String, String)],
+) -> Violations {
+    let mut v = Violations::default();
+    for (name, dname) in edges {
+        let (Some(&from), Some(&to)) = (layers.get(name), layers.get(dname)) else {
+            continue;
+        };
+        if to > from {
+            v.upward
+                .push(format!("{name} (L{from}) -> {dname} (L{to})"));
+        } else if to == from && from == 2 {
+            v.siblings.push(format!("{name} -> {dname}, both L2"));
+        }
+    }
+    v
+}
+
+/// What [`direction_violations`] found.
+#[derive(Debug, Default, PartialEq, Eq)]
+pub(crate) struct Violations {
+    /// Edges from a lower layer to a higher one.
+    pub(crate) upward: Vec<String>,
+    /// Edges between two L2 crates.
+    pub(crate) siblings: Vec<String>,
+}
+
 fn layer_ord(layer: &str) -> Option<u8> {
     layer.strip_prefix('L').and_then(|n| n.parse().ok())
 }
@@ -118,28 +153,18 @@ pub(crate) fn layering() -> u8 {
         || format!("{phantom:?} are layered but not members"),
     );
 
-    let mut upward = Vec::new();
-    let mut siblings = Vec::new();
     let mut direct_deps: Vec<(String, String)> = Vec::new();
     for (name, pkg) in &members {
-        let Some(&from) = layers.get(name) else {
+        if !layers.contains_key(name) {
             continue;
-        };
+        }
         for dep in pkg["dependencies"].as_array().into_iter().flatten() {
-            let Some(dname) = dep["name"].as_str() else {
-                continue;
-            };
-            direct_deps.push((name.clone(), dname.to_owned()));
-            let Some(&to) = layers.get(dname) else {
-                continue;
-            };
-            if to > from {
-                upward.push(format!("{name} (L{from}) -> {dname} (L{to})"));
-            } else if to == from && from == 2 {
-                siblings.push(format!("{name} -> {dname}, both L2"));
+            if let Some(dname) = dep["name"].as_str() {
+                direct_deps.push((name.clone(), dname.to_owned()));
             }
         }
     }
+    let Violations { upward, siblings } = direction_violations(&layers, &direct_deps);
     r.check(
         upward.is_empty(),
         "no crate depends on a higher layer",
@@ -688,4 +713,69 @@ pub(crate) fn backlog() -> u8 {
     eprintln!("\nExpected before GATE F0. Each row needs HOLDS, FAILS or WITHDRAWN in");
     eprintln!("{BACKLOG}, with the command run and what was observed.");
     1
+}
+
+#[cfg(test)]
+mod layering_tests {
+    use super::{direction_violations, Violations};
+    use std::collections::BTreeMap;
+
+    /// The real layer table, read from `layers.toml` — so a rename there is
+    /// caught here rather than silently making the test vacuous.
+    fn layers() -> BTreeMap<String, u8> {
+        let raw = std::fs::read_to_string(crate::workspace_root().join("layers.toml")).unwrap();
+        let doc: toml::Value = raw.parse().unwrap();
+        doc["crates"]
+            .as_table()
+            .unwrap()
+            .iter()
+            .map(|(k, v)| (k.clone(), super::layer_ord(v.as_str().unwrap()).unwrap()))
+            .collect()
+    }
+
+    fn edge(from: &str, to: &str) -> Vec<(String, String)> {
+        vec![(from.to_owned(), to.to_owned())]
+    }
+
+    #[test]
+    fn the_real_edges_of_the_f1_crates_point_downward() {
+        let layers = layers();
+        let real = [
+            ("aisme-core", "aisme-ebpf-common"),
+            ("aisme-correlate", "aisme-core"),
+            ("aisme-agentd", "aisme-core"),
+            ("aisme-agentd", "aisme-ebpf-common"),
+        ]
+        .map(|(a, b)| (a.to_owned(), b.to_owned()))
+        .to_vec();
+        assert_eq!(direction_violations(&layers, &real), Violations::default());
+    }
+
+    #[test]
+    fn a_planted_core_to_linux_edge_fails_the_rule() {
+        // A-02, mechanically: the moment `aisme-core` (L1) names an adapter
+        // (L2), the direction check reports it. This is the edge the rule
+        // exists to stop, and the check is shown failing on it.
+        let violations = direction_violations(&layers(), &edge("aisme-core", "aisme-linux"));
+        assert_eq!(violations.upward, ["aisme-core (L1) -> aisme-linux (L2)"]);
+        assert!(violations.siblings.is_empty());
+    }
+
+    #[test]
+    fn a_planted_l2_sibling_edge_fails_the_rule() {
+        let violations = direction_violations(&layers(), &edge("aisme-linux", "sentinel-core"));
+        assert_eq!(
+            violations.siblings,
+            ["aisme-linux -> sentinel-core, both L2"]
+        );
+        assert!(violations.upward.is_empty());
+    }
+
+    #[test]
+    fn an_edge_to_something_unlayered_is_not_a_direction_violation() {
+        // Third-party crates carry no layer; they are policed by A-06 and
+        // cargo deny, not by direction.
+        let violations = direction_violations(&layers(), &edge("aisme-core", "toml_edit"));
+        assert_eq!(violations, Violations::default());
+    }
 }

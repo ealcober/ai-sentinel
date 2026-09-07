@@ -1,0 +1,53 @@
+# SPDX-License-Identifier: Apache-2.0
+#
+# The unprivileged half (F1.RT.07). agentd runs the hot loop with no
+# capabilities at all: the programs are already attached by the loader, and
+# the session cgroup subtree is *delegated* to this unit, so freezing a scope
+# for T2 adjudication needs no privilege — writing cgroup.freeze inside a
+# delegated subtree is an ordinary write by its owner.
+[Unit]
+Description=AISME agent daemon (hot path)
+Documentation=https://github.com/ealcober/aisme
+After=aisme-loaderd.service
+Requires=aisme-loaderd.service
+
+[Service]
+Type=notify
+ExecStart=/usr/lib/aisme/aisme-agentd --handoff /run/aisme/loader.sock
+User=aisme
+Group=aisme
+
+# Delegation is what makes the privilege split work for T2: systemd hands
+# this unit its own cgroup subtree, and the daemon may create and freeze
+# cgroups inside it as its own user (systemd.resource-control(5)).
+Delegate=yes
+DelegateSubgroup=sessions
+
+# No capabilities, and no way to gain any.
+CapabilityBoundingSet=
+AmbientCapabilities=
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+RestrictAddressFamilies=AF_UNIX
+RestrictNamespaces=yes
+RestrictRealtime=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+SystemCallArchitectures=native
+StateDirectory=aisme
+RuntimeDirectory=aisme
+RuntimeDirectoryMode=0750
+
+# H-03: the budget is the product. The limit is above the invariant so a
+# breach is a report, not an OOM kill during a soak.
+MemoryMax=128M
+MemoryHigh=64M
+
+[Install]
+WantedBy=multi-user.target

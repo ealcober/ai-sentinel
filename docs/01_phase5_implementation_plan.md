@@ -1557,7 +1557,7 @@ Implements §3.2. **This is the interface freeze deliverable.**
 | `F1.RT.04` | Bounded backpressure: fixed-capacity ring, drop-with-counter, never unbounded queue | Drop counter → OTel |
 | `F1.RT.05` | Binary WAL: **fixed 320-byte records**, 64 MB segments (209 715 records), a segment header carrying the wire version and schema hash (§3.6), `fsync` policy configurable, crash-safe replay by offset — a torn tail keeps everything before it and is re-read, never skipped. **Not `rkyv`**: an archived form buys zero-copy access for a variable-shaped record, and `RawEvent` is already `repr(C)`, fixed and layout-asserted (`F1.EV.03`), so the archive would be a copy of the bytes plus a dependency and the zero-copy read is a cast. The format and replay are L1; the mapping, rotation and `fsync` are the daemon's | `forensicd` resumes by offset |
 | `F1.RT.06` | Self-observability: RSS, CPU, queue depths, drop counters exported as metrics | Feeds §4.4 |
-| `F1.RT.07` | Privilege split: tiny privileged loader (`aisme-loaderd`) vs. unprivileged worker; the session cgroup subtree is **delegated** (`Delegate=` in the unit) so T2 freeze needs no privilege | Reduces root surface |
+| `F1.RT.07` | Privilege split: tiny privileged loader (`aisme-loaderd`, `Type=oneshot`, `CAP_BPF`/`CAP_NET_ADMIN`/`CAP_PERFMON` and **not** `CAP_SYS_ADMIN`) vs. unprivileged worker (`CapabilityBoundingSet=`, `NoNewPrivileges=yes`, `User=aisme`); the session cgroup subtree is **delegated** (`Delegate=yes` in the unit) so T2 freeze needs no privilege. The units live in `deploy/systemd/` and `aisme-loaderd::units` checks each of those properties, so a hardening directive cannot be quietly dropped | Reduces root surface |
 | `F1.SIM.01` | `aisme-agentsim` replays a recorded trace **preserving inter-arrival timing**, with `--speed` and `--seed`; emits the hidden correlation token per declared tool call (§4.6) | One artefact serves the CPU gate and the correlation gate |
 | `F1.SIM.02` | Trace format: an append-only log of `{ t_offset_us, action, args_hash, declared_intent, correlation_token }`, one line per agent action, plus a summary block carrying the §2.22 counts so a trace can be checked against the spec | Diffable, hashable, human-readable |
 | `F1.RT.08` | Crate lints: `#![forbid(unsafe_code)]` in `aisme-core`; `#![deny(clippy::unwrap_used, clippy::expect_used)]` in `aisme-agentd` | §3.4, §3.5 — a panic in a security daemon is a silent protection outage |
@@ -2851,6 +2851,7 @@ AI-SYSTEM-MONITOR/
 │   ├── aisme-sdkhost/       [L2] SDK host adapter (Sensor + Enforcer for SDK peers)
 │   └── aisme-agentsim/      [L4] Agent simulator for the reference workload
 │
+├── deploy/systemd/               Units: the privilege split, delegation, budget limits (F1.RT.07)
 ├── driver/aisme-flt/             [POST — ADR-02] Windows minifilter (C11/WDK)
 ├── mobile/android/               AI Sentinel — VpnService shim (Kotlin, thin)
 ├── mobile/ios/                   AI Sentinel — NEPacketTunnelProvider (Swift, thin)

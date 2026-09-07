@@ -1,0 +1,40 @@
+# SPDX-License-Identifier: Apache-2.0
+#
+# The privileged half of the split (F1.RT.07). It holds CAP_BPF and
+# CAP_NET_ADMIN long enough to load the programs and attach them, hands the
+# resulting file descriptors to agentd over the socket, and exits. Nothing
+# long-running holds those capabilities.
+[Unit]
+Description=AISME privileged loader
+Documentation=https://github.com/ealcober/aisme
+Before=aisme-agentd.service
+RequiresMountsFor=/sys/fs/bpf
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/lib/aisme/aisme-loaderd --handoff /run/aisme/loader.sock
+
+# The whole point: these two capabilities, and nothing else. CAP_SYS_ADMIN is
+# deliberately absent — a loader that could do anything would make the split
+# decorative.
+CapabilityBoundingSet=CAP_BPF CAP_NET_ADMIN CAP_PERFMON
+AmbientCapabilities=CAP_BPF CAP_NET_ADMIN CAP_PERFMON
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=no
+RestrictAddressFamilies=AF_UNIX AF_NETLINK
+RestrictNamespaces=yes
+RestrictRealtime=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+SystemCallArchitectures=native
+RuntimeDirectory=aisme
+RuntimeDirectoryMode=0750
+
+[Install]
+WantedBy=multi-user.target

@@ -29,6 +29,7 @@ All notable changes to this repository. Format: [Keep a Changelog](https://keepa
   ```
 
 ### Added
+- **`F1.RT.07` — the privilege split** as `deploy/systemd/` units (oneshot loader with two capabilities and no `CAP_SYS_ADMIN`; daemon with none, `NoNewPrivileges` and `Delegate=yes` for T2's freeze) plus `aisme-loaderd::units`, which checks each property and is shown failing on each violation. The plan's Part VI tree gains `deploy/systemd/`. 3 tests.
 - **`F1.RT.06` — self-observability**: §5.6.2's metric names in `aisme-core::metrics` with a snapshot that folds ticks, ring depth, drops, risk and tier, and `agentd`'s `/proc/self` sampler for RSS and CPU in integer thousandths; unmeasured values stay absent rather than reading as zero. 6 tests.
 - **`F1.RT.05` — the WAL format** (`aisme-core::wal`): 64 MB segments of fixed 320-byte records behind a header carrying the wire version and schema hash; crash-safe replay by offset that keeps everything before a torn tail and re-reads it rather than skipping; foreign-wire segments skipped with both versions named. The plan's `rkyv` is replaced, with the reason in the row. 4 tests.
 - **`F1.RT.04` — bounded backpressure** (`aisme-core::ring`): a fixed ring that drops the new rather than the old, counts drops, and emits a `DropNotice` event with the gap's size once per gap. 4 tests, including 10 000 pushes through 8 slots with the capacity unmoved.

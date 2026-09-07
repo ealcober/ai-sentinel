@@ -17,6 +17,7 @@ pub mod ontology;
 pub mod policy;
 pub mod sensor;
 pub mod taint;
+pub mod tier;
 
 pub use adjudicate::{
     AdjudicationChannel, Adjudicator, BoxFuture, Escalation, GrantCeiling, PolicyDocument,
@@ -40,3 +41,4 @@ pub use sensor::{
     SessionDiscovery,
 };
 pub use taint::{DecayPolicy, Declassification, Declassified, Taint};
+pub use tier::{degradations, tier_of, Degradation, State, Tier, Transition};

@@ -20,6 +20,7 @@ pub mod risk;
 pub mod sensor;
 pub mod taint;
 pub mod tier;
+pub mod weights;
 
 pub use adjudicate::{
     AdjudicationChannel, Adjudicator, BoxFuture, Escalation, GrantCeiling, PolicyDocument,
@@ -46,3 +47,4 @@ pub use sensor::{
 };
 pub use taint::{DecayPolicy, Declassification, Declassified, Taint};
 pub use tier::{degradations, tier_of, Degradation, State, Tier, Transition};
+pub use weights::{SignatureVerifier, SignedWeights, WeightsError};

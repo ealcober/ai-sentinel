@@ -402,7 +402,21 @@ cg2 = cg2_mount is not None
 # cgroup2 mount answers for the freezer (cgroup.freeze, kernel >= 5.2).
 sizes = (ctypes.c_uint16 * 3)()
 unotify = libc.syscall(ctypes.c_long(317), ctypes.c_uint(3), ctypes.c_uint(0), ctypes.byref(sizes)) == 0
-freeze = cg2 and os.path.exists(os.path.join(cg2_mount, "cgroup.freeze"))
+# `cgroup.freeze` "exists on non-root cgroups" (kernel cgroup-v2.rst): the root
+# cgroup never has it, on any kernel, so reading the mount root reports "no
+# freezer" everywhere — measured on 5.4 before this was fixed. Make a child,
+# ask there, remove it.
+freeze = False
+if cg2:
+    probe_dir = os.path.join(cg2_mount, "aisme-freeze-probe")
+    try:
+        os.mkdir(probe_dir)
+        freeze = os.path.exists(os.path.join(probe_dir, "cgroup.freeze"))
+    except OSError as e:
+        print("cgroup_freeze probe:", e)
+    finally:
+        if os.path.isdir(probe_dir):
+            os.rmdir(probe_dir)
 print("landlock_abi:", abi if abi > 0 else "unavailable")
 for key in ("CONFIG_BPF_LSM", "CONFIG_CGROUP_BPF", "CONFIG_DEBUG_INFO_BTF", "CONFIG_LSM"): print(k(key))
 print("btf_vmlinux:", "present" if btf else "absent"); print("cgroup2:", "yes" if cg2 else "no")

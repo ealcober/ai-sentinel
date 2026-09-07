@@ -55,6 +55,14 @@ impl StrId {
     }
 }
 
+impl Default for StrId {
+    /// [`StrId::NONE`]: a default handle names nothing, and resolves to
+    /// nothing, rather than to whatever sits in slot zero.
+    fn default() -> StrId {
+        StrId::NONE
+    }
+}
+
 /// The string offered was longer than a slot holds.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct TooLong {

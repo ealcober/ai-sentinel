@@ -3156,6 +3156,7 @@ Adopted largely from the research, which was sound here.
 | `SuppressionRule` | Changes **notification only** (`I-26`) | `id`, `match`, `scope`, `ttl`, `origin`, `hits`, `report` |
 | `ToolResult` | What a tool returned — the context plane | `toolcall_id`, `origin` (File\|Web\|Mcp\|Sdk), `content_hash`, `instruction_bearing`, `taint` |
 | `Finding` | A detector fired (Annex G) | `dt`, `severity`, `evidence_refs[]`, `suppressed_by?` |
+| `Rule` | A compiled policy rule a decision cites — the target `denied_by` and `declassified_by` name (`F1.ON.01`: an edge needs a node at each end) | `rule_id`, `generation` |
 | *(verdict fields)* | Carried on every decision event | `decided_by` (the rule that supplied the maximum, §B.10), `suppressed_by?` (`I-26`) |
 
 ### A.2 Edges

@@ -150,9 +150,22 @@ impl Sensor for BpfSensor {
         // string: a backport makes the version wrong in one direction and a
         // vendor kernel in the other, which is the lesson F0.VM.02 paid for.
         let mut ebpf = EbpfLoader::new().load(OBJECT).map_err(|e| {
+            // The loader's own words first, then the kernel, and a cause only
+            // where one was actually established. An earlier version of this
+            // message blamed BPF_MAP_TYPE_RINGBUF for every failure; a run on
+            // 6.8 then reported a missing-BTF parse error dressed as a
+            // ring-buffer problem, which is a cause asserted rather than
+            // measured — the thing this project treats as a defect everywhere
+            // else.
+            let text = e.to_string();
+            let likely = if text.contains("map") && text.contains("create") {
+                " — a kernel below 5.8 has no BPF_MAP_TYPE_RINGBUF, and F2 requires it; the \
+                 perf-buffer fallback is F3.PT.*, not this phase"
+            } else {
+                ""
+            };
             Error::unsupported(format!(
-                "kernel {} refused the object; BPF_MAP_TYPE_RINGBUF needs 5.8 and the ring buffer \
-                 is required in F2 — the perf-buffer fallback is F3.PT.*, not this phase: {e}",
+                "kernel {} refused the object: {text}{likely}",
                 Self::kernel_release()
             ))
         })?;

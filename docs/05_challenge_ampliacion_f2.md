@@ -507,6 +507,44 @@ publication path beside them.
   differently on any matrix kernel — inner-map replacement semantics changed across releases and
   that is exactly the kind of fact this project keeps.
 
+### 6. The specified mechanism does not build at this pin (2026-09-07)
+
+Point 4 names `BPF_MAP_TYPE_ARRAY_OF_MAPS` with two inner LPM tries. At the
+pinned `aya-ebpf 0.2.1` that type exists **only as a BTF map**
+(`src/btf_maps/of_maps/`, `#[btf_map]`, emitted into `.maps`), while the
+`F2.WS.01` program's four maps are `#[map]` and land in the legacy `maps`
+section. One object can carry both sections — verified with `readelf`: `maps`
+and `.maps`, with `AISME_POLICY` and `AISME_POLICY_META` in the second. **It
+does not load.**
+
+| Attempt | What the loader said |
+|---|---|
+| Both sections, default build | `error parsing BPF object: no BTF parsed for object` |
+| `[profile.release] debug = 2` | no `.BTF` section is emitted at all |
+| … plus `-C link-arg=--btf` | four BTF sections present; `error parsing BPF object: BTF error` |
+
+Measured on **6.8 and 5.4**, and the important part is that 6.8 had been
+`ACCEPTED` before: adding the maps **regressed a verified program**. The object
+was returned to its verified state and re-measured — `ACCEPTED`, `ringbuf:
+true`, `health: Healthy` — before anything else was written.
+
+**A prediction of mine fell**, and one of my own greps nearly produced a false
+finding first: scoped to `src/maps/` it printed "does not exist" for a type that
+lives in `src/btf_maps/`. The type exists; what does not work is the pairing of
+this aya with this bpf-linker's BTF.
+
+**So the double buffer is not built into this object.** The fallback this point
+predicted is the one to take: the policy maps go in a **second object** the
+loader creates and owns, which keeps a verified program verified and puts the
+policy maps where `F3.PT.02` reads them anyway. That is the shape the next
+attempt takes, and it is a numbered blocker rather than a silent omission.
+
+What **is** built and verified: the policy file an operator edits
+(`deploy/policy/skeleton.aisme`) compiles through the real compiler, and
+`BpfTrieBackend` lowers it to LPM keys with `prefix_len` in bits, refusing a
+prefix too long for the key rather than truncating it — a truncated key matches
+a *shorter* prefix, which is a broader rule than the one written.
+
 **Closing.** Verified against the plan's `F2.WS.04` row (`:1622`), the "Why each seam matters"
 table that scopes kernel-side evaluation out of F2, §B.2 `PL-04`, and `F1.PL.03`'s
 `PolicyBackend` as implemented. Nothing of the skeleton fell; one silence was filled: "published

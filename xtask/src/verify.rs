@@ -210,6 +210,11 @@ fn architecture_rules(
         .filter(|(_, &l)| l == 2)
         .map(|(k, _)| k.clone())
         .collect();
+    let engines: std::collections::BTreeSet<String> = layers
+        .iter()
+        .filter(|(_, &l)| l == 3)
+        .map(|(k, _)| k.clone())
+        .collect();
     for (label, outcome) in [
         (
             "A-01  aisme-core is platform-free",
@@ -221,7 +226,7 @@ fn architecture_rules(
         ),
         (
             "A-05  only the composition root names an adapter",
-            crate::rules::a05_composition_root_is_the_only_platform_module(&adapters),
+            crate::rules::a05_composition_root_is_the_only_platform_module(&adapters, &engines),
         ),
         (
             "F0.GATE.05  no forbidden dependency",

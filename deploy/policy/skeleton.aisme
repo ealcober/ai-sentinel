@@ -1,0 +1,48 @@
+# F2's policy — the walking skeleton's three rules and its write scope.
+#
+# A file, not a string in a test: the gate compiles what an operator would edit,
+# through `aisme_core::policy::compile_with`, and publishes the result. A
+# skeleton that published a hand-built `CompiledPolicy` would prove nothing
+# about the pipeline it exists to prove.
+#
+# `$workspace` is bound by `aisme run` at session start (`F2.WS.08`); nothing
+# here hard-codes a path that only holds on one machine.
+
+[session.defaults]
+# The shipped values (Annex B). Written out rather than left implicit, because
+# this file is also the worked example an operator copies. `profile` is the
+# grammar's switch: "default" or "strict".
+learning_mode_days = 7
+grant_ttl_days = 30
+profile = "default"
+
+# 1. The credential store is denied outright. SYSTEM_CONFIG, FILELESS_EXECUTE
+#    and SELF_PROTECTION cannot be prompted or suppressed at all (`I-05`);
+#    CREDENTIALS can, which is why this rule states the verdict rather than
+#    relying on a group default.
+[[rule]]
+id = "deny-shadow"
+group = "CREDENTIALS"
+match = { path_under = "/etc/shadow" }
+verdict = "deny"
+
+# 2. Cloud credentials are the escalate class: the syscall is held and someone
+#    is asked. This is the rule `F2.WS.05` traps on and `F2.WS.06` answers.
+[[rule]]
+id = "escalate-aws"
+group = "CREDENTIALS"
+match = { path_glob = "~/.aws/**" }
+verdict = "escalate"
+
+# 3. The write scope (`F2.WS.11`): a write outside the session's declared
+#    workspace is denied in kernel by one Landlock ruleset applied before
+#    `exec`. The rule is stated here so the policy — not the code — is what
+#    says where the boundary is.
+[[rule]]
+id = "scope-writes"
+group = "FILES_OUTSIDE_WORKSPACE"
+match = { path_under = "$workspace" }
+verdict = "allow"
+
+# Everything not named above is allowed: §B.10's default verdict, stated so a
+# reader does not have to infer it from an absence.

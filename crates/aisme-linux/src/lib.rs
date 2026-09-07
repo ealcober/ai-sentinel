@@ -5,10 +5,14 @@
 //! here, never in the core (plan §3.1).
 
 #[cfg(target_os = "linux")]
+mod policy;
+#[cfg(target_os = "linux")]
 mod resolve;
 #[cfg(target_os = "linux")]
 mod sensor;
 
+#[cfg(target_os = "linux")]
+pub use policy::{BpfTrieBackend, TrieEntry, TrieImage, TRIE_PATH_BYTES};
 #[cfg(target_os = "linux")]
 pub use resolve::{RealpathResolver, ResolverCounts};
 #[cfg(target_os = "linux")]

@@ -115,25 +115,36 @@ pub(crate) fn a03_wire_is_no_std_zero_deps(direct_deps: &[(String, String)]) -> 
 /// recognised by path.
 pub(crate) fn a05_composition_root_is_the_only_platform_module(
     adapters: &BTreeSet<String>,
+    engines: &BTreeSet<String>,
 ) -> Result<(), String> {
-    let root = Path::new("crates/aisme-agentd/src/platform");
     let mut bad = Vec::new();
-    for (path, body) in rust_sources("crates/aisme-agentd/src") {
-        if path.starts_with(root) {
-            continue;
-        }
-        let body = code_only(&body);
-        if body.contains("cfg(target_os") {
-            bad.push(format!(
-                "{} uses cfg(target_os) outside the composition root",
-                path.display()
-            ));
-        }
-        for adapter in adapters {
-            // `use aisme_linux::…` is the concrete-adapter form the rule forbids.
-            let ident = adapter.replace('-', "_");
-            if body.contains(&format!("use {ident}::")) || body.contains(&format!("{ident}::")) {
-                bad.push(format!("{} names the adapter {adapter}", path.display()));
+    // Every L3 engine, not only `agentd`. A binary holding `CAP_BPF` is exactly
+    // the one whose platform choices must sit in one auditable place, and a
+    // check that scanned a single crate would let the next engine scatter them
+    // while still reporting PASS.
+    for engine in engines {
+        let src = format!("crates/{engine}/src");
+        let root_dir = PathBuf::from(&src).join("platform");
+        let root_file = PathBuf::from(&src).join("platform.rs");
+        for (path, body) in rust_sources(&src) {
+            if path.starts_with(&root_dir) || path == root_file {
+                continue;
+            }
+            let body = code_only(&body);
+            if body.contains("cfg(target_os") {
+                bad.push(format!(
+                    "{} uses cfg(target_os) outside {engine}'s composition root",
+                    path.display()
+                ));
+            }
+            for adapter in adapters {
+                // `use aisme_linux::…` is the concrete-adapter form the rule
+                // forbids.
+                let ident = adapter.replace('-', "_");
+                if body.contains(&format!("use {ident}::")) || body.contains(&format!("{ident}::"))
+                {
+                    bad.push(format!("{} names the adapter {adapter}", path.display()));
+                }
             }
         }
     }

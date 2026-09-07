@@ -29,6 +29,7 @@ All notable changes to this repository. Format: [Keep a Changelog](https://keepa
   ```
 
 ### Added
+- **`F1.PA.03` — `AdjudicatorLadder`**: preference-ordered delivery with per-channel budgets, `I-06` ceilings enforced by the ladder (a refused `allow` is recorded and the next rung decides), and a timeout path that applies the caller's session default locally and `deny` remotely. 5 tests.
 - **`F1.PA.02` — `MockSensor`, `NullEnforcer`, `PolicyAdjudicator`, `MemorySink`**: the complete pipeline with no kernel and no platform. **`F1.EV.03`'s producer-coverage clause now runs and passes** — the mock's `CATALOGUE` is an explicit list of every kind, so a new variant with no producer fails the check. 5 mock tests, 2 producer tests.
 - **`F1.PA.01` — the trait catalogue** (`aisme-core`): `Sensor`, `Enforcer`, `Adjudicator`, `SessionDiscovery`, `EventSink`, `PolicySource` per §3.2, with `EventBatch` (fixed capacity, refuses and counts), `SensorHealth`, `EnforcementTier`, `SuspendScope`, §2.20.5's channel budgets and timeout defaults, `GrantCeiling` (`I-06`), `CapabilitySet`/`SentinelCapabilities` per §2.23 defaulting to absent, and one small `Error`. All object-safe. 6 tests.
 - **`F1.PL.10` — `decided_by`**: `evaluate(policy, facts)` returns the `max` verdict with the rule that supplied it, the grant that answered an escalation and the suppression that silences notification; ties go to canonical order; a glob matcher bounded by the compiler's budget. 6 tests on the sketch, including the compound slam condition and a suppression leaving an escalation untouched.

@@ -29,6 +29,7 @@ All notable changes to this repository. Format: [Keep a Changelog](https://keepa
   ```
 
 ### Added
+- **`F1.RT.05` — the WAL format** (`aisme-core::wal`): 64 MB segments of fixed 320-byte records behind a header carrying the wire version and schema hash; crash-safe replay by offset that keeps everything before a torn tail and re-reads it rather than skipping; foreign-wire segments skipped with both versions named. The plan's `rkyv` is replaced, with the reason in the row. 4 tests.
 - **`F1.RT.04` — bounded backpressure** (`aisme-core::ring`): a fixed ring that drops the new rather than the old, counts drops, and emits a `DropNotice` event with the gap's size once per gap. 4 tests, including 10 000 pushes through 8 slots with the capacity unmoved.
 - **`F1.RT.03` — the hot loop** (`aisme-core::engine`): drain → classify → intern → risk → detect → sink, everything preallocated, with a counting-allocator test measuring **zero** allocations across ten steady-state ticks (and a control test that the counter would notice one). `DetectorSet::observe_into` writes into a reused buffer capped at 32 findings per tick; `CountingSink` is the sink shape the WAL will have. 4 engine tests, 2 allocation tests.
 - **`F1.RT.02` — the capped runtime**: tokio with two worker threads, 512 KiB stacks, named threads and a minimal feature set, plus the hot loop's `LocalSet`. 2 tests.

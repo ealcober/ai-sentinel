@@ -22,6 +22,7 @@ pub mod risk;
 pub mod sensor;
 pub mod taint;
 pub mod tier;
+pub mod wal;
 pub mod weights;
 
 pub use adjudicate::{
@@ -52,4 +53,5 @@ pub use sensor::{
 };
 pub use taint::{DecayPolicy, Declassification, Declassified, Taint};
 pub use tier::{degradations, tier_of, Degradation, State, Tier, Transition};
+pub use wal::{replay, SegmentHeader, WalError};
 pub use weights::{SignatureVerifier, SignedWeights, WeightsError};

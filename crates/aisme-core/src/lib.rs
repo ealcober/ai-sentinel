@@ -11,6 +11,7 @@ pub mod enforce;
 pub mod error;
 pub mod intern;
 pub mod labels;
+pub mod mock;
 pub mod ontology;
 pub mod policy;
 pub mod sensor;
@@ -25,6 +26,9 @@ pub use enforce::{EnforcementTier, Enforcer, EscalationId, SuspendScope, Suspend
 pub use error::{Error, ErrorKind, Result};
 pub use intern::{Interner, InternerStats, StrId, TooLong};
 pub use labels::{LabelError, TreeLabels};
+pub use mock::{
+    catalogue_trace, MemorySink, MockSensor, NullEnforcer, PolicyAdjudicator, CATALOGUE,
+};
 pub use ontology::{
     BootNs, DetectorId, Digest, Edge, EdgeKind, EvidenceRefs, InstructionSignals, Node, NodeId,
     NodeKind, PathClass, PermissionGroup, ResultOrigin, SessionId, Severity, SuppressionOrigin,

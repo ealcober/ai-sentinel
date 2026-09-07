@@ -2,7 +2,11 @@
 //! `F1.PL.02`: the compiler's static validation, on Annex B's own text and
 //! on the cases §B.10–§B.12 name.
 
-use aisme_core::policy::{compile, parse, Bindings, CompileErrorKind, Settings, Term};
+use aisme_core::ontology::GrantedBy;
+use aisme_core::policy::ast::Match;
+use aisme_core::policy::{
+    compile, compile_with, parse, Bindings, CompileErrorKind, GrantInput, GrantKind, Settings, Term,
+};
 use aisme_ebpf_common::Verdict;
 
 const SKETCH: &str = include_str!("fixtures/sketch.toml");
@@ -411,4 +415,181 @@ fn the_pl06_grammar_items_compile_and_strict_makes_every_group_non_promptable() 
     // Without a [session.defaults] block, the shipped values apply.
     let bare = rule("r", "EXECUTE", "{ exec_class = \"a\" }", "warn", "");
     assert_eq!(compile_src(&bare).unwrap().settings, Settings::DEFAULT);
+}
+
+/// `F1.PL.07`: grants and suppressions in the same rule space, and `I-26`.
+#[test]
+fn the_sketch_suppression_compiles_beside_the_escalation_it_merely_overlaps() {
+    let compiled = compile_src(SKETCH).unwrap_or_else(|e| panic!("{e:#?}"));
+    assert_eq!(compiled.suppressions.len(), 1);
+    let s = &compiled.suppressions[0];
+    assert_eq!(
+        s.predicate.terms,
+        [Term::PathUnder(vec!["/home/u/proj/node_modules".into()])]
+    );
+    assert_eq!(s.ttl_days, 30);
+    assert_eq!(s.report.as_deref(), Some("lm-2026-08-24"));
+}
+
+#[test]
+fn a_suppression_that_targets_what_it_may_not_silence_does_not_compile() {
+    let sup = |m: &str| {
+        format!("[[suppression]]\nmatch = {m}\nscope = \"workspace\"\nttl_days = 30\norigin = \"manual\"\n")
+    };
+    let cases = [
+        (
+            rule(
+                "esc",
+                "CREDENTIALS",
+                "{ path_glob = \"**/.env\" }",
+                "escalate",
+                "",
+            ),
+            sup("{ path_glob = \"**/.env\" }"),
+            "escalates",
+        ),
+        (
+            rule(
+                "den",
+                "PERSISTENCE",
+                "{ path_under = \"/etc/cron.d\" }",
+                "deny",
+                "",
+            ),
+            sup("{ path_under = \"/etc/cron.d/nightly\" }"),
+            "denies",
+        ),
+        (
+            rule(
+                "sys",
+                "SYSTEM_CONFIG",
+                "{ path_under = \"/etc\" }",
+                "deny",
+                "",
+            ),
+            sup("{ path_under = \"/etc/hosts\" }"),
+            "I-05",
+        ),
+        (
+            rule(
+                "crit",
+                "EXECUTE",
+                "{ exec_class = \"a\" }",
+                "warn",
+                "severity_floor = \"critical\"",
+            ),
+            sup("{ exec_class = \"a\" }"),
+            "CRITICAL",
+        ),
+        (
+            rule(
+                "nosup",
+                "EXECUTE",
+                "{ exec_class = \"b\" }",
+                "warn",
+                "suppressible = false",
+            ),
+            sup("{ exec_class = \"b\" }"),
+            "suppressible = false",
+        ),
+    ];
+    for (r, s, because) in cases {
+        let errs = compile_src(&(r + &s)).unwrap_err();
+        assert!(
+            matches!(&errs[0].kind, CompileErrorKind::SuppressionTargets { because: b, .. } if b.contains(because)),
+            "{because}: {errs:#?}"
+        );
+        assert!(errs[0].to_string().contains("I-26"));
+    }
+    // A warn it merely overlaps, or a warn it fits inside, is what suppression is for.
+    let ok = rule(
+        "noise",
+        "PACKAGE_INSTALL",
+        "{ exec_class = \"package-manager\" }",
+        "warn",
+        "",
+    ) + &sup("{ exec_class = \"package-manager\", scope_rel = \"user\" }");
+    compile_src(&ok).unwrap_or_else(|e| panic!("{e:#?}"));
+}
+
+#[test]
+fn grants_land_in_the_rule_space_with_their_ttl_and_are_refused_where_they_cannot_apply() {
+    let policy = parse(SKETCH).unwrap();
+    let grant = |id: &str, group: &str, m: &str, kind: GrantKind| GrantInput {
+        id: id.into(),
+        group: aisme_core::ontology::PermissionGroup::parse(group).unwrap(),
+        scope: parse(&rule("tmp", group, m, "allow", ""))
+            .unwrap()
+            .rules
+            .remove(0)
+            .r#match,
+        kind,
+        granted_by: GrantedBy::Human { uid: 1000 },
+    };
+    let always = grant(
+        "g-always",
+        "CREDENTIALS",
+        "{ path_glob = \"${workspace}/.env\" }",
+        GrantKind::Always,
+    );
+    let session = grant(
+        "g-session",
+        "NETWORK_EGRESS",
+        "{ dest_in = \"api.example.com\" }",
+        GrantKind::Session,
+    );
+    let compiled = compile_with(&policy, &bindings(), &[session.clone(), always.clone()])
+        .unwrap_or_else(|e| panic!("{e:#?}"));
+    let ids: Vec<&str> = compiled.grants.iter().map(|g| g.id.as_str()).collect();
+    assert_eq!(ids, ["g-always", "g-session"], "canonical by id");
+    assert_eq!(
+        compiled.grants[0].ttl_days,
+        Some(30),
+        "Always decays with grant_ttl_days"
+    );
+    assert_eq!(
+        compiled.grants[1].ttl_days, None,
+        "Session dies with the session"
+    );
+    assert_eq!(
+        compiled.grants[0].predicate.terms,
+        [Term::PathGlob(vec!["/home/u/proj/.env".into()])]
+    );
+
+    let on_i05 = grant(
+        "g-sys",
+        "SYSTEM_CONFIG",
+        "{ path_under = \"/etc/hosts\" }",
+        GrantKind::Always,
+    );
+    let errs = compile_with(&policy, &bindings(), &[on_i05]).unwrap_err();
+    assert!(
+        matches!(errs[0].kind, CompileErrorKind::GrantNeverPromptable { .. }),
+        "{errs:#?}"
+    );
+    assert!(errs[0].to_string().contains("I-05"));
+
+    // A grant entirely inside a deny of its own group can never apply.
+    let src = rule(
+        "cron-deny",
+        "PERSISTENCE",
+        "{ path_under = \"/etc/cron.d\" }",
+        "deny",
+        "",
+    );
+    let denied = parse(&src).unwrap();
+    let inside = grant(
+        "g-cron",
+        "PERSISTENCE",
+        "{ path_under = \"/etc/cron.d/x\" }",
+        GrantKind::Session,
+    );
+    let errs = compile_with(&denied, &bindings(), &[inside]).unwrap_err();
+    assert_eq!(
+        errs[0].kind,
+        CompileErrorKind::GrantUnreachable {
+            shadowed_by: "cron-deny".into()
+        }
+    );
+    let _ = Match::default();
 }

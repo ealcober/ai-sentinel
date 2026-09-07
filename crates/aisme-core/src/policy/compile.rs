@@ -27,7 +27,10 @@
 
 use aisme_ebpf_common::Verdict;
 
-use super::ast::{Assert, Dimension, Match, MatchKey, Policy, Profile, Rule, Segment, Span, Text};
+use super::ast::{
+    Assert, Dimension, Match, MatchKey, Policy, Profile, Rule, Segment, Span, Suppression, Text,
+};
+use crate::ontology::{GrantedBy, SuppressionOrigin};
 use crate::ontology::{PermissionGroup, Severity};
 use crate::taint::Taint;
 
@@ -131,6 +134,26 @@ pub enum CompileErrorKind {
     /// `profile = "strict"` makes every group non-promptable; a rule that
     /// says `promptable = true` under it does not compile.
     StrictProfile,
+    /// `I-26`: a suppression that targets — fits entirely inside the match
+    /// of — a rule it may not silence: an `I-05` group, an `escalate`, a
+    /// `deny`, a `CRITICAL` severity floor, or `suppressible = false`.
+    SuppressionTargets {
+        /// The rule it would silence.
+        rule_id: String,
+        /// Why that rule may not be silenced.
+        because: &'static str,
+    },
+    /// A grant on an `I-05` group: never grantable through a prompt.
+    GrantNeverPromptable {
+        /// The group.
+        group: PermissionGroup,
+    },
+    /// A grant that fits entirely inside a `deny` rule can never answer an
+    /// escalation: nothing under it escalates.
+    GrantUnreachable {
+        /// The deny rule.
+        shadowed_by: String,
+    },
 }
 
 impl core::fmt::Display for CompileError {
@@ -162,6 +185,19 @@ impl core::fmt::Display for CompileError {
                 f,
                 "`promptable = true` under `profile = \"strict\"`, which makes every group non-promptable (F7.PS.06)"
             ),
+            CompileErrorKind::SuppressionTargets { rule_id, because } => write!(
+                f,
+                "suppression targets rule \"{rule_id}\", which {because} — a suppression silences warn and timeline noise, nothing else (I-26)"
+            ),
+            CompileErrorKind::GrantNeverPromptable { group } => write!(
+                f,
+                "grant on {}: never grantable through a prompt (I-05)",
+                group.as_str()
+            ),
+            CompileErrorKind::GrantUnreachable { shadowed_by } => write!(
+                f,
+                "grant can never apply: everything it covers is denied by \"{shadowed_by}\", and a deny is not promptable"
+            ),
             CompileErrorKind::NeverPromptable { group, what } => write!(
                 f,
                 "{} is never promptable (I-05): {what} does not compile — a prompt is an attack surface on this group",
@@ -180,6 +216,67 @@ pub struct CompiledPolicy {
     pub settings: Settings,
     /// Rules in canonical order (by id), each with a resolved predicate.
     pub rules: Vec<CompiledRule>,
+    /// Grants, in the same space (§B.2 `PL-06`), canonical by id.
+    pub grants: Vec<CompiledGrant>,
+    /// Suppression rules, in the same space, in the order written (they have
+    /// no id of their own in the grammar; their position is their identity).
+    pub suppressions: Vec<CompiledSuppression>,
+}
+
+/// A grant the adjudicator recorded (`F7.PS.02`), offered to the compiler.
+/// Grants are not in the policy grammar: they live in the per-machine
+/// store and enter here as input.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct GrantInput {
+    /// The grant's id, the diff key.
+    pub id: String,
+    /// The group answered.
+    pub group: PermissionGroup,
+    /// The scope answered, in the match language.
+    pub scope: Match,
+    /// `Always` or this session.
+    pub kind: GrantKind,
+    /// Who answered.
+    pub granted_by: GrantedBy,
+}
+
+/// How long a grant lives.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum GrantKind {
+    /// Until `grant_ttl_days` of non-use (`Always` in the prompt).
+    Always,
+    /// Until the session ends.
+    Session,
+}
+
+/// A grant in the rule space: same predicate machinery, a TTL.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct CompiledGrant {
+    /// The id.
+    pub id: String,
+    /// The group.
+    pub group: PermissionGroup,
+    /// The scope, resolved and canonical.
+    pub predicate: Predicate,
+    /// Days of non-use before it expires; `None` dies with the session.
+    pub ttl_days: Option<u32>,
+    /// Who answered.
+    pub granted_by: GrantedBy,
+}
+
+/// A suppression rule in the rule space (`I-26`: notification only).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct CompiledSuppression {
+    /// The match, resolved and canonical.
+    pub predicate: Predicate,
+    /// The scope, as written.
+    pub scope: String,
+    /// Days before it decays, like a grant.
+    pub ttl_days: u32,
+    /// Where it came from.
+    pub origin: SuppressionOrigin,
+    /// The learning-mode report that produced it.
+    pub report: Option<String>,
 }
 
 /// `[session.defaults]`, resolved: what was written, else Annex B's shipped
@@ -367,12 +464,27 @@ impl Predicate {
     }
 }
 
-/// Compile a parsed policy for one session.
+/// Compile a parsed policy for one session, with no grants.
 ///
 /// # Errors
 ///
 /// Every error found, each naming its rule.
 pub fn compile(policy: &Policy, bindings: &Bindings) -> Result<CompiledPolicy, Vec<CompileError>> {
+    compile_with(policy, bindings, &[])
+}
+
+/// Compile a parsed policy for one session, with the grants the machine's
+/// store holds: grants and suppression rules land in the same rule space
+/// as the rules, with their TTLs (§B.2 `PL-06`).
+///
+/// # Errors
+///
+/// Every error found, each naming its rule, grant or suppression.
+pub fn compile_with(
+    policy: &Policy,
+    bindings: &Bindings,
+    grants: &[GrantInput],
+) -> Result<CompiledPolicy, Vec<CompileError>> {
     let mut errors = Vec::new();
     let settings = policy
         .defaults
@@ -393,8 +505,23 @@ pub fn compile(policy: &Policy, bindings: &Bindings) -> Result<CompiledPolicy, V
     check_asserts(&policy.rules, &policy.asserts, &mut errors);
     check_reachability(&rules, &policy.rules, &mut errors);
     rules.sort_by(|a, b| a.id.cmp(&b.id));
+    let suppressions = policy
+        .suppressions
+        .iter()
+        .filter_map(|s| compile_suppression(s, &rules, bindings, &mut errors))
+        .collect();
+    let mut compiled_grants: Vec<CompiledGrant> = grants
+        .iter()
+        .filter_map(|g| compile_grant(g, &rules, settings, bindings, &mut errors))
+        .collect();
+    compiled_grants.sort_by(|a, b| a.id.cmp(&b.id));
     if errors.is_empty() {
-        Ok(CompiledPolicy { settings, rules })
+        Ok(CompiledPolicy {
+            settings,
+            rules,
+            grants: compiled_grants,
+            suppressions,
+        })
     } else {
         errors.sort_by_key(|e| e.span.start);
         Err(errors)
@@ -479,6 +606,111 @@ fn compile_rule(
         promptable: !settings.strict && rule.promptable.unwrap_or(!never),
         suppressible: rule.suppressible.unwrap_or(!never),
         event: rule.event.clone(),
+    })
+}
+
+/// `I-26` as the compiler enforces it: a suppression may silence `warn` and
+/// timeline noise, nothing else. It *targets* a rule when its match fits
+/// entirely inside that rule's — a suppression aimed at silencing it — and
+/// then the rule's verdict, group, severity floor and `suppressible` decide.
+/// Mere overlap is not targeting: Annex B's own sketch silences
+/// `${workspace}/node_modules` beside a global `**/.env` escalation.
+fn compile_suppression(
+    s: &Suppression,
+    rules: &[CompiledRule],
+    bindings: &Bindings,
+    errors: &mut Vec<CompileError>,
+) -> Option<CompiledSuppression> {
+    let before = errors.len();
+    let predicate = resolve(&s.r#match, "[[suppression]]", bindings, errors);
+    if errors.len() > before {
+        return None;
+    }
+    for rule in rules {
+        if !predicate.included_in(&rule.predicate) {
+            continue;
+        }
+        let because = if rule.group.never_promptable() {
+            Some("is on a never-promptable group (I-05)")
+        } else if rule.verdict == Verdict::Escalate {
+            Some("escalates")
+        } else if rule.verdict == Verdict::Deny {
+            Some("denies")
+        } else if rule.severity_floor == Some(Severity::Critical) {
+            Some("carries a CRITICAL severity floor")
+        } else if !rule.suppressible {
+            Some("says `suppressible = false`")
+        } else {
+            None
+        };
+        if let Some(because) = because {
+            errors.push(CompileError {
+                rule_id: None,
+                span: s.span,
+                kind: CompileErrorKind::SuppressionTargets {
+                    rule_id: rule.id.clone(),
+                    because,
+                },
+            });
+        }
+    }
+    if errors.len() > before {
+        return None;
+    }
+    Some(CompiledSuppression {
+        predicate,
+        scope: s.scope.clone(),
+        ttl_days: s.ttl_days,
+        origin: s.origin,
+        report: s.report.clone(),
+    })
+}
+
+/// A grant answers an escalation for its scope. It is refused on an `I-05`
+/// group (never grantable) and when everything it covers is already denied
+/// (nothing under it escalates, so it could never apply).
+fn compile_grant(
+    g: &GrantInput,
+    rules: &[CompiledRule],
+    settings: Settings,
+    bindings: &Bindings,
+    errors: &mut Vec<CompileError>,
+) -> Option<CompiledGrant> {
+    let before = errors.len();
+    if g.group.never_promptable() {
+        errors.push(CompileError {
+            rule_id: Some(g.id.clone()),
+            span: g.scope.span,
+            kind: CompileErrorKind::GrantNeverPromptable { group: g.group },
+        });
+    }
+    let predicate = resolve(&g.scope, &g.id, bindings, errors);
+    if let Some(deny) = rules.iter().find(|r| {
+        r.group == g.group
+            && r.verdict == Verdict::Deny
+            && r.except.is_none()
+            && predicate.included_in(&r.predicate)
+    }) {
+        errors.push(CompileError {
+            rule_id: Some(g.id.clone()),
+            span: g.scope.span,
+            kind: CompileErrorKind::GrantUnreachable {
+                shadowed_by: deny.id.clone(),
+            },
+        });
+    }
+    if errors.len() > before {
+        return None;
+    }
+    Some(CompiledGrant {
+        id: g.id.clone(),
+        group: g.group,
+        predicate,
+        ttl_days: match g.kind {
+            GrantKind::Always => Some(settings.grant_ttl_days),
+            GrantKind::Session => None,
+        },
+        granted_by: g.granted_by,
     })
 }
 

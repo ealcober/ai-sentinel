@@ -9,6 +9,7 @@
 //! in. [`digest`] is BLAKE3 over those bytes, the hash §2.18 chose.
 
 use super::compile::{CompiledPolicy, CompiledRule, Predicate, Term};
+use crate::ontology::GrantedBy;
 
 /// The encoding's own version byte, first in the stream. Bumped when the
 /// layout changes; a reader that sees another value refuses.
@@ -39,6 +40,26 @@ pub fn encode(policy: &CompiledPolicy) -> Vec<u8> {
     put_u32(&mut out, policy.rules.len());
     for rule in &policy.rules {
         put_rule(&mut out, rule);
+    }
+    put_u32(&mut out, policy.grants.len());
+    for grant in &policy.grants {
+        put_str(&mut out, &grant.id);
+        out.push(grant.group as u8);
+        put_predicate(&mut out, &grant.predicate);
+        out.extend_from_slice(&grant.ttl_days.map_or(u32::MAX, |d| d).to_le_bytes());
+        out.push(match grant.granted_by {
+            GrantedBy::Human { .. } => 1,
+            GrantedBy::Policy => 2,
+            GrantedBy::Remote => 3,
+        });
+    }
+    put_u32(&mut out, policy.suppressions.len());
+    for s in &policy.suppressions {
+        put_predicate(&mut out, &s.predicate);
+        put_str(&mut out, &s.scope);
+        out.extend_from_slice(&s.ttl_days.to_le_bytes());
+        out.push(s.origin as u8);
+        put_str(&mut out, s.report.as_deref().unwrap_or(""));
     }
     out
 }

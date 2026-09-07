@@ -21,8 +21,8 @@ pub use backend::{
     VerdictMap,
 };
 pub use compile::{
-    compile, Bindings, CompileError, CompileErrorKind, CompiledPolicy, CompiledRule, Predicate,
-    Settings, Term,
+    compile, compile_with, Bindings, CompileError, CompileErrorKind, CompiledGrant, CompiledPolicy,
+    CompiledRule, CompiledSuppression, GrantInput, GrantKind, Predicate, Settings, Term,
 };
 pub use encode::{digest, encode, PolicyDigest, POLICY_ENCODING_VERSION};
 pub use parse::{parse, ParseError};

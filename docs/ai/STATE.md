@@ -88,7 +88,9 @@ sudo sh -c 'echo ":WSLInterop:M::MZ::/init:PF" > /proc/sys/fs/binfmt_misc/regist
 
 or a new session in this distribution opened from Windows. A third option, the owner's to take: a sudoers line for that one command (`<user> ALL=(root) NOPASSWD: /bin/sh -c echo \:WSLInterop\:M\:\:MZ\:\:/init\:PF > /proc/sys/fs/binfmt_misc/register`) would let `vm` re-register after every guest run instead of the owner doing it by hand each time. **What holds so far**: `vm probe wsl2-<systemd variant>` keeps the guest open with a detached `sleep infinity` session and the entry survived that probe; both guests are currently registered, the systemd one held open (`ps` shows `wsl.exe -d aisme-wsl2-ubuntu-24.04 -- sleep infinity`). **What `vm up wsl2-*` now does**: it takes that first boot itself, waits five seconds, and re-registers the entry with `sudo -n` — or prints the line above and fails, so no later step inherits a dead interop; `vm probe` checks the same after every guest run. The sudoers line is what makes it hands-off. Prediction for the next `vm up` of a fresh import: the entry goes at its first boot and `vm up` says so; every `vm probe` after it leaves it alone.
 
-**Not blocked by this:** everything else. `cargo xtask doctor` reports 15 of 15; `vm probe --all` passes 7 of 7.
+**`/dev/kvm` came up in group `sgx` after the WSL restart of 2026-09-07** (udev's rule says `kvm`; the user is in `kvm`), so `doctor` reports 14 of 15 and the matrix would boot under TCG — an order of magnitude slower, so the GATE F0 `vm probe --all` line waits. Owner action: `sudo chgrp kvm /dev/kvm` (this boot) — `doctor` now prints the observed group and membership instead of assuming `kvm`.
+
+**Not blocked by this:** everything else; `vm probe --all` passed 7 of 7 under KVM on 2026-09-06.
 
 ## Open, not blocking
 

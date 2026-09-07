@@ -24,7 +24,7 @@ All notable changes to this repository. Format: [Keep a Changelog](https://keepa
 - **`F0.VER.19` holds**, and better than claimed: the one-comparison range check compiles to `r1 &= 0xF000; if r1 == 0x4000` and the verifier accepts it. **The first measurement was wrong** — `bpftool prog load` takes the first program in an object, so "load OK" had been `connect4` as a socket filter; `loadall` pins each by name and put `kind_range` itself through the verifier.
 - **`F0.VER.21` holds** after the owner's re-login: `doctor` opens `/dev/kvm` read-write, 15 of 15.
 - `tests/probes/ebpf/` — the two probe programs, excluded from the workspace, same pin as `crates/aisme-ebpf` (`verify-docs` checks the two channels agree), built by `cargo xtask build-ebpf`.
-- `doctor` checks `qemu-img` and `genisoimage`, which `vm` needs.
+- `doctor` checks `qemu-img` and `genisoimage`, which `vm` needs. When `/dev/kvm` is not writable it prints the node's observed group, mode and the user's groups rather than assuming the group is `kvm`: after a WSL restart the node came up as group `sgx` with the user in `kvm`, where `usermod` would have fixed nothing.
 
 ### Fixed
 - **My own conclusion of the day before fell**: "the matrix needs kernels built per version" was true only for `virtme-ng` with the host rootfs. The memory file is renamed `cloud-images-are-the-kernel-matrix.md` and says so where the wrong conclusion was written.

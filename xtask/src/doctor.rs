@@ -101,7 +101,7 @@ const CHECKS: &[Check] = &[
     Check {
         group: "virtualisation",
         label: "/dev/kvm readable and writable",
-        remedy: "sudo usermod -aG kvm $USER, then start a new login session",
+        remedy: "sudo usermod -aG kvm $USER and a new login session — or, when the node came up in another group (see observed), sudo chgrp kvm /dev/kvm",
         unblocks: "F0.VER.21",
     },
     Check {
@@ -143,6 +143,11 @@ pub(crate) fn run() -> u8 {
     println!("\ndoctor never installs. Run these:\n");
     for c in &missing {
         println!("  {}", c.remedy);
+        if c.label == "/dev/kvm readable and writable" {
+            if let Some(observed) = kvm_observed() {
+                println!("      observed: {observed}");
+            }
+        }
         println!("      unblocks {}\n", c.unblocks);
     }
     eprintln!("FAIL doctor — {} prerequisite(s) missing.", missing.len());
@@ -175,6 +180,28 @@ fn probe(label: &str) -> bool {
         "tpm2-tools" => on_path("tpm2_getcap"),
         _ => false,
     }
+}
+
+/// What stands between the user and `/dev/kvm`, read from the node itself.
+///
+/// Group membership is the usual cause, but not the only one: after a WSL
+/// restart the node came up owned by group `sgx` while the user sat in `kvm`
+/// (2026-09-07), although udev's `50-udev-default.rules` says `GROUP="kvm"`.
+/// A remedy that assumes the group is `kvm` sends the owner to `usermod` for
+/// nothing, so the observed group, mode and membership are printed instead.
+fn kvm_observed() -> Option<String> {
+    let node = output("stat", &["-c", "%G %a", "/dev/kvm"])?;
+    let (group, mode) = node.trim().split_once(' ')?;
+    let mine = output("id", &["-Gn"])?;
+    let member = mine.split_whitespace().any(|g| g == group);
+    Some(match (member, group) {
+        (true, _) => format!("/dev/kvm is group {group}, mode {mode}, and you are in {group}: the mode itself denies"),
+        (false, "kvm") => format!("/dev/kvm is group kvm, mode {mode}; your groups: {}", mine.trim()),
+        (false, other) => format!(
+            "/dev/kvm is group {other}, mode {mode} — not kvm, as udev's 50-udev-default.rules sets; your groups: {}",
+            mine.trim()
+        ),
+    })
 }
 
 fn on_path(tool: &str) -> bool {

@@ -8,6 +8,20 @@ rust-version.workspace = true
 publish = false
 
 [dependencies]
+# L2 -> L1 and L0: the traits this adapter implements and the wire it carries.
+aisme-core = { path = "../aisme-core" }
+aisme-ebpf-common = { path = "../aisme-ebpf-common" }
+
+# The loader, and the only new third-party dependency F2 adds (DEP.SUP.06).
+# Justified: it *is* the loader — relocations, map creation, program load,
+# tracepoint attach and the ring-buffer consumer — and the alternative is
+# hand-rolled bpf(2) syscalls inside a security product. Pinned exactly rather
+# than by caret: F0.REPO.02 moved the root toolchain to 1.97.1 and the MSRV to
+# 1.87 *because* this version declares 1.87.0 (F0.VER.01), so a silent minor
+# bump would revalidate none of that. Linux-only by target, because aya does
+# not build elsewhere and A-02 keeps that fact inside this layer.
+[target.'cfg(target_os = "linux")'.dependencies]
+aya = "=0.14.0"
 
 [lints]
 workspace = true

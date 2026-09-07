@@ -150,6 +150,39 @@ unambiguous. It will be documented on the field rather than left for a reader to
 bit was considered and rejected: it would spend wire space distinguishing a value that is already
 impossible.
 
+### 6. What the implementation measured (2026-09-07)
+
+**The tracepoint offsets hold, and are now checked rather than assumed.** The program compiles in
+`filename = 24`, `flags = 32`, `mode = 40`, read from
+`/sys/kernel/debug/tracing/events/syscalls/sys_enter_openat/format` in the guest by
+`cargo xtask vm probe`. Measured on **5.4 and 6.8**: all three `MATCHES` on both. The prediction,
+written first, held.
+
+**Three versions of that check produced no measurement while `vm probe` printed `PASS`**, and the
+sequence is worth keeping because each looked identical from outside. First a `printf` newline
+escape that a layer between the Rust raw string and the guest turned into a real line break, so
+`awk` reported an unterminated string. Then field indices off by one — `$3`/`$5` instead of
+`$2`/`$4` — so `awk` matched nothing, printed nothing and **reported no error at all**. The row
+now compares against the expected value itself and prints `MATCHES`/`DIFFERS`, and prints
+`NONE FOUND` when it parses nothing, because a silent empty answer is precisely the failure this
+row exists to catch.
+
+**A prediction of mine fell: `bpftool` cannot judge this object at all, on any kernel.** I predicted
+the load would be `ACCEPTED` on 6.8 and refused on 5.4 for want of a ring buffer. Both refused, and
+neither refusal is the verifier's: libbpf 5.4 answers *"failed to guess program type based on ELF
+section name `.text`"* because it wants `tracepoint/<category>/<name>`, and libbpf v1.0+ on 6.8
+answers *"legacy map definitions in `maps` section are not supported"*. Both are true of **libbpf**
+and false of **aya**, which parses the bare `tracepoint` section name (`aya-obj` `obj.rs:327`) and
+the legacy `maps` section (`obj.rs:1073`) — verified in the loader's source, not inferred from the
+message. `bpftool` links libbpf; AISME loads with aya; the two disagree about the *container*
+before a single instruction is examined.
+
+**So the verifier clause of this point is owed, and its blocker is already named.** Getting a real
+verdict needs the product's own loader running inside the guest, which is `vm run --with-dist` —
+the gap **point 12** found in GATE F2. The probe row now says `NOT JUDGED` with the reason rather
+than `REFUSED`, because a red that means "the wrong tool asked" reads as "the program is wrong",
+and that is the same false signal in the other direction.
+
 **Closing.** Verified against `docs/01_phase5_implementation_plan.md:1611` (the task row),
 `:1596` (the scope row naming `sys_enter_openat`), Annex D.1's ring-buffer row, and
 `docs/ai/memory/seccomp-unotify-toctou.md:7`. One claim of the skeleton needed narrowing rather

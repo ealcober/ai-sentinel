@@ -18,6 +18,20 @@ pub const RAW_EVENT_SIZE: usize = 320;
 /// `flags` bit: an inline string in the payload did not fit and was cut.
 pub const FLAG_TRUNCATED: u8 = 1 << 0;
 
+/// `flags` bit: the path in the payload is **what the caller asked for**, not
+/// what the kernel resolved (`F2.WS.01`).
+///
+/// A tracepoint sees a syscall's arguments, so the path arrives as a user-space
+/// pointer read with `bpf_probe_read_user_str`. That string is neither
+/// canonical nor stable against a concurrent rename, and it is not necessarily
+/// the file the kernel will open. Without this bit a consumer cannot tell such
+/// a path from one an LSM hook resolved (`F3.PT.03`), and canonicalization
+/// would silently erase the distinction — an absence read as a value.
+///
+/// It marks provenance, never permission: nothing may decide from a path
+/// carrying this bit (memory `seccomp-unotify-toctou`, `I-28`).
+pub const FLAG_PATH_UNRESOLVED: u8 = 1 << 1;
+
 /// An outcome as it travels on the wire: the bare `u8`. See [`KindCode`] for
 /// why the wire carries a code rather than the enum.
 #[repr(transparent)]
@@ -146,6 +160,13 @@ impl RawEvent {
         self.flags & FLAG_TRUNCATED != 0
     }
 
+    /// Whether `flags` carries [`FLAG_PATH_UNRESOLVED`] — the payload's path
+    /// is the caller's string, not the kernel's resolution.
+    #[must_use]
+    pub const fn path_unresolved(&self) -> bool {
+        self.flags & FLAG_PATH_UNRESOLVED != 0
+    }
+
     /// The event's bytes, as the ring buffer and the WAL carry them.
     ///
     /// The conversion lives here, in L0, because it is layout work and L0 is
@@ -270,6 +291,27 @@ mod tests {
         assert!(event.outcome.decode().is_err());
         assert!(event.truncated());
         assert_ne!(event.wire_version, WIRE_VERSION);
+    }
+
+    #[test]
+    fn the_two_flag_bits_are_independent_and_neither_moves_a_field() {
+        // §3.6 is append-only: a new flag consumes a bit, never an offset, so
+        // the layout assertions above are what prove this is not a wire break.
+        assert_eq!(FLAG_TRUNCATED, 1);
+        assert_eq!(FLAG_PATH_UNRESOLVED, 2);
+        assert_eq!(FLAG_TRUNCATED & FLAG_PATH_UNRESOLVED, 0);
+
+        let mut event = RawEvent::ZERO;
+        assert!(!event.truncated() && !event.path_unresolved());
+        event.flags = FLAG_PATH_UNRESOLVED;
+        assert!(event.path_unresolved(), "a path copied from user memory");
+        assert!(!event.truncated(), "and it fitted");
+        event.flags |= FLAG_TRUNCATED;
+        assert!(event.path_unresolved() && event.truncated());
+        // A truncated path is still an unresolved one: the tracepoint sets
+        // both, and reading either must not clear the other.
+        event.flags &= !FLAG_TRUNCATED;
+        assert!(event.path_unresolved());
     }
 
     #[test]

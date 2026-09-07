@@ -7,17 +7,17 @@
 //! Android, iOS and the SDK; `cargo xtask verify-layering` fails on a
 //! `cfg(target_os)` anywhere else.
 //!
-//! In F1 the only implementations that exist are the platform-free ones
-//! (`F1.PA.02`). The adapters arrive with their phases — `aisme-linux` in
-//! F3, `sentinel-core` in F10, `aisme-sdkhost` in F9 — and each is added
-//! here, behind the `cfg` its platform needs, without changing a line above.
+//! The adapters arrive with their phases — `aisme-linux`'s `BpfSensor` in
+//! `F2.WS.01`, the rest of it in F3, `sentinel-core` in F10, `aisme-sdkhost`
+//! in F9 — and each is added here, behind the `cfg` its platform needs,
+//! without changing a line above.
 
 use aisme_core::adjudicate::Adjudicator;
 use aisme_core::capability::CapabilitySet;
 use aisme_core::enforce::Enforcer;
 use aisme_core::ladder::AdjudicatorLadder;
 use aisme_core::mock::{MockSensor, NullEnforcer, PolicyAdjudicator};
-use aisme_core::sensor::Sensor;
+use aisme_core::sensor::{Sensor, SensorConfig};
 use aisme_core::tier::{tier_of, Tier};
 use aisme_ebpf_common::Verdict;
 
@@ -47,9 +47,26 @@ pub fn sensors(caps: &CapabilitySet) -> Vec<Box<dyn Sensor>> {
     let mut sensors: Vec<Box<dyn Sensor>> = Vec::new();
     #[cfg(target_os = "linux")]
     {
-        // F3.PT.*: BpfSensor when the tier supports it, UprobeSensor for TLS,
-        // CooperativeSensor for JSONL tailing. None exists yet.
-        let _ = caps;
+        // `F2.WS.01`. The gate is `caps.ringbuf`, and it is load-bearing twice
+        // over. It is the honest condition — the sensor needs
+        // `BPF_MAP_TYPE_RINGBUF` and refuses the perf-buffer fallback, which
+        // is `F3.PT.*`'s — and it is what keeps `I-12` intact: `probe()`
+        // reports nothing present until `F3.LD.01`, so no BPF load is
+        // attempted on a host running the test suite. The in-VM composition
+        // (`F2.WS.10`) passes a capability set that was actually measured.
+        if caps.ringbuf {
+            let mut bpf = aisme_linux::BpfSensor::new();
+            match bpf.start(&SensorConfig::default()) {
+                Ok(()) => sensors.push(Box::new(bpf)),
+                Err(e) => {
+                    // The daemon still starts (`I-19`) — the mock below covers
+                    // — but the reason is never swallowed: a sensor that
+                    // silently did not attach is a machine reported quiet.
+                    eprintln!("aisme: BpfSensor did not attach: {}", e.detail);
+                }
+            }
+        }
+        // F3.PT.*: UprobeSensor for TLS, CooperativeSensor for JSONL tailing.
     }
     if sensors.is_empty() {
         // Never zero sensors: an engine with no producer would report a quiet
@@ -121,6 +138,33 @@ mod tests {
         let ladder = adjudicators(&caps);
         assert_eq!(ladder.channels(), [AdjudicationChannel::Policy]);
         assert!(!ladder.is_empty(), "there is always an answer");
+    }
+
+    /// `I-12` in the test suite, not only in the invariant list: this runs on
+    /// a developer's host, so nothing here may touch the kernel. `probe()`
+    /// reports nothing present until `F3.LD.01`, and `sensors()` only reaches
+    /// `BpfSensor` when `ringbuf` was measured — so the composition under test
+    /// loads no BPF program. If someone later makes the sensor unconditional,
+    /// this test is where it shows: the composition would try a real load and
+    /// the count below would move on a machine with `CAP_BPF`.
+    #[test]
+    fn nothing_measured_means_no_bpf_load_is_attempted_on_the_host() {
+        let caps = probe();
+        assert!(
+            !caps.ringbuf,
+            "probe() must not claim what it did not measure"
+        );
+        let sensors = sensors(&caps);
+        assert_eq!(sensors.len(), 1, "the mock alone");
+        assert!(
+            matches!(
+                sensors[0].health(),
+                aisme_core::sensor::SensorHealth::Detached { .. }
+                    | aisme_core::sensor::SensorHealth::Healthy
+            ),
+            "the mock reports its own state; what matters is that it is the mock"
+        );
+        assert!(!sensors[0].capabilities().ringbuf);
     }
 
     #[test]

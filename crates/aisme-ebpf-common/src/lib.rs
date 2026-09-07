@@ -12,7 +12,10 @@ pub mod payload;
 pub mod verdict;
 pub mod version;
 
-pub use event::{Outcome, OutcomeCode, RawEvent, FLAG_TRUNCATED, RAW_EVENT_SIZE, WIRE_VERSION};
+pub use event::{
+    Outcome, OutcomeCode, RawEvent, FLAG_PATH_UNRESOLVED, FLAG_TRUNCATED, RAW_EVENT_SIZE,
+    WIRE_VERSION,
+};
 pub use kind::{EventKind, KindCode, Range};
 pub use payload::{
     DecisionPayload, DetectionPayload, EventPayload, FilePayload, ForensicPayload, HazardPayload,

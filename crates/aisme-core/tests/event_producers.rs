@@ -9,6 +9,14 @@
 //! fail. Adding a variant to the taxonomy without producing it anywhere
 //! fails this test. F3's kernel producers and `F1.SIM.01`'s traces extend
 //! the set; they do not replace it.
+//!
+//! The producer set grew in `F2.WS.01`: `aisme-linux::BpfSensor` emits
+//! `FileOpen` from the `sys_enter_openat` tracepoint. It is **not** counted
+//! here and must not be — it needs a kernel, `I-12` keeps kernel-touching
+//! tests inside a VM, and a coverage check that silently passes because a
+//! producer could not run would be the absence-as-value this file exists to
+//! prevent. Its coverage is measured by `cargo xtask vm run`; the catalogue
+//! below stays the host-side floor.
 
 use std::collections::BTreeSet;
 use std::time::Duration;

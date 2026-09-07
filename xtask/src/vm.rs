@@ -45,6 +45,10 @@ const IMAGES: &[Image] = &[
 
 const DIR: &str = "vm/images";
 
+/// The product's own BPF object (`F2.WS.01`). Compiling it proves nothing about
+/// whether a kernel will accept it — the verifier is a separate judge, and its
+/// answer differs per kernel — so `vm probe` loads it on every matrix image.
+const PRODUCT_OBJ: &str = "crates/aisme-ebpf/target/bpfel-unknown-none/release/aisme-ebpf";
 /// The verification probe object, built by `build-ebpf` alongside the product crate.
 const PROBE_OBJ: &str = "tests/probes/ebpf/target/bpfel-unknown-none/release/aisme-ebpf-verify";
 /// A static `bpftool` for the WSL2 guests, fetched once from libbpf's releases.
@@ -238,6 +242,7 @@ fn probe_all() -> u8 {
 /// the guest's own, between markers, so nothing here is inferred.
 fn probe(image: &Image) -> u8 {
     let mut script = String::from(TIER_PROBE);
+    script.push_str(TRACEPOINT_FORMAT_PROBE);
     if Path::new(PROBE_OBJ).is_file() {
         script.push_str(BPF_PROBE);
     } else {
@@ -373,6 +378,14 @@ fn write_seed(image: &Image, script: &str) -> Result<PathBuf, String> {
             base64(&bytes)
         );
     }
+    if Path::new(PRODUCT_OBJ).is_file() {
+        let bytes = std::fs::read(PRODUCT_OBJ).map_err(|e| e.to_string())?;
+        let _ = writeln!(
+            files,
+            "  - path: /root/aisme.o\n    encoding: b64\n    content: {}",
+            base64(&bytes)
+        );
+    }
     let mut indented = String::new();
     for l in script.lines() {
         indented.push_str("      ");
@@ -487,6 +500,46 @@ print("tier:", tier)
 PY
 "#;
 
+/// `F2.WS.01`: the `sys_enter_openat` argument offsets the tracepoint program
+/// compiles in, read from the kernel that will run it.
+///
+/// The offsets are an ABI of the trace-event **format file**, not of a header
+/// the build can check, so the program's constants are a claim about every
+/// kernel in the matrix until a kernel is asked. This asks. A row that differs
+/// on some kernel is a finding naming that kernel, which is why the script
+/// prints what it found rather than only whether it matched.
+const TRACEPOINT_FORMAT_PROBE: &str = r#"
+echo "--- F2.WS.01 sys_enter_openat argument offsets"
+FMT=/sys/kernel/debug/tracing/events/syscalls/sys_enter_openat/format
+[ -r "$FMT" ] || mount -t debugfs none /sys/kernel/debug 2>/dev/null
+[ -r "$FMT" ] || FMT=/sys/kernel/tracing/events/syscalls/sys_enter_openat/format
+if [ -r "$FMT" ]; then
+  # The script does the comparison, not the reader. Three earlier versions of
+  # this check produced no measurement while `vm probe` printed PASS: a printf
+  # escape eaten by a layer, then field indices off by one that made awk match
+  # nothing and say nothing. An empty result now prints openat_offset: NONE
+  # FOUND, because a silent empty answer is the failure this row exists to
+  # catch in the first place.
+  #
+  # Fields split on [:;]: $2 is the declaration, $4 the offset. Measured
+  # against a real format file, not derived from the layout.
+  awk -F'[:;]' -v n=0 '
+      /field:/ {
+          decl=$2; off=$4;
+          sub(/.*[ *]/, "", decl);
+          if (decl=="filename") { want=24 } else if (decl=="flags") { want=32 }
+          else if (decl=="mode") { want=40 } else { next }
+          n++;
+          gsub(/[^0-9]/, "", off);
+          print "  openat_offset " decl " = " off (off+0==want ? "  MATCHES" : "  DIFFERS from " want)
+      }
+      END { if (n==0) print "  openat_offset: NONE FOUND - the format file parsed to nothing" }
+  ' "$FMT"
+else
+  echo "  openat_offset: format file unreadable (no debugfs and no tracefs)"
+fi
+"#;
+
 /// `F0.VER.19` and `F0.VER.16`, run as root inside the guest with bpftool.
 const BPF_PROBE: &str = r#"echo "--- bpftool"
 export DEBIAN_FRONTEND=noninteractive
@@ -523,6 +576,40 @@ fi
 echo "bpftool: $(bpftool version 2>/dev/null | head -1 || echo unavailable)"
 mountpoint -q /sys/fs/bpf || mount -t bpf bpf /sys/fs/bpf
 bpftool prog loadall /root/probe.o /sys/fs/bpf/probe 2>&1 && echo "loadall: OK" || echo "loadall: FAILED"
+
+# F2.WS.01: what bpftool can and cannot say about the product's own object.
+#
+# It cannot say whether the verifier accepts the program, and measuring that
+# here would be reading one loader's opinion as another's. `bpftool` links
+# libbpf; AISME loads with `aya`, and the two disagree about the *container*
+# before any instruction is examined. Measured 2026-09-07: libbpf 5.4 answers
+# "failed to guess program type based on ELF section name '.text'" because it
+# wants `tracepoint/<category>/<name>`, and libbpf v1.0+ on 6.8 answers
+# "legacy map definitions in 'maps' section are not supported". Both are true
+# of libbpf and false of aya, which parses the bare `tracepoint` section name
+# (aya-obj obj.rs:327) and the legacy `maps` section (obj.rs:1073).
+#
+# So this row reports the container check and says plainly that the verifier
+# verdict is still owed. Getting it needs the product's own loader running in
+# the guest, which is `vm run --with-dist` — the gap point 12 of
+# docs/05 already found in GATE F2. Printing ACCEPTED or REFUSED here would be
+# a verdict this command is not entitled to give.
+echo "--- F2.WS.01 aisme-ebpf object, as far as bpftool can judge it"
+if [ -f /root/aisme.o ]; then
+  echo "  aisme_sections: $(readelf -S /root/aisme.o 2>/dev/null | awk '/ tracepoint|maps|license/{print $2}' | tr '\n' ' ')"
+  if bpftool prog loadall /root/aisme.o /sys/fs/bpf/aisme > /root/aisme.load 2>&1; then
+    echo "  aisme_load: ACCEPTED by libbpf too"
+    bpftool prog show pinned /sys/fs/bpf/aisme/sys_enter_openat 2>/dev/null | head -1 | sed 's/^/  /'
+  elif grep -qE "legacy map definitions|guess program type" /root/aisme.load; then
+    echo "  aisme_load: NOT JUDGED - libbpf cannot open an aya object; the verifier verdict is owed by vm run --with-dist"
+    sed 's/^/    /' /root/aisme.load | head -3
+  else
+    echo "  aisme_load: REFUSED for a reason that is not a container mismatch"
+    sed 's/^/    /' /root/aisme.load | head -12
+  fi
+else
+  echo "  aisme_load: object absent; run cargo xtask build-ebpf"
+fi
 # Older bpftool (5.15) pins by section name, newer by program name; the program
 # id from `prog show` is the same on every version, so select by id.
 KR=$(bpftool prog show 2>/dev/null | awk '/ name kind_range /{sub(":","",$1); print $1; exit}')

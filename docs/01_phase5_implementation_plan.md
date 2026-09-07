@@ -1428,7 +1428,7 @@ pub struct RawEvent {
     pub taint:      u32,        // Taint bitflags (H-13)
     pub kind:       KindCode,   // u16 on the wire; decodes to `EventKind` (§F1.1.1) — a Rust enum read from kernel-written memory is UB on a value this binary does not know, which is exactly the skew §3.6 wants *detected*
     pub outcome:    OutcomeCode, // u8 on the wire; decodes to `Outcome`: Observed | Allowed | Warned | Escalated | Denied — what happened, in §B.10 order; distinct from the policy `Verdict`
-    pub flags:      u8,
+    pub flags:      u8,         // bit 0 FLAG_TRUNCATED: an inline string was cut. bit 1 FLAG_PATH_UNRESOLVED (F2.WS.01): the path is the caller's string read from user memory, not the kernel's resolution — provenance, never permission; nothing may decide from a path carrying it (I-28). A flag consumes a bit, never an offset, so §3.6's append-only rule is kept
     pub wire_version: u8,       // §3.6 reads this; without it the scheme has no field
     pub _reserved:  [u8; 15],   // pads to exactly 320 B; new fields consume it
     pub payload:    EventPayload, // union, fixed size 256 B
@@ -1602,7 +1602,7 @@ test $(grep -rn 'cfg(target_os' crates/aisme-core/src --include='*.rs' | grep -v
 
 | Layer | In scope | Explicitly out of scope |
 |---|---|---|
-| Sensor | **One** syscall: `openat` (`sys_enter_openat`, plus `sys_exit_openat` for `F2.WS.11` only). glibc's `open()` issues `openat`; `openat2` is never seen from `cat` or `sh` | All other probes, LSM, uprobes |
+| Sensor | **One** syscall: `openat` (`sys_enter_openat`, plus `sys_exit_openat` for `F2.WS.11` only). glibc's `open()` issues `openat`; `openat2` is never seen from `cat` or `sh`. The path arrives as a user pointer, so every event carries **`FLAG_PATH_UNRESOLVED`**: it is what the caller asked for, not what the kernel will open. Session filtering is one kernel-side hash lookup on `tgid`, never a user-space filter | All other probes, LSM, uprobes; the perf-buffer fallback for kernels below 5.8 (`F3.PT.*`) — `BpfSensor::start` returns `Unsupported` naming the kernel and the map type instead |
 | Transport | Ringbuf reserve/commit, one `RawEvent` kind | Aggregation maps, per-CPU tuning |
 | Hot loop | Drain → intern → canonicalize → correlate | Full taint algebra, graph spill |
 | Correlation | Match against **one** synthetic ToolCall from `agentsim` | Adaptive window, lineage depth |

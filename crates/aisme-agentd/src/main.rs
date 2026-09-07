@@ -69,6 +69,19 @@ fn main() {
     // F1.RT.06 + the GATE F1 budget line: compose the engine on MockSensor,
     // let it settle, and write what this daemon actually costs. A budget
     // nobody measured is a budget nobody keeps.
+    // `--load-sensor`: ask this kernel whether it accepts the F2.WS.01 program,
+    // and say what it answered. It exists because nothing else can ask: the
+    // program is loaded by `aya`, and `bpftool` — which links libbpf — refuses
+    // an aya object over the container before examining an instruction (bare
+    // `tracepoint` section name, legacy `maps` section). So the verifier's
+    // verdict is only obtainable from the product's own loader, run on the
+    // kernel in question, which `cargo xtask vm run --with-dist` now stages.
+    //
+    // It attaches and detaches immediately. `I-12` keeps this out of the host
+    // suite; it is a diagnostic for a disposable guest.
+    if std::env::args().nth(1).as_deref() == Some("--load-sensor") {
+        std::process::exit(platform::load_sensor_report());
+    }
     if std::env::args().nth(1).as_deref() == Some("--measure-idle") {
         match measure_idle() {
             Ok(path) => println!("idle profile written to {path}"),

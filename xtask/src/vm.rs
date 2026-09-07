@@ -12,6 +12,7 @@
 //! which needs root the host does not grant and which `I-12` forbids there anyway.
 
 use crate::SKIP;
+use sha2::{Digest, Sha256};
 use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -91,20 +92,46 @@ pub(crate) fn run(name: &str, args: &[&str]) -> u8 {
     match name {
         "vm up" => up(image),
         "vm run" => {
+            let with_dist = rest.contains(&"--with-dist");
             let cmd = rest
                 .iter()
+                .filter(|a| **a != "--with-dist")
                 .skip_while(|a| **a == "--")
                 .copied()
                 .collect::<Vec<_>>()
                 .join(" ");
             if cmd.is_empty() {
-                eprintln!("usage: cargo xtask vm run <image> -- <command>");
+                eprintln!("usage: cargo xtask vm run <image> [--with-dist] -- <command>");
                 return 1;
             }
-            boot(
+            let staged = if with_dist {
+                match build_dist_static() {
+                    Ok(v) => {
+                        println!("staged for {} ({STAGE_TARGET}, crt-static):", image.name);
+                        for f in &v {
+                            println!("  {:<20} {:>9} B  {}", f.name, f.size, &f.sha256[..16]);
+                        }
+                        v
+                    }
+                    Err(e) => {
+                        eprintln!("FAIL vm run --with-dist: {e}");
+                        return 1;
+                    }
+                }
+            } else {
+                Vec::new()
+            };
+            let prologue = if staged.is_empty() {
+                String::new()
+            } else {
+                install_script(&staged)
+            };
+            let body = guarded(&prologue, &cmd);
+            boot_with(
                 image,
-                &format!("echo \"=====AISME-BEGIN=====\"\n{cmd}\necho \"=====AISME-END=====\""),
+                &format!("echo \"=====AISME-BEGIN=====\"\n{body}\necho \"=====AISME-END=====\""),
                 "run",
+                &staged,
             )
         }
         _ => probe(image),
@@ -261,6 +288,11 @@ fn probe(image: &Image) -> u8 {
 /// Write the `NoCloud` seed, boot under KVM when available (TCG otherwise, said
 /// aloud), wait for the guest to power itself off, print the marked output.
 fn boot(image: &Image, script: &str, what: &str) -> u8 {
+    boot_with(image, script, what, &[])
+}
+
+/// `boot`, plus files staged into the seed ISO beside the script.
+fn boot_with(image: &Image, script: &str, what: &str, staged: &[Staged]) -> u8 {
     if !base_path(image).is_file() {
         let code = up(image);
         if code != 0 {
@@ -274,7 +306,7 @@ fn boot(image: &Image, script: &str, what: &str) -> u8 {
             return 1;
         }
     };
-    let seed = match write_seed(image, script) {
+    let seed = match write_seed(image, script, staged) {
         Ok(p) => p,
         Err(e) => {
             eprintln!("FAIL: seed: {e}");
@@ -358,7 +390,127 @@ fn boot(image: &Image, script: &str, what: &str) -> u8 {
     0
 }
 
-fn write_seed(image: &Image, script: &str) -> Result<PathBuf, String> {
+/// The target the staged build uses: `x86_64-unknown-linux-gnu` with
+/// `crt-static`, **not** the default dynamic build, and the reason is measured.
+/// This host's glibc is 2.43; every guest's is older — 2.31 on Ubuntu 20.04 and
+/// Debian 11 — and glibc symbol versioning is forward-only, so a dynamically
+/// linked binary built here fails on every image in the matrix. Point 12 of
+/// `docs/05` specified the transport and did not see this: the seed ISO carries
+/// the files fine, they just would not run.
+///
+/// musl would also solve it and costs an owner action (`rustup target add` plus
+/// `musl-tools`, because mimalloc compiles C). `crt-static` needs neither, and
+/// was measured to produce a 1.65 MB static-pie binary with no glibc version
+/// references at all — well under §2.22's 12 MB ceiling — which then ran on the
+/// 5.4 guest.
+const STAGE_TARGET: &str = "x86_64-unknown-linux-gnu";
+
+/// Build the product binaries statically and hash what will be staged.
+fn build_dist_static() -> Result<Vec<Staged>, String> {
+    let st = Command::new("cargo")
+        .args([
+            "build",
+            "--release",
+            "--workspace",
+            "--target",
+            STAGE_TARGET,
+        ])
+        .env("RUSTFLAGS", "-C target-feature=+crt-static")
+        .status()
+        .map_err(|e| format!("cargo: {e}"))?;
+    if !st.success() {
+        return Err("the static build failed; its output is above".to_owned());
+    }
+    let dir = Path::new("target").join(STAGE_TARGET).join("release");
+    let mut out = Vec::new();
+    for name in crate::tooling::bin_targets().unwrap_or_default() {
+        // `xtask` is the host's build tool, not a product binary. Staging it
+        // would ship megabytes of ISO the guest can never use and imply it is
+        // part of what AISME installs.
+        if name == "xtask" {
+            continue;
+        }
+        let path = dir.join(&name);
+        if !path.is_file() {
+            continue;
+        }
+        let bytes = std::fs::read(&path).map_err(|e| format!("{}: {e}", path.display()))?;
+        let mut hasher = Sha256::new();
+        hasher.update(&bytes);
+        out.push(Staged {
+            name,
+            sha256: format!("{:x}", hasher.finalize()),
+            size: bytes.len() as u64,
+            path,
+        });
+    }
+    if out.is_empty() {
+        return Err("the static build produced no binaries".to_owned());
+    }
+    Ok(out)
+}
+
+/// The guest-side prologue: install what was staged, verify every byte, and
+/// leave `$BAD` set so the caller can actually refuse.
+///
+/// The install root is `${AISME_ROOT:-/usr/lib/aisme}` so a unit test can run
+/// this exact script against a temporary directory. A guard only ever exercised
+/// in a VM is a guard nobody has seen work — and the first version of this one
+/// printed "refusing to run" and then ran the command anyway, which is worse
+/// than no guard because a mismatch looks handled.
+fn install_script(staged: &[Staged]) -> String {
+    let mut s = String::from(
+        "AISME_ROOT=${AISME_ROOT:-/usr/lib/aisme}\n\
+         mkdir -p \"$AISME_ROOT\"\n\
+         echo \"--- staged binaries\"\n\
+         BAD=0\n",
+    );
+    for f in staged {
+        // Copied by name, never by glob: `cp /opt/aisme/aisme-*` silently
+        // missed the CLI, which is called `aisme`, and only the hash check
+        // below surfaced it, as `guest=missing`.
+        let _ = writeln!(
+            s,
+            "cp \"/opt/aisme/{n}\" \"$AISME_ROOT/{n}\" 2>/dev/null; \
+             chmod +x \"$AISME_ROOT/{n}\" 2>/dev/null\n\
+             H=$(sha256sum \"$AISME_ROOT/{n}\" 2>/dev/null | cut -d\" \" -f1)\n\
+             if [ \"$H\" = \"{h}\" ]; then echo \"  {n}: ok {short}\"; \
+             else echo \"  {n}: HASH MISMATCH host={h} guest=${{H:-missing}}\"; BAD=1; fi",
+            n = f.name,
+            h = f.sha256,
+            short = &f.sha256[..12]
+        );
+    }
+    s
+}
+
+/// The command, run only when every staged byte matched.
+fn guarded(prologue: &str, cmd: &str) -> String {
+    if prologue.is_empty() {
+        return cmd.to_owned();
+    }
+    format!(
+        "{prologue}if [ \"$BAD\" = 0 ]; then\n{cmd}\nelse\n\
+         echo \"refusing to run: a staged binary does not match the manifest\"\n\
+         false\nfi\n"
+    )
+}
+
+/// One file the host built and the guest will run, with the hash that ties the
+/// two together. §2.22's reference-trace rule applied to binaries: a figure
+/// that cannot name the build that produced it is not a measurement.
+struct Staged {
+    /// Basename in `/opt/aisme/` and in the manifest.
+    name: String,
+    /// Where the host built it.
+    path: PathBuf,
+    /// Lowercase hex sha256 of the bytes staged.
+    sha256: String,
+    /// Bytes.
+    size: u64,
+}
+
+fn write_seed(image: &Image, script: &str, staged: &[Staged]) -> Result<PathBuf, String> {
     let dir = Path::new(DIR).join(format!("seed-{}", image.name));
     std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
     std::fs::write(
@@ -384,6 +536,33 @@ fn write_seed(image: &Image, script: &str) -> Result<PathBuf, String> {
             files,
             "  - path: /root/aisme.o\n    encoding: b64\n    content: {}",
             base64(&bytes)
+        );
+    }
+    for f in staged {
+        let bytes = std::fs::read(&f.path).map_err(|e| format!("{}: {e}", f.path.display()))?;
+        let _ = writeln!(
+            files,
+            "  - path: /opt/aisme/{}\n    permissions: '0755'\n    encoding: b64\n    content: {}",
+            f.name,
+            base64(&bytes)
+        );
+    }
+    if !staged.is_empty() {
+        // Both sides can name what ran. The guest re-hashes and refuses on a
+        // mismatch, so a figure can never be attributed to a build nobody can
+        // identify (§2.22's reference-trace rule).
+        let mut manifest = String::from("# Written by `cargo xtask vm run --with-dist`.\n");
+        for f in staged {
+            let _ = writeln!(
+                manifest,
+                "[[binary]]\nname = \"{}\"\nsha256 = \"{}\"\nsize = {}\n",
+                f.name, f.sha256, f.size
+            );
+        }
+        let _ = writeln!(
+            files,
+            "  - path: /opt/aisme/manifest.toml\n    encoding: b64\n    content: {}",
+            base64(manifest.as_bytes())
         );
     }
     let mut indented = String::new();
@@ -1090,6 +1269,143 @@ fn base64(bytes: &[u8]) -> String {
         }
     }
     out
+}
+
+#[cfg(test)]
+mod stage_tests {
+    use super::{guarded, install_script, Staged};
+    use std::io::Write as _;
+    use std::path::PathBuf;
+    use std::process::{Command, Stdio};
+
+    fn one(name: &str, sha: &str) -> Staged {
+        Staged {
+            name: name.to_owned(),
+            path: PathBuf::from("/dev/null"),
+            sha256: sha.to_owned(),
+            size: 42,
+        }
+    }
+
+    fn sh(script: &str, env: &[(&str, &str)]) -> std::process::Output {
+        let mut c = Command::new("sh");
+        c.stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped());
+        for (k, v) in env {
+            c.env(k, v);
+        }
+        let mut child = c.spawn().expect("this test needs /bin/sh to mean anything");
+        child
+            .stdin
+            .take()
+            .expect("piped")
+            .write_all(script.as_bytes())
+            .expect("write");
+        child.wait_with_output().expect("wait")
+    }
+
+    /// The prologue is shell, built by string formatting in Rust and staged
+    /// through cloud-init YAML before a guest shell sees it. Every layer in that
+    /// chain ate an escape at least once while this was written, so the script
+    /// goes to a real parser rather than being read by eye.
+    #[test]
+    fn the_generated_prologue_is_valid_shell() {
+        let script = guarded(
+            &install_script(&[
+                one("aisme-agentd", &"a".repeat(64)),
+                one("aisme", &"b".repeat(64)),
+            ]),
+            "echo ran",
+        );
+        let mut child = Command::new("sh")
+            .arg("-n")
+            .stdin(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .expect("this test needs /bin/sh");
+        child
+            .stdin
+            .take()
+            .expect("piped")
+            .write_all(script.as_bytes())
+            .expect("write");
+        let out = child.wait_with_output().expect("wait");
+        assert!(
+            out.status.success(),
+            "sh -n rejected the prologue:\n{}\n--- script ---\n{script}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+    }
+
+    /// The regression that a real VM run found: the guard printed "refusing to
+    /// run" and then ran the command anyway. A mismatch that looks handled is
+    /// worse than no check, so this runs the real script with a hash that
+    /// cannot match and asserts the command never executed.
+    #[test]
+    fn a_hash_mismatch_actually_stops_the_command() {
+        let root = std::env::temp_dir().join(format!("aisme-stage-{}", std::process::id()));
+        let script = guarded(
+            &install_script(&[one("aisme-agentd", &"f".repeat(64))]),
+            "echo THE-COMMAND-RAN",
+        );
+        let out = sh(&script, &[("AISME_ROOT", &root.to_string_lossy())]);
+        let stdout = String::from_utf8_lossy(&out.stdout);
+        assert!(stdout.contains("HASH MISMATCH"), "{stdout}");
+        assert!(
+            !stdout.contains("THE-COMMAND-RAN"),
+            "the guard announced a refusal and ran the command anyway:\n{stdout}"
+        );
+        assert!(stdout.contains("refusing to run"), "{stdout}");
+        assert!(!out.status.success(), "a refusal must not exit 0");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// And the other direction: when the hash matches, the command runs. A
+    /// guard that refuses everything would pass the test above and be useless.
+    #[test]
+    fn a_matching_hash_lets_the_command_run() {
+        use super::{Digest as _, Sha256};
+        let root = std::env::temp_dir().join(format!("aisme-stage-ok-{}", std::process::id()));
+        let src = std::env::temp_dir().join(format!("aisme-src-{}", std::process::id()));
+        std::fs::create_dir_all(&src).expect("tmp");
+        std::fs::write(src.join("aisme-agentd"), b"payload").expect("write");
+        // sha256 of "payload", computed here rather than pasted, so the test
+        // and the code under test agree by construction.
+        let mut h = Sha256::new();
+        h.update(b"payload");
+        let sha = format!("{:x}", h.finalize());
+        // The prologue copies from /opt/aisme; point it at the temp source.
+        let script = guarded(
+            &install_script(&[one("aisme-agentd", &sha)]),
+            "echo THE-COMMAND-RAN",
+        )
+        .replace("/opt/aisme", &src.to_string_lossy());
+        let out = sh(&script, &[("AISME_ROOT", &root.to_string_lossy())]);
+        let stdout = String::from_utf8_lossy(&out.stdout);
+        assert!(
+            stdout.contains(&format!("aisme-agentd: ok {}", &sha[..12])),
+            "{stdout}"
+        );
+        assert!(stdout.contains("THE-COMMAND-RAN"), "{stdout}");
+        assert!(out.status.success(), "{stdout}");
+        let _ = std::fs::remove_dir_all(&root);
+        let _ = std::fs::remove_dir_all(&src);
+    }
+
+    /// The guest re-hashes what it received; the host's hash has to reach it
+    /// intact for that comparison to mean anything.
+    #[test]
+    fn every_staged_binary_carries_its_full_hash_into_the_guest() {
+        let sha = "c".repeat(64);
+        let script = install_script(&[one("aisme-agentd", &sha)]);
+        assert!(script.contains(&sha), "the full hash must reach the guest");
+        assert!(script.contains("sha256sum \"$AISME_ROOT/aisme-agentd\""));
+        assert!(
+            script.contains("HASH MISMATCH"),
+            "a mismatch must be loud, not a silent skip"
+        );
+    }
 }
 
 #[cfg(test)]

@@ -113,7 +113,7 @@ pub(crate) fn dist() -> u8 {
 }
 
 /// The `bin` target names every workspace member declares.
-fn bin_targets() -> Option<Vec<String>> {
+pub(crate) fn bin_targets() -> Option<Vec<String>> {
     let out = Command::new("cargo")
         .args(["metadata", "--no-deps", "--format-version", "1"])
         .output()

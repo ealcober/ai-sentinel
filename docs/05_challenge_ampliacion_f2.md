@@ -177,11 +177,28 @@ the legacy `maps` section (`obj.rs:1073`) — verified in the loader's source, n
 message. `bpftool` links libbpf; AISME loads with aya; the two disagree about the *container*
 before a single instruction is examined.
 
-**So the verifier clause of this point is owed, and its blocker is already named.** Getting a real
-verdict needs the product's own loader running inside the guest, which is `vm run --with-dist` —
-the gap **point 12** found in GATE F2. The probe row now says `NOT JUDGED` with the reason rather
-than `REFUSED`, because a red that means "the wrong tool asked" reads as "the program is wrong",
-and that is the same false signal in the other direction.
+**So the verifier clause needed the product's own loader in the guest** — `vm run --with-dist`,
+the gap **point 12** found in GATE F2. The probe row says `NOT JUDGED` with the reason rather than
+`REFUSED`, because a red meaning "the wrong tool asked" reads as "the program is wrong". Point 12
+was then built, and `agentd --load-sensor` (in the composition root, where naming an adapter is
+legal) asks the question.
+
+**The verdict, measured 2026-09-07 on the two ends of the matrix, prediction written first:**
+
+| Image | Kernel | `--load-sensor` |
+|---|---|---|
+| ubuntu-24.04 | 6.8.0-138 | **`ACCEPTED`** — `ringbuf: true`, `health: Healthy` |
+| ubuntu-20.04 | 5.4.0-216 | **`REFUSED (Unsupported)`** — *"kernel 5.4.0-216-generic refused the object; `BPF_MAP_TYPE_RINGBUF` needs 5.8 … map error: failed to create map `AISME_EVENTS`"* |
+
+Both as predicted. The 5.4 row is the *"rejected with a stated reason"* this point requires, and the
+reason names the kernel, the map type and the failing map rather than saying "failed". **The risk
+named before the code was committed did not materialise**: the program writes a 320-byte
+`RawEvent::ZERO` and a BPF program's stack is 512 bytes, and the verifier accepted it — so no
+field-by-field write into the ring is needed, and `RAW_EVENT_SIZE` stays frozen wire.
+
+One thing the run shows that is not a regression: the guest prints `tier L1` even on 6.8, because
+`platform::probe()` still reports nothing measured until `F3.LD.01`. That is why `--load-sensor`
+exists as its own path rather than reading the composed sensor list.
 
 **Closing.** Verified against `docs/01_phase5_implementation_plan.md:1611` (the task row),
 `:1596` (the scope row naming `sys_enter_openat`), Annex D.1's ring-buffer row, and
@@ -1250,6 +1267,49 @@ Safe and clear once the transport is named. Three properties:
 - `docs/ai/STATE.md`: the gate's output when it passes, and the binary manifest's hashes with it.
 - `docs/ops/`: how to run the gate by hand, since it is the phase's demo and someone will want to
   show it.
+
+### 6. Built and measured (2026-09-07)
+
+**A constraint this point did not see decides the transport.** The host's glibc is **2.43**; every
+guest's is older — 2.31 on Ubuntu 20.04 and Debian 11, 2.35 on 22.04, 2.36 on Debian 12, 2.39 on
+24.04 and Fedora 40. glibc symbol versioning is forward-only, so a dynamically linked binary built
+here fails on **every** image in the matrix. The point is right that the binaries are small and
+that the seed ISO already carries files; neither makes them run.
+
+Three ways out were weighed and one needs nothing from the owner. musl costs `rustup target add`
+**and** `musl-tools` by `sudo`, because mimalloc compiles C. Building in the guest would put a
+mirror in the gate's path, which this point already ruled out. **`-C target-feature=+crt-static`
+on the gnu target** needs neither: measured, it produces a **static-pie** binary with **no glibc
+version references at all**, and it runs on the 5.4 guest. `aisme-agentd` is 2.15 MB that way
+against §2.22's 12 MB ceiling.
+
+**What `--with-dist` does.** Builds the six product binaries statically, prints their sizes and
+`sha256`, stages them into the seed ISO under `/opt/aisme/` with a `manifest.toml`, and prepends a
+guest step that installs them to `/usr/lib/aisme/` **re-hashing each one**. `xtask` is excluded: it
+is the host's build tool, not something AISME installs.
+
+**Three defects of my own, found by running it rather than by reading it.**
+
+1. **The guard announced a refusal and did not refuse.** It printed *"refusing to run: a staged
+   binary does not match the manifest"* and then ran the command anyway. A mismatch that looks
+   handled is worse than no check. The command now lives inside `if [ "$BAD" = 0 ]` and a
+   mismatch exits non-zero.
+2. **`cp /opt/aisme/aisme-*` silently missed two binaries** — the CLI is called `aisme`, with no
+   hyphen. The hash check caught it as `guest=missing`, which is the mechanism working. Copying is
+   by explicit name now, never by glob.
+3. A slice-based rewrite of `xtask/src/vm.rs` **deleted 716 lines**. `cargo build` found it in
+   seconds; the file was restored from git and every change re-applied by anchor, each verified
+   with `grep`. Project rule 1 says never regenerate a file, and this is what it is protecting
+   against.
+
+`verify-layering` found a fourth, and it was right: the `--load-sensor` diagnostic named
+`aisme_linux::BpfSensor` from `main.rs`, which is **not** the composition root (`A-05`). It moved
+into `platform/`, which is also where it belongs by meaning.
+
+The first three left tests that did not exist: the generated prologue is parsed by a real `sh -n`,
+and **two tests execute the actual script** — one with a hash that cannot match, asserting the
+command never runs, and one with a matching hash, asserting it does. A guard exercised only inside
+a VM is a guard nobody has seen work.
 
 **Closing.** Verified against the plan's GATE F2 block (`:1637`), `xtask/src/vm.rs`'s `vm run`
 implementation (a guest-side shell command, nothing staged), `xtask/src/tooling.rs:80`'s `dist`

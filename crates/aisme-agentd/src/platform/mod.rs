@@ -41,6 +41,43 @@ pub fn probe() -> CapabilitySet {
     }
 }
 
+/// Load the BPF sensor on this kernel and report what happened, in the words
+/// the reader needs: accepted with its capabilities, or refused with the
+/// platform's own message. Returns the process exit code — 0 accepted, 1
+/// refused — so a guest run can be read by a script as well as by a person.
+#[cfg(target_os = "linux")]
+pub fn load_sensor_report() -> i32 {
+    use aisme_core::sensor::{Sensor as _, SensorConfig};
+    let mut sensor = aisme_linux::BpfSensor::new();
+    match sensor.start(&SensorConfig::default()) {
+        Ok(()) => {
+            let caps = sensor.capabilities();
+            println!("load-sensor: ACCEPTED");
+            println!("  ringbuf: {}", caps.ringbuf);
+            println!("  health: {:?}", sensor.health());
+            // Detach immediately: this is a question, not a session.
+            if let Err(e) = sensor.stop() {
+                println!("  stop: {} ({:?})", e.detail, e.kind);
+            }
+            0
+        }
+        Err(e) => {
+            // The reason is the product of this command. A bare "failed" would
+            // make the run useless on the one kernel where it matters most.
+            println!("load-sensor: REFUSED ({:?})", e.kind);
+            println!("  {}", e.detail);
+            1
+        }
+    }
+}
+
+/// Not Linux: there is no sensor to load, and saying so beats a silent zero.
+#[cfg(not(target_os = "linux"))]
+pub fn load_sensor_report() -> i32 {
+    println!("load-sensor: UNSUPPORTED (this build has no Linux adapter)");
+    1
+}
+
 /// The sensors for this platform and this capability set.
 #[must_use]
 pub fn sensors(caps: &CapabilitySet) -> Vec<Box<dyn Sensor>> {

@@ -1642,10 +1642,10 @@ test $(grep -rn 'cfg(target_os' crates/aisme-core/src --include='*.rs' | grep -v
 **GATE F2** — the product runs:
 ```bash
 cargo xtask test-skeleton              # full slice against MockSensor, no kernel
-cargo xtask vm run -- aisme run -- sh -c 'cat /etc/hostname'   # real kernel, allowed
-cargo xtask vm run -- aisme run -- sh -c 'cat /etc/shadow'     # real kernel, denied -EACCES
-AISME_TERMINAL_ANSWER=d cargo xtask vm run -- aisme run -- sh -c 'cat ~/.aws/credentials'  # ESCALATE -> terminal prompt -> answer obeyed
-cargo xtask vm run -- aisme run -- sh -c 'touch /tmp/outside'  # Landlock deny, zero notifications (if F0.VER.04)
+cargo xtask vm run <image> --with-dist -- aisme run -- sh -c 'cat /etc/hostname'   # real kernel, allowed
+cargo xtask vm run <image> --with-dist -- aisme run -- sh -c 'cat /etc/shadow'     # real kernel, denied -EACCES
+AISME_TERMINAL_ANSWER=d cargo xtask vm run <image> --with-dist -- aisme run -- sh -c 'cat ~/.aws/credentials'  # ESCALATE -> terminal prompt -> answer obeyed
+cargo xtask vm run <image> --with-dist -- aisme run -- sh -c 'touch /tmp/outside'  # Landlock deny, zero notifications (if F0.VER.04)
 cargo xtask verify-budgets --profile skeleton                  # measuring real code now
 cargo xtask bench-t0 --syscalls 100000                         # baseline recorded
 ```

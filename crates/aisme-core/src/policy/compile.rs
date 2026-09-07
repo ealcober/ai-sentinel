@@ -120,6 +120,14 @@ pub enum CompileErrorKind {
         /// Its name.
         name: String,
     },
+    /// `I-05`: the three never-promptable groups cannot be made promptable,
+    /// suppressible, or escalated — an escalation is a prompt.
+    NeverPromptable {
+        /// The group.
+        group: PermissionGroup,
+        /// Which field or verdict tried.
+        what: &'static str,
+    },
 }
 
 impl core::fmt::Display for CompileError {
@@ -147,6 +155,11 @@ impl core::fmt::Display for CompileError {
             CompileErrorKind::ListVariableInText { name } => {
                 write!(f, "`${{{name}}}` is a list and cannot sit inside a longer string")
             }
+            CompileErrorKind::NeverPromptable { group, what } => write!(
+                f,
+                "{} is never promptable (I-05): {what} does not compile — a prompt is an attack surface on this group",
+                group.as_str()
+            ),
         }
     }
 }
@@ -177,11 +190,13 @@ pub struct CompiledRule {
     pub taint: Taint,
     /// The floor.
     pub severity_floor: Option<Severity>,
-    /// `promptable`, as written; `F1.PL.04` decides the default and the
-    /// `I-05` refusal.
-    pub promptable: Option<bool>,
-    /// `suppressible`, as written; `F1.PL.07`.
-    pub suppressible: Option<bool>,
+    /// Whether an escalation on this rule may ask a human. Resolved: as
+    /// written, else `true` — except on `I-05`'s three groups, where it is
+    /// `false` and `true` does not compile.
+    pub promptable: bool,
+    /// Whether a suppression rule may silence this rule's notifications.
+    /// Resolved the same way (`I-26` on the same three groups).
+    pub suppressible: bool,
     /// The event a hit emits.
     pub event: Option<String>,
 }
@@ -357,6 +372,38 @@ fn compile_rule(
             }
         }
     }
+    // I-05: the never-promptable groups. `promptable = true` and
+    // `suppressible = true` are refused, and so is `escalate`, because an
+    // escalation is a prompt by another name. Absent, both default to false
+    // here and to true elsewhere.
+    let never = rule.group.never_promptable();
+    if never {
+        for (field, what) in [
+            (rule.promptable, "`promptable = true`"),
+            (rule.suppressible, "`suppressible = true`"),
+        ] {
+            if field == Some(true) {
+                errors.push(CompileError {
+                    rule_id: Some(rule.id.clone()),
+                    span: rule.span,
+                    kind: CompileErrorKind::NeverPromptable {
+                        group: rule.group,
+                        what,
+                    },
+                });
+            }
+        }
+        if rule.verdict == Verdict::Escalate {
+            errors.push(CompileError {
+                rule_id: Some(rule.id.clone()),
+                span: rule.span,
+                kind: CompileErrorKind::NeverPromptable {
+                    group: rule.group,
+                    what: "`verdict = \"escalate\"`",
+                },
+            });
+        }
+    }
     let predicate = resolve(&rule.r#match, &rule.id, bindings, errors);
     let except = rule
         .except
@@ -373,8 +420,8 @@ fn compile_rule(
         except,
         taint: rule.taint.unwrap_or(Taint::EMPTY),
         severity_floor: rule.severity_floor,
-        promptable: rule.promptable,
-        suppressible: rule.suppressible,
+        promptable: rule.promptable.unwrap_or(!never),
+        suppressible: rule.suppressible.unwrap_or(!never),
         event: rule.event.clone(),
     })
 }

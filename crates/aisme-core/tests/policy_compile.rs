@@ -82,6 +82,76 @@ fn the_sketch_compiles_resolved_and_canonical() {
         [Term::PathGlob(vec!["/etc/hosts".into()])]
     );
     assert_eq!(sysconf.verdict, Verdict::Deny);
+    assert!(!sysconf.promptable && !sysconf.suppressible);
+    let creds = compiled
+        .rules
+        .iter()
+        .find(|r| r.id == "credentials-ask")
+        .unwrap();
+    assert!(
+        creds.promptable && creds.suppressible,
+        "defaults outside I-05"
+    );
+}
+
+#[test]
+fn i05_groups_cannot_be_made_promptable_suppressible_or_escalated() {
+    for group in ["SYSTEM_CONFIG", "FILELESS_EXECUTE", "SELF_PROTECTION"] {
+        let src = rule(
+            "p",
+            group,
+            "{ path_under = \"/x\" }",
+            "deny",
+            "promptable = true",
+        );
+        let errs = compile_src(&src).unwrap_err();
+        assert!(
+            matches!(&errs[0].kind, CompileErrorKind::NeverPromptable { what, .. } if what.contains("promptable")),
+            "{group}: {errs:#?}"
+        );
+        assert!(errs[0].to_string().contains("I-05"), "{}", errs[0]);
+        let src = rule(
+            "s",
+            group,
+            "{ path_under = \"/x\" }",
+            "deny",
+            "suppressible = true",
+        );
+        let errs = compile_src(&src).unwrap_err();
+        assert!(
+            matches!(&errs[0].kind, CompileErrorKind::NeverPromptable { what, .. } if what.contains("suppressible")),
+            "{group}"
+        );
+        let src = rule("e", group, "{ path_under = \"/x\" }", "escalate", "");
+        let errs = compile_src(&src).unwrap_err();
+        assert!(
+            matches!(&errs[0].kind, CompileErrorKind::NeverPromptable { what, .. } if what.contains("escalate")),
+            "{group}"
+        );
+        // Written the way I-05 wants, or with nothing written, it compiles
+        // and resolves to non-promptable, non-suppressible.
+        let ok = rule(
+            "d",
+            group,
+            "{ path_under = \"/x\" }",
+            "deny",
+            "promptable = false\nsuppressible = false",
+        ) + &rule("d2", group, "{ path_under = \"/y\" }", "deny", "");
+        let compiled = compile_src(&ok).unwrap_or_else(|e| panic!("{e:#?}"));
+        assert!(compiled
+            .rules
+            .iter()
+            .all(|r| !r.promptable && !r.suppressible));
+    }
+    // Outside I-05, escalate and promptable = true are ordinary.
+    let src = rule(
+        "c",
+        "CREDENTIALS",
+        "{ path_glob = \"**/.env\" }",
+        "escalate",
+        "promptable = true",
+    );
+    compile_src(&src).unwrap_or_else(|e| panic!("{e:#?}"));
 }
 
 #[test]

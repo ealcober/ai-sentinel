@@ -104,6 +104,15 @@ impl EventBatch {
         Ok(())
     }
 
+    /// The events, mutably — the ingest stage edits them in place.
+    ///
+    /// Canonicalization rewrites a path inside the event it arrived in
+    /// (`F2.WS.02`), which is what keeps the hot loop free of a second buffer
+    /// and therefore free of an allocation.
+    pub fn as_mut_slice(&mut self) -> &mut [RawEvent] {
+        &mut self.events
+    }
+
     /// The events.
     #[must_use]
     pub fn as_slice(&self) -> &[RawEvent] {

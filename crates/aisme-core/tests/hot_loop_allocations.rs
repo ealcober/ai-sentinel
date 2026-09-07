@@ -8,6 +8,7 @@
 //! (`F1.RT.01`). The first tick is allowed to allocate — sensors start, the
 //! trace is handed over — and every tick after it must not.
 
+use aisme_core::resolve::NullResolver;
 use std::alloc::{GlobalAlloc, Layout, System};
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::time::Duration;
@@ -92,6 +93,8 @@ fn a_steady_state_tick_allocates_nothing() {
         })
         .collect();
 
+    let mut resolver = NullResolver;
+
     let mut engine = Engine::new(
         vec![Box::new(MockSensor::new(trace))],
         // A sink that keeps every event would grow its own Vec, and that
@@ -104,7 +107,7 @@ fn a_steady_state_tick_allocates_nothing() {
     engine.start(&SensorConfig::default()).unwrap();
 
     // The first tick may allocate: the sink is taking its first batch.
-    let first = engine.tick(Duration::ZERO, 1_000).unwrap();
+    let first = engine.tick(&mut resolver, Duration::ZERO, 1_000).unwrap();
     assert_eq!(first.drained, 128);
 
     // Every tick after it must not. Ten of them, measured together, so a
@@ -113,7 +116,7 @@ fn a_steady_state_tick_allocates_nothing() {
     let allocated = allocations(|| {
         for i in 0..10u64 {
             drained += engine
-                .tick(Duration::ZERO, 2_000 + i * 1_000)
+                .tick(&mut resolver, Duration::ZERO, 2_000 + i * 1_000)
                 .unwrap()
                 .drained;
         }

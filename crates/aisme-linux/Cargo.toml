@@ -22,6 +22,10 @@ aisme-ebpf-common = { path = "../aisme-ebpf-common" }
 # not build elsewhere and A-02 keeps that fact inside this layer.
 [target.'cfg(target_os = "linux")'.dependencies]
 aya = "=0.14.0"
+# open(O_PATH) + readlink into fixed buffers. std::fs::canonicalize would be
+# shorter and allocates a PathBuf on every call, which is one allocation per
+# event on the hot path — I-22 does not allow one.
+libc = "0.2.189"
 
 [lints]
 workspace = true

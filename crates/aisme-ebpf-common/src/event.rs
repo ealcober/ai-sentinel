@@ -160,6 +160,28 @@ impl RawEvent {
         self.flags & FLAG_TRUNCATED != 0
     }
 
+    /// The file payload's path buffer and its length, for a kind in the File
+    /// range; `None` for any other range.
+    ///
+    /// The one way to *edit* a path in place, and it lives here because it is
+    /// layout work: reading a union member needs `unsafe`, which §3.1 permits
+    /// in L0 and forbids in `aisme-core`. Ingest canonicalizes through this
+    /// (`F2.WS.02`), which is why it hands back the length as well — a resolved
+    /// path is usually a different length, and a buffer whose length nobody
+    /// updated would read as the old path with a new tail.
+    #[must_use]
+    pub fn file_path_mut(&mut self) -> Option<(&mut [u8; 200], &mut u16)> {
+        if self.kind.range()? != crate::kind::Range::File {
+            return None;
+        }
+        // SAFETY: every member of the payload union is a `repr(C)` all-integer
+        // struct of the same size, so any bit pattern is a valid value of any
+        // member; `kind.range()` just said this event's range is File, which is
+        // what makes `file` the member that means something here.
+        let file = unsafe { &mut self.payload.file };
+        Some((&mut file.path, &mut file.path_len))
+    }
+
     /// Whether `flags` carries [`FLAG_PATH_UNRESOLVED`] — the payload's path
     /// is the caller's string, not the kernel's resolution.
     #[must_use]
@@ -312,6 +334,38 @@ mod tests {
         // both, and reading either must not clear the other.
         event.flags &= !FLAG_TRUNCATED;
         assert!(event.path_unresolved());
+    }
+
+    #[test]
+    fn a_path_is_editable_in_place_only_for_a_file_kind() {
+        let mut event = RawEvent::ZERO;
+        // Meta range: there is no path to edit, and saying so beats handing
+        // back a buffer that means something else.
+        assert!(event.file_path_mut().is_none());
+
+        event.kind = EventKind::FileOpen.into();
+        let (buf, len) = event.file_path_mut().expect("File range has a path");
+        buf[..5].copy_from_slice(b"/tmp/");
+        *len = 5;
+        // The edit is visible through the read-only view, which is what proves
+        // both are looking at the same bytes.
+        match event.payload() {
+            Some(Payload::File(file)) => {
+                assert_eq!(file.path_len, 5);
+                assert_eq!(&file.path[..5], b"/tmp/");
+            }
+            other => panic!("wrong view: {other:?}"),
+        }
+
+        // A longer path replaces it, and the length follows. A length left
+        // behind would read as the new head with the old tail.
+        let (buf, len) = event.file_path_mut().expect("still File");
+        buf[..9].copy_from_slice(b"/etc/host");
+        *len = 9;
+        match event.payload() {
+            Some(Payload::File(file)) => assert_eq!(&file.path[..9], b"/etc/host"),
+            other => panic!("wrong view: {other:?}"),
+        }
     }
 
     #[test]

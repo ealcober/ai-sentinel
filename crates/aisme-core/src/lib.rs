@@ -24,6 +24,7 @@ pub mod metrics;
 pub mod mock;
 pub mod ontology;
 pub mod policy;
+pub mod resolve;
 pub mod ring;
 pub mod risk;
 pub mod sensor;

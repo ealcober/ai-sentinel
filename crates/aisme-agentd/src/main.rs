@@ -47,6 +47,24 @@ fn main() {
     for lost in aisme_core::tier::degradations(&caps) {
         println!("  degraded: {lost}");
     }
+    // Whether this platform can turn a requested path into a canonical one
+    // (`F2.WS.02`), asked rather than assumed: `/` resolves to itself wherever
+    // canonicalization works at all, and to nothing where it does not. A
+    // daemon that cannot canonicalize still runs — every path simply keeps
+    // `FLAG_PATH_UNRESOLVED` and no stage may decide on it (`I-28`) — so this
+    // is a line to read, not a reason to refuse to start (`I-19`).
+    {
+        let mut resolver = platform::resolver();
+        let mut probe = [0u8; 200];
+        probe[0] = b'/';
+        println!(
+            "canonicalization: {}",
+            match resolver.resolve(&mut probe, 1) {
+                Some(_) => "available",
+                None => "unavailable — every path stays FLAG_PATH_UNRESOLVED",
+            }
+        );
+    }
     // F1.RT.03 moves the hot loop onto this; for now, building it is what
     // proves the cap holds on this machine.
     let mut metrics = aisme_core::metrics::Metrics::default();
@@ -144,7 +162,10 @@ fn measure_idle() -> std::io::Result<String> {
     use aisme_core::detect::DetectorSet;
     use aisme_core::engine::Engine;
     use aisme_core::mock::{CountingSink, MockSensor};
+    use aisme_core::resolve::NullResolver;
     use aisme_core::sensor::SensorConfig;
+
+    let mut resolver = NullResolver;
 
     let mut engine = Engine::new(
         vec![Box::new(MockSensor::with_every_kind())],
@@ -156,7 +177,10 @@ fn measure_idle() -> std::io::Result<String> {
         .start(&SensorConfig::default())
         .map_err(|e| std::io::Error::other(e.to_string()))?;
     for tick in 0..1_000u64 {
-        if engine.tick(Duration::ZERO, 1_000 + tick).is_err() {
+        if engine
+            .tick(&mut resolver, Duration::ZERO, 1_000 + tick)
+            .is_err()
+        {
             break;
         }
         if tick % 100 == 0 {

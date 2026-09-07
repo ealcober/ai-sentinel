@@ -312,6 +312,13 @@ five points later in this same batch. `grep` finds `CountingSink` and `MemorySin
 this point composes through the `EventSink` trait it already has and **point 7 swaps the
 implementation in**; nothing here waits on it, and point 7's text is where the swap is recorded.
 
+**A fourth claim fell while it was being implemented: the LRU cannot be "keyed by `(dev, ino)`".**
+The probe is `sys_enter_openat` — the syscall has been *entered*, no file exists yet, and the
+program never fills `inode` or `dev`, so both arrive as 0. Learning the inode would mean resolving
+the path first, which is exactly the work the cache exists to avoid. The only key available at
+ingest is **the requested path's bytes**, and that is what `RealpathResolver` uses. `(dev, ino)`
+becomes possible at `F3.PT.03`, where an LSM hook sees a resolved `struct file`.
+
 **The cache is not "sized from `budgets.toml`".** There is no such key: `budgets.toml`'s sections
 are process, kernel, mobile, relay, cpu and latency, and none of them sizes a cache. The component
 this point tells the resolver to imitate — the interner (`F1.EV.04`) — is sized **in code**, by a

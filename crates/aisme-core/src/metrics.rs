@@ -141,6 +141,8 @@ mod tests {
             interned: 100,
             findings: 3,
             sensor_errors: 0,
+            resolved: 96,
+            unresolved: 32,
         });
         metrics.observe_tick(&TickReport {
             drained: 64,

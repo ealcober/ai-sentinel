@@ -15,11 +15,12 @@
 
 use core::time::Duration;
 
-use aisme_ebpf_common::{Outcome, Payload, Range, RawEvent, WIRE_VERSION};
+use aisme_ebpf_common::{Outcome, Payload, Range, RawEvent, FLAG_PATH_UNRESOLVED, WIRE_VERSION};
 
 use crate::detect::{DetectorSet, Finding, GraphDelta, SessionState};
 use crate::error::Result;
 use crate::intern::Interner;
+use crate::resolve::PathResolver;
 use crate::risk::{RiskEvent, SessionRisk, Weights};
 use crate::sensor::{EventBatch, EventSink, Sensor};
 use crate::taint::Taint;
@@ -40,6 +41,13 @@ pub struct TickReport {
     pub findings: usize,
     /// Sensors that reported an error and were skipped this tick.
     pub sensor_errors: usize,
+    /// Paths the resolver turned into canonical ones this tick.
+    pub resolved: usize,
+    /// Paths it could not resolve, which keep `FLAG_PATH_UNRESOLVED`. Counted
+    /// rather than ignored: a path nobody could canonicalize is a fact about
+    /// the machine, and a silent zero here would hide a resolver that stopped
+    /// working.
+    pub unresolved: usize,
 }
 
 /// Everything the loop owns, allocated once.
@@ -92,7 +100,12 @@ impl Engine {
     /// The sink's, when it cannot take a batch. A sensor's error is counted
     /// and the tick continues: one detached sensor is not the end of
     /// observation (`I-19`).
-    pub fn tick(&mut self, budget: Duration, now_ns: u64) -> Result<TickReport> {
+    pub fn tick(
+        &mut self,
+        resolver: &mut dyn PathResolver,
+        budget: Duration,
+        now_ns: u64,
+    ) -> Result<TickReport> {
         let mut report = TickReport::default();
         self.batch.clear();
         for sensor in &mut self.sensors {
@@ -102,6 +115,34 @@ impl Engine {
             }
         }
         self.state.now_ns = now_ns;
+        // Canonicalize before anything reads a path. The resolver is the only
+        // stage allowed to clear `FLAG_PATH_UNRESOLVED`, and it clears it only
+        // when it actually resolved something: an unresolvable path stays
+        // marked as the caller's string, which is what lets a later stage
+        // refuse to decide on it (`I-28`).
+        for event in self.batch.as_mut_slice() {
+            if !event.path_unresolved() {
+                continue;
+            }
+            let rewritten = match event.file_path_mut() {
+                Some((buf, len)) => {
+                    let asked = usize::from(*len);
+                    resolver.resolve(buf, asked).inspect(|canonical| {
+                        // The length follows the path. A buffer whose length
+                        // nobody updated reads as the new head with the old
+                        // tail, which is a different file.
+                        *len = u16::try_from(*canonical).unwrap_or(u16::MAX);
+                    })
+                }
+                None => None,
+            };
+            if rewritten.is_some() {
+                event.flags &= !FLAG_PATH_UNRESOLVED;
+                report.resolved += 1;
+            } else {
+                report.unresolved += 1;
+            }
+        }
         for event in self.batch.as_slice() {
             classify(event, &mut report);
             if let Some(kind) = interned_string(event) {
@@ -209,6 +250,138 @@ fn risk_event_of(event: &RawEvent) -> Option<RiskEvent> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::resolve::NullResolver;
+
+    /// A resolver that rewrites any path to a fixed canonical one, so the test
+    /// exercises the engine's stage rather than a platform's `readlink`.
+    struct FixedResolver {
+        to: &'static [u8],
+        calls: usize,
+    }
+
+    impl PathResolver for FixedResolver {
+        fn resolve(&mut self, buf: &mut [u8], _len: usize) -> Option<usize> {
+            self.calls += 1;
+            buf[..self.to.len()].copy_from_slice(self.to);
+            Some(self.to.len())
+        }
+    }
+
+    /// A resolver that never resolves, and counts being asked.
+    struct RefusingResolver {
+        calls: usize,
+    }
+
+    impl PathResolver for RefusingResolver {
+        fn resolve(&mut self, _buf: &mut [u8], _len: usize) -> Option<usize> {
+            self.calls += 1;
+            None
+        }
+    }
+
+    fn file_event(path: &[u8]) -> RawEvent {
+        let mut event = RawEvent::ZERO;
+        event.kind = aisme_ebpf_common::EventKind::FileOpen.into();
+        event.flags = FLAG_PATH_UNRESOLVED;
+        let (buf, len) = event.file_path_mut().expect("File range");
+        buf[..path.len()].copy_from_slice(path);
+        *len = u16::try_from(path.len()).expect("short");
+        event
+    }
+
+    /// The stage rewrites the path in place and clears the flag — and only
+    /// then, because clearing it is the claim that the path is the kernel's.
+    #[test]
+    fn a_resolved_path_replaces_the_requested_one_and_drops_the_flag() {
+        let mut engine = Engine::new(
+            vec![Box::new(MockSensor::new(vec![file_event(b"/tmp/link")]))],
+            Box::new(MemorySink::new()),
+            DetectorSet::new(),
+            8,
+        );
+        engine.start(&SensorConfig::default()).expect("start");
+        let mut resolver = FixedResolver {
+            to: b"/tmp/target",
+            calls: 0,
+        };
+        let report = engine.tick(&mut resolver, Duration::ZERO, 1).expect("tick");
+        assert_eq!(report.drained, 1);
+        assert_eq!(report.resolved, 1);
+        assert_eq!(report.unresolved, 0);
+        assert_eq!(resolver.calls, 1, "the stage must ask exactly once");
+
+        let event = engine.batch.as_slice()[0];
+        assert!(
+            !event.path_unresolved(),
+            "a resolved path is no longer the caller's string"
+        );
+        match event.payload() {
+            Some(Payload::File(file)) => {
+                assert_eq!(&file.path[..file.path_len as usize], b"/tmp/target");
+            }
+            other => panic!("wrong view: {other:?}"),
+        }
+    }
+
+    /// An unresolvable path keeps the flag. This is the case that matters: a
+    /// guess here becomes a decision about the wrong file.
+    #[test]
+    fn an_unresolvable_path_keeps_the_flag_and_is_counted() {
+        let mut engine = Engine::new(
+            vec![Box::new(MockSensor::new(vec![file_event(b"/tmp/gone")]))],
+            Box::new(MemorySink::new()),
+            DetectorSet::new(),
+            8,
+        );
+        engine.start(&SensorConfig::default()).expect("start");
+        let mut resolver = RefusingResolver { calls: 0 };
+        let report = engine.tick(&mut resolver, Duration::ZERO, 1).expect("tick");
+        assert_eq!(report.resolved, 0);
+        assert_eq!(report.unresolved, 1, "a refusal is a fact, not a zero");
+        assert_eq!(resolver.calls, 1);
+
+        let event = engine.batch.as_slice()[0];
+        assert!(
+            event.path_unresolved(),
+            "the flag says the path is requested"
+        );
+        match event.payload() {
+            Some(Payload::File(file)) => {
+                assert_eq!(&file.path[..file.path_len as usize], b"/tmp/gone");
+            }
+            other => panic!("wrong view: {other:?}"),
+        }
+    }
+
+    /// An event that already carries a canonical path is not re-resolved: the
+    /// stage is keyed on the flag, so a second tick over the same batch costs
+    /// nothing and cannot rewrite a path twice.
+    #[test]
+    fn a_path_without_the_flag_is_never_offered_to_the_resolver() {
+        let mut event = file_event(b"/tmp/already");
+        event.flags = 0;
+        let mut engine = Engine::new(
+            vec![Box::new(MockSensor::new(vec![event]))],
+            Box::new(MemorySink::new()),
+            DetectorSet::new(),
+            8,
+        );
+        engine.start(&SensorConfig::default()).expect("start");
+        let mut resolver = FixedResolver {
+            to: b"/tmp/other",
+            calls: 0,
+        };
+        let report = engine.tick(&mut resolver, Duration::ZERO, 1).expect("tick");
+        assert_eq!(resolver.calls, 0, "nothing to resolve");
+        assert_eq!(report.resolved, 0);
+        assert_eq!(report.unresolved, 0);
+        match engine.batch.as_slice()[0].payload() {
+            Some(Payload::File(file)) => {
+                assert_eq!(&file.path[..file.path_len as usize], b"/tmp/already");
+            }
+            other => panic!("wrong view: {other:?}"),
+        }
+    }
     use crate::mock::{MemorySink, MockSensor};
     use crate::sensor::SensorConfig;
     use aisme_ebpf_common::EventKind;
@@ -224,14 +397,15 @@ mod tests {
 
     #[test]
     fn a_tick_drains_classifies_and_sinks() {
+        let mut resolver = NullResolver;
         let mut engine = engine();
         engine.start(&SensorConfig::default()).unwrap();
-        let first = engine.tick(Duration::ZERO, 1_000).unwrap();
+        let first = engine.tick(&mut resolver, Duration::ZERO, 1_000).unwrap();
         assert_eq!(first.drained, 55, "the catalogue trace, in one batch of 64");
         assert_eq!(first.unknown_kind, 0);
         assert_eq!(first.wire_mismatch, 0);
         assert_eq!(first.sensor_errors, 0);
-        let second = engine.tick(Duration::ZERO, 2_000).unwrap();
+        let second = engine.tick(&mut resolver, Duration::ZERO, 2_000).unwrap();
         assert_eq!(second.drained, 0, "the trace is exhausted");
         assert_eq!(engine.totals().drained, 55);
     }
@@ -243,6 +417,7 @@ mod tests {
         let mut newer = RawEvent::ZERO;
         newer.kind = EventKind::FileOpen.into();
         newer.wire_version = WIRE_VERSION + 1;
+        let mut resolver = NullResolver;
         let mut engine = Engine::new(
             vec![Box::new(MockSensor::new(vec![odd, newer]))],
             Box::new(MemorySink::new()),
@@ -250,7 +425,7 @@ mod tests {
             8,
         );
         engine.start(&SensorConfig::default()).unwrap();
-        let report = engine.tick(Duration::ZERO, 1).unwrap();
+        let report = engine.tick(&mut resolver, Duration::ZERO, 1).unwrap();
         assert_eq!(report.drained, 2);
         assert_eq!(report.unknown_kind, 1);
         assert_eq!(report.wire_mismatch, 1);
@@ -262,6 +437,7 @@ mod tests {
             MockSensor::with_every_kind().with_health(crate::sensor::SensorHealth::Detached {
                 reason: "probe removed".into(),
             });
+        let mut resolver = NullResolver;
         let mut engine = Engine::new(
             vec![
                 Box::new(detached),
@@ -272,7 +448,7 @@ mod tests {
             8,
         );
         engine.start(&SensorConfig::default()).unwrap();
-        let report = engine.tick(Duration::ZERO, 1).unwrap();
+        let report = engine.tick(&mut resolver, Duration::ZERO, 1).unwrap();
         assert_eq!(report.sensor_errors, 1);
         assert_eq!(
             report.drained, 1,
@@ -300,6 +476,7 @@ mod tests {
         file.payload.file = path;
         let mut hazard = RawEvent::ZERO;
         hazard.kind = EventKind::MemfdCreate.into();
+        let mut resolver = NullResolver;
         let mut engine = Engine::new(
             vec![Box::new(MockSensor::new(vec![file, hazard]))],
             Box::new(MemorySink::new()),
@@ -307,7 +484,7 @@ mod tests {
             8,
         );
         engine.start(&SensorConfig::default()).unwrap();
-        let report = engine.tick(Duration::ZERO, 5_000).unwrap();
+        let report = engine.tick(&mut resolver, Duration::ZERO, 5_000).unwrap();
         assert_eq!(report.interned, 1);
         assert!(engine.state().risk_milli > 0, "a hazard is a class shift");
         assert_eq!(engine.state().now_ns, 5_000);

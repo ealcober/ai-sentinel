@@ -17,6 +17,9 @@ use aisme_core::capability::CapabilitySet;
 use aisme_core::enforce::Enforcer;
 use aisme_core::ladder::AdjudicatorLadder;
 use aisme_core::mock::{MockSensor, NullEnforcer, PolicyAdjudicator};
+#[cfg(not(target_os = "linux"))]
+use aisme_core::resolve::NullResolver;
+use aisme_core::resolve::PathResolver;
 use aisme_core::sensor::{Sensor, SensorConfig};
 use aisme_core::tier::{tier_of, Tier};
 use aisme_ebpf_common::Verdict;
@@ -76,6 +79,25 @@ pub fn load_sensor_report() -> i32 {
 pub fn load_sensor_report() -> i32 {
     println!("load-sensor: UNSUPPORTED (this build has no Linux adapter)");
     1
+}
+
+/// The path resolver for this platform (`F2.WS.02`).
+///
+/// Canonicalization is I/O, so it lives in an adapter and this is where the
+/// adapter is named. On Linux that is `RealpathResolver`, which asks the
+/// kernel; everywhere else it is `NullResolver`, which reports every path
+/// unresolved — true, and it keeps `FLAG_PATH_UNRESOLVED` on the event so
+/// nothing downstream mistakes a requested path for a canonical one.
+#[must_use]
+pub fn resolver() -> Box<dyn PathResolver> {
+    #[cfg(target_os = "linux")]
+    {
+        Box::new(aisme_linux::RealpathResolver::for_sessions())
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        Box::new(NullResolver)
+    }
 }
 
 /// The sensors for this platform and this capability set.
@@ -202,6 +224,21 @@ mod tests {
             "the mock reports its own state; what matters is that it is the mock"
         );
         assert!(!sensors[0].capabilities().ringbuf);
+    }
+
+    /// The composition always yields a resolver, and it never claims a path is
+    /// canonical without having resolved one. Asked about a path that cannot
+    /// exist, every implementation must answer `None` rather than echo the
+    /// input — an echo would clear `FLAG_PATH_UNRESOLVED` downstream and turn a
+    /// requested path into a decision about the wrong file.
+    #[test]
+    fn the_composed_resolver_refuses_a_path_that_cannot_resolve() {
+        let mut resolver = resolver();
+        let raw = b"/aisme-does-not-exist/nor-does-this";
+        let mut buf = [0u8; 200];
+        buf[..raw.len()].copy_from_slice(raw);
+        assert_eq!(resolver.resolve(&mut buf, raw.len()), None);
+        assert_eq!(&buf[..raw.len()], raw, "and it leaves the buffer alone");
     }
 
     #[test]

@@ -62,6 +62,7 @@ dependencies = [
  "aisme-core",
  "aisme-ebpf-common",
  "aya",
+ "libc",
 ]
 
 [[package]]

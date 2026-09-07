@@ -13,6 +13,7 @@
 //! invariants, and the bench says so rather than printing a number that
 //! looks like a benchmark result.
 
+use aisme_core::resolve::NullResolver;
 use std::alloc::{GlobalAlloc, Layout, System};
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::time::{Duration, Instant};
@@ -82,6 +83,7 @@ pub(crate) fn hot_loop(args: &[&str]) -> u8 {
     // means the queue never overflowed, not that nothing was queued.
     let mut ring = EventRing::with_capacity(BATCH * 4);
     let trace = trace(events.min(BATCH * 32));
+    let mut resolver = NullResolver;
     let mut engine = Engine::new(
         vec![Box::new(MockSensor::new(trace.clone()))],
         Box::new(CountingSink::new()),
@@ -95,7 +97,7 @@ pub(crate) fn hot_loop(args: &[&str]) -> u8 {
 
     // One tick to warm: the first pass may allocate (the sink takes its
     // first batch), and F1.RT.03's property is about steady state.
-    let _ = engine.tick(Duration::ZERO, 1_000);
+    let _ = engine.tick(&mut resolver, Duration::ZERO, 1_000);
 
     let mut drained = 0usize;
     let mut ticks = 0u64;
@@ -113,7 +115,7 @@ pub(crate) fn hot_loop(args: &[&str]) -> u8 {
             }
         }
         while ring.pop().is_some() {}
-        let report = match engine.tick(Duration::ZERO, now_ns) {
+        let report = match engine.tick(&mut resolver, Duration::ZERO, now_ns) {
             Ok(report) => report,
             Err(e) => {
                 COUNTING.store(false, Ordering::Relaxed);

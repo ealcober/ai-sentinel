@@ -29,6 +29,7 @@ All notable changes to this repository. Format: [Keep a Changelog](https://keepa
   ```
 
 ### Added
+- **`F1.RT.02` — the capped runtime**: tokio with two worker threads, 512 KiB stacks, named threads and a minimal feature set, plus the hot loop's `LocalSet`. 2 tests.
 - **`F1.RT.01` — `mimalloc`** as `aisme-agentd`'s global allocator with a 10 ms purge delay (`H-03`); `cargo deny` passes with it.
 - **`F1.DT.03` — signed weights** (`aisme-core::weights`): the format, a pure verifier that checks shape, digest and then a loader-supplied signature, rollback refused with the header inside the signed message, and a `CRITICAL` threshold no file can lower. 4 tests.
 - **`F1.DT.02` — `DT-09` session risk** (`aisme-core::risk`): a deterministic decaying accumulator in integer thousandths with weights as plain data, posture thresholds, and a pinned measured value so a change of arithmetic cannot pass unnoticed. 4 tests.

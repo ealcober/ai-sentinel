@@ -6,6 +6,7 @@
 //! `cfg(target_os)` (plan §3.1).
 
 mod platform;
+mod runtime;
 
 /// `H-03`: RSS is a budget, not an outcome. mimalloc's purge returns freed
 /// pages to the OS instead of holding an arena that only ever grows; the
@@ -36,5 +37,18 @@ fn main() {
     );
     for lost in aisme_core::tier::degradations(&caps) {
         println!("  degraded: {lost}");
+    }
+    // F1.RT.03 moves the hot loop onto this; for now, building it is what
+    // proves the cap holds on this machine.
+    match runtime::build() {
+        Ok(rt) => {
+            let set = runtime::hot_loop_set();
+            let ready = set.block_on(&rt, async { rt.metrics().num_workers() });
+            println!(
+                "runtime: {ready} worker thread(s), {} KiB stack each, hot-loop set ready",
+                runtime::WORKER_STACK_BYTES / 1024
+            );
+        }
+        Err(e) => eprintln!("runtime: could not start: {e}"),
     }
 }

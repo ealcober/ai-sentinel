@@ -32,6 +32,9 @@ dependencies = [
 [[package]]
 name = "aisme-correlate"
 version = "0.1.0"
+dependencies = [
+ "aisme-core",
+]
 
 [[package]]
 name = "aisme-ebpf-common"

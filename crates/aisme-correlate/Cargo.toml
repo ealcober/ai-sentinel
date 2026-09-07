@@ -8,6 +8,8 @@ rust-version.workspace = true
 publish = false
 
 [dependencies]
+# L1 -> L1: the ontology's types. Same layer, downward to L0 through it.
+aisme-core = { path = "../aisme-core" }
 
 [lints]
 workspace = true

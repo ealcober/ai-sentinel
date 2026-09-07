@@ -10,10 +10,15 @@
 //! policy you cannot trust.
 
 pub mod ast;
+pub mod backend;
 pub mod compile;
 pub mod parse;
 
 pub use ast::{Assert, Match, MatchKey, Policy, Rule, SessionDefaults, Suppression, Text};
+pub use backend::{
+    BackendCapabilities, BackendKind, Degradation, LowerError, PolicyBackend, PolicyGeneration,
+    VerdictMap,
+};
 pub use compile::{
     compile, Bindings, CompileError, CompileErrorKind, CompiledPolicy, CompiledRule, Predicate,
     Term,

@@ -158,6 +158,36 @@ const _: () = {
     assert!(size_of::<OutcomeCode>() == 1);
 };
 
+/// Every field's offset, pinned (`F1.EV.03`): a moved field is a wire break,
+/// and this is where it breaks — at compile time, on both targets, before a
+/// byte is written. Append-only (§3.6) means these numbers never change; a
+/// new header field takes bytes from `reserved` at offset 49.
+const _: () = {
+    use core::mem::offset_of;
+    assert!(offset_of!(RawEvent, ts_ns) == 0);
+    assert!(offset_of!(RawEvent, seq) == 8);
+    assert!(offset_of!(RawEvent, session_id) == 16);
+    assert!(offset_of!(RawEvent, pid) == 24);
+    assert!(offset_of!(RawEvent, tgid) == 28);
+    assert!(offset_of!(RawEvent, ppid) == 32);
+    assert!(offset_of!(RawEvent, uid) == 36);
+    assert!(offset_of!(RawEvent, taint) == 40);
+    assert!(offset_of!(RawEvent, kind) == 44);
+    assert!(offset_of!(RawEvent, outcome) == 46);
+    assert!(offset_of!(RawEvent, flags) == 47);
+    assert!(offset_of!(RawEvent, wire_version) == 48);
+    assert!(offset_of!(RawEvent, reserved) == 49);
+    assert!(offset_of!(RawEvent, payload) == 64);
+};
+
+/// The wire is little-endian: the BPF target is `bpfel-unknown-none` and every
+/// user-space target AISME builds for is little-endian. A big-endian build
+/// would read every multi-byte field backwards, so it does not build.
+const _: () = assert!(
+    cfg!(target_endian = "little"),
+    "aisme-ebpf-common is a little-endian wire; see F1.EV.03"
+);
+
 #[cfg(test)]
 mod tests {
     use super::*;

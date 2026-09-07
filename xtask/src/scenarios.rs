@@ -110,3 +110,46 @@ pub(crate) fn test_policy_compiler(args: &[&str]) -> u8 {
         1
     }
 }
+
+/// `cargo xtask test-detect [--determinism]` (`F1.DT.01`).
+///
+/// Annex G.0's claim is that detectors are pure functions with no platform
+/// variants, "which is why they can be tested once, on CI, for every
+/// target". This runs that test; `--determinism` is the only mode there is,
+/// and passing nothing runs the same suite, because a detector that was
+/// non-deterministic would be broken in every mode.
+pub(crate) fn test_detect(args: &[&str]) -> u8 {
+    for arg in args {
+        if *arg != "--determinism" {
+            eprintln!("usage: cargo xtask test-detect [--determinism]  (unknown: {arg})");
+            return 1;
+        }
+    }
+    let Ok(output) = Command::new("cargo")
+        .args([
+            "test",
+            "-q",
+            "-p",
+            "aisme-core",
+            "--test",
+            "detect_determinism",
+        ])
+        .output()
+    else {
+        eprintln!("skip: could not run cargo");
+        return SKIP;
+    };
+    let text = String::from_utf8_lossy(&output.stdout);
+    let result = text
+        .lines()
+        .find_map(|l| l.strip_prefix("test result: "))
+        .unwrap_or("no test result line");
+    if output.status.success() && !result.contains("0 passed") {
+        println!("PASS test-detect --determinism: {result}");
+        0
+    } else {
+        eprint!("{}", String::from_utf8_lossy(&output.stderr));
+        println!("FAIL test-detect --determinism: {result}");
+        1
+    }
+}

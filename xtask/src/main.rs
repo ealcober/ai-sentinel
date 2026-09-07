@@ -128,6 +128,7 @@ fn run(name: &str, args: &[&str]) -> Option<u8> {
         "bench-hotloop" => bench::hot_loop(args),
         "dist" => tooling::dist(),
         "test-taint" => scenarios::test_taint(args),
+        "test-detect" => scenarios::test_detect(args),
         "test-policy-compiler" => scenarios::test_policy_compiler(args),
         "vm up" | "vm run" | "vm probe" => vm::run(name, args),
         _ => return None,

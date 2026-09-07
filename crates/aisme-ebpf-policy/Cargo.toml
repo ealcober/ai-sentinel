@@ -1,0 +1,28 @@
+[package]
+name = "aisme-ebpf-policy"
+version = "0.1.0"
+edition = "2021"
+# GPL-2.0-only for the same reason as the sensor's object: the kernel reads the
+# licence declaration, not a human. See LICENSE.md and ADR-06.
+license = "GPL-2.0-only"
+publish = false
+
+# Its own workspace root: it targets bpfel-unknown-none under a different
+# toolchain, so `cargo check --workspace` must not try to build it.
+[workspace]
+
+# Not a workspace member, and a second object rather than more maps in the
+# sensor's: `ARRAY_OF_MAPS` exists at this pin only as a BTF map, and adding one
+# to the sensor's object stopped the whole object loading (docs/05 §4.6,
+# measured on 6.8 and 5.4). Keeping the policy maps here means a failure here
+# cannot regress a program that loads.
+
+[dependencies]
+# Pinned exactly, as the sensor's is: the toolchain was validated against this
+# version and a silent minor bump would revalidate nothing.
+aya-ebpf = "=0.2.1"
+
+# BTF comes from debug info, and bpf-linker writes a `.BTF` section only when it
+# has DWARF to derive one from. A BTF-defined map cannot be parsed without it.
+[profile.release]
+debug = 2

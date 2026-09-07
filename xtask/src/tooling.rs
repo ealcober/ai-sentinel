@@ -62,6 +62,10 @@ pub(crate) fn build_ebpf() -> u8 {
     match status {
         Ok(s) if s.success() => {
             println!("PASS build-ebpf: aisme-ebpf built for bpfel-unknown-none");
+            let policy = build_policy_object();
+            if policy != 0 {
+                return policy;
+            }
             build_probes()
         }
         Ok(_) => 1,
@@ -74,6 +78,47 @@ pub(crate) fn build_ebpf() -> u8 {
 
 /// Build the release artefacts and confirm every declared binary is present.
 ///
+/// The policy maps' own object (`F2.WS.04`).
+///
+/// Built separately from the sensor's and with different flags, because
+/// `ARRAY_OF_MAPS` exists at this pin only as a BTF map and BTF needs a `.BTF`
+/// section, which `bpf-linker` writes only when asked (`-C link-arg=--btf`) and
+/// only when there is DWARF to derive it from (the crate's
+/// `[profile.release] debug = 2`). Adding those maps to the sensor's object
+/// instead left it carrying both section styles and unable to load at all,
+/// measured on 6.8 and 5.4 — so the flags stay on this object, and the sensor's
+/// build is untouched.
+fn build_policy_object() -> u8 {
+    let status = Command::new("cargo")
+        .current_dir("crates/aisme-ebpf-policy")
+        // As above: the inherited toolchain would override the crate's own pin.
+        .env_remove("RUSTUP_TOOLCHAIN")
+        .env_remove("RUSTC")
+        .env_remove("RUSTDOC")
+        .env_remove("CARGO")
+        .env("RUSTFLAGS", "-C link-arg=--btf")
+        .args([
+            "build",
+            "--release",
+            "--target",
+            "bpfel-unknown-none",
+            "-Z",
+            "build-std=core",
+        ])
+        .status();
+    match status {
+        Ok(s) if s.success() => {
+            println!("PASS build-ebpf: aisme-ebpf-policy built (BTF maps, no programs)");
+            0
+        }
+        Ok(_) => 1,
+        Err(e) => {
+            eprintln!("skip: could not run cargo: {e}");
+            SKIP
+        }
+    }
+}
+
 /// The binary list comes from `cargo metadata`, not from reading the directory:
 /// `target/release` also holds cargo's own lock files, and a directory listing
 /// would report those as artefacts.

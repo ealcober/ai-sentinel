@@ -2843,6 +2843,10 @@ AI-SYSTEM-MONITOR/
 │   ├── aisme-core/          [L1] Ontology, traits, policy IR, detectors, capability
 │   ├── aisme-ebpf-common/   [L0] no_std event structs shared with BPF programs
 │   ├── aisme-ebpf/           [--] BPF programs; built by xtask, not a member
+│   ├── aisme-ebpf-policy/    [--] the policy maps' own object: BTF maps, no programs.
+│                                  Separate because ARRAY_OF_MAPS exists only as a BTF
+│                                  map at the pinned aya, and adding one to the sensor's
+│                                  object stopped that object loading (F2.WS.04)
 │   ├── aisme-linux/         [L2] Aya loader, Landlock, cgroup hooks, seccomp, freezer
 │   ├── aisme-windows/       [POST — ADR-02, not a member] FltPort client, ETW
 │   ├── aisme-agentd/        [L3] HOT PATH daemon — 50 MB budget; src/platform/ is

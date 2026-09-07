@@ -44,6 +44,26 @@ const OBJECT: &[u8] = include_bytes!(env!("AISME_BPF_OBJECT"));
 #[cfg(not(bpf_object_present))]
 const OBJECT: &[u8] = &[];
 
+/// Every link of an error, joined — because a wrapper that hides its cause is
+/// how a diagnosis becomes a guess.
+///
+/// `aya_obj::ParseError::BtfError` is declared `#[error("BTF error")]` and keeps
+/// the reason — invalid header, unknown type kind, invalid string offset, and
+/// four more — only in `source()`. Formatting with `to_string()` prints the
+/// wrapper and discards the answer, which is what turned one real failure into
+/// "aya cannot parse this toolchain's BTF": a cause asserted rather than
+/// established (`AGENTS.md` §3-bis).
+pub(crate) fn error_chain(error: &dyn std::error::Error) -> String {
+    let mut text = error.to_string();
+    let mut source = error.source();
+    while let Some(link) = source {
+        text.push_str(": ");
+        text.push_str(&link.to_string());
+        source = link.source();
+    }
+    text
+}
+
 /// One tracepoint, one ring buffer, no allocation on the drain path.
 pub struct BpfSensor {
     loaded: Option<Loaded>,
@@ -157,7 +177,7 @@ impl Sensor for BpfSensor {
             // ring-buffer problem, which is a cause asserted rather than
             // measured — the thing this project treats as a defect everywhere
             // else.
-            let text = e.to_string();
+            let text = error_chain(&e);
             let likely = if text.contains("map") && text.contains("create") {
                 " — a kernel below 5.8 has no BPF_MAP_TYPE_RINGBUF, and F2 requires it; the \
                  perf-buffer fallback is F3.PT.*, not this phase"
@@ -274,6 +294,43 @@ mod tests {
     /// Everything here runs on the host, so it exercises only what needs no
     /// kernel: `I-12` forbids a kernel-touching test outside a VM, and the
     /// load, attach and drain are covered by `cargo xtask vm run`.
+    /// A wrapper's own message is not a diagnosis. This is the check that the
+    /// reason survives to the reader — the failure that made it necessary was
+    /// a load error whose top link said only "BTF error".
+    #[test]
+    fn an_error_reports_every_link_of_its_chain_not_only_the_outermost() {
+        use std::error::Error as _;
+        use std::fmt;
+
+        #[derive(Debug)]
+        struct Wrapper(std::io::Error);
+        impl fmt::Display for Wrapper {
+            fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+                // Exactly the shape that hid the cause: a constant string.
+                f.write_str("BTF error")
+            }
+        }
+        impl std::error::Error for Wrapper {
+            fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+                Some(&self.0)
+            }
+        }
+
+        let inner = std::io::Error::new(std::io::ErrorKind::InvalidData, "invalid BTF header");
+        let wrapped = Wrapper(inner);
+        assert_eq!(wrapped.to_string(), "BTF error", "the wrapper discards it");
+        assert!(wrapped.source().is_some());
+        assert_eq!(
+            error_chain(&wrapped),
+            "BTF error: invalid BTF header",
+            "the chain keeps it"
+        );
+
+        // An error with no source is itself, with nothing appended.
+        let plain = std::io::Error::other("nothing under this");
+        assert_eq!(error_chain(&plain), "nothing under this");
+    }
+
     #[test]
     fn a_sensor_that_never_started_is_detached_and_claims_nothing() {
         let sensor = BpfSensor::new();

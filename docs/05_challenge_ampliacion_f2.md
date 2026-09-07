@@ -533,11 +533,15 @@ finding first: scoped to `src/maps/` it printed "does not exist" for a type that
 lives in `src/btf_maps/`. The type exists; what does not work is the pairing of
 this aya with this bpf-linker's BTF.
 
-**So the double buffer is not built into this object.** The fallback this point
-predicted is the one to take: the policy maps go in a **second object** the
-loader creates and owns, which keeps a verified program verified and puts the
-policy maps where `F3.PT.02` reads them anyway. That is the shape the next
-attempt takes, and it is a numbered blocker rather than a silent omission.
+**So the double buffer is not built with BTF maps at all**, and the reason is
+narrower than it first looked. A standalone object carrying **only** `.maps`,
+with no programs and no legacy section to mix with, fails identically:
+`BTF error: unexpected BTF type id 45` — `aya-obj`'s resolver following a type
+reference into something it does not expect (`btf/btf.rs:104`). The obstruction
+is the BTF that `bpf-linker 0.11` emits against what `aya-obj 0.3.0` reads;
+mixing sections was a *consequence*, because adding BTF maps made the whole
+object need BTF parsing. That correction, and the mechanism that replaces the
+fallback, are `docs/06_challenge_ampliacion_policy_object.md` point 1.
 
 What **is** built and verified: the policy file an operator edits
 (`deploy/policy/skeleton.aisme`) compiles through the real compiler, and

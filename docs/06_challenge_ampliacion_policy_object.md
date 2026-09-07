@@ -132,6 +132,54 @@ Safe, clear and compliant, with the boundary stated:
 - Plan `F2.WS.04`'s row will not change in this point; it changes in point 4, when the mechanism
   is settled.
 
+### 6. The measurement, and the fallback it refutes (2026-09-07)
+
+`--load-policy-probe` and `--load-sensor`, in the same guest boot, on both ends
+of the matrix:
+
+| Image | `--load-policy-probe` | `--load-sensor` |
+|---|---|---|
+| ubuntu-24.04 (6.8) | **REFUSED** — `BTF error: unexpected BTF type id 45` | `ACCEPTED`, `ringbuf: true` |
+| ubuntu-20.04 (5.4) | **REFUSED** — same error | `REFUSED` — `failed to create map AISME_EVENTS: Invalid argument (os error 22)` |
+
+**The point achieved what it was for: the cause has a name.** `UnexpectedBtfType
+{ type_id: 45 }` (`aya-obj` `btf/btf.rs:104`) is aya's BTF resolver following a
+type reference and finding something it did not expect there — a structural
+mismatch between the BTF `bpf-linker 0.11` (LLVM 21) emits and what `aya-obj
+0.3.0` reads. The 5.4 sensor row shows the same improvement working on an
+unrelated failure: it now names the map and the errno instead of stopping at
+"map error".
+
+**Two claims fell, one of them the whole shape of the plan.**
+
+`docs/05` §4.6 said the obstruction was one object carrying two map-section
+styles. It is not: this object carries **only** `.maps`, has no programs, and
+fails identically. Mixing was a consequence — adding BTF maps to the sensor's
+object made that object need BTF parsing, and BTF parsing is what fails.
+
+And my own prediction, written before the run, said the second object would
+load. **It does not, so the second-object fallback is refuted**, not confirmed:
+it moves the maps without touching the reason they cannot be read. Points 2
+through 6 as drafted rest on it, and are therefore rewritten before they are
+written, which is exactly why this point came first.
+
+**What replaces it**, and what it costs. The mechanism must not need a BTF map,
+so the double buffer becomes **two `LpmTrie` maps declared with `#[map]`** in
+the sensor's own legacy `maps` section — the style already proven to load on
+every matrix kernel — plus an `Array<u64, 2>` holding `[generation,
+active_index]`. Publication fills the idle trie and then writes one element of
+the array. **What is lost is the single-word outer-map swap**: a reader now
+reads the index, then looks up in the trie that index names, which is two
+lookups rather than one and needs its own argument that a reader cannot straddle
+a swap. That argument is point 4's, and it is a real cost of this route rather
+than a detail — `ARRAY_OF_MAPS` gave it for free.
+
+**One thing left alone deliberately.** The pairing could also be fixed from the
+toolchain end — a newer aya that reads this BTF, or a bpf-linker built against
+the LLVM aya expects. `F0.VER.01` pinned both against a measured MSRV, and
+moving either is a change with its own validation, not a step inside `F2.WS.04`.
+It is recorded as the alternative and left to the owner.
+
 **Closing.** Verified against `aya-obj 0.3.0`'s `obj.rs:969` (the wrapper that discards its
 cause), `btf/btf.rs:32–68` (the seven inner variants it hides),
 `crates/aisme-linux/src/sensor.rs:160` (`e.to_string()`, which prints only the top link), and

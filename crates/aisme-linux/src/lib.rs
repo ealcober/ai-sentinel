@@ -12,7 +12,7 @@ mod resolve;
 mod sensor;
 
 #[cfg(target_os = "linux")]
-pub use policy::{BpfTrieBackend, TrieEntry, TrieImage, TRIE_PATH_BYTES};
+pub use policy::{load_policy_maps, BpfTrieBackend, TrieEntry, TrieImage, TRIE_PATH_BYTES};
 #[cfg(target_os = "linux")]
 pub use resolve::{RealpathResolver, ResolverCounts};
 #[cfg(target_os = "linux")]

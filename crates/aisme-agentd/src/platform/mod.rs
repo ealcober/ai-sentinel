@@ -81,6 +81,38 @@ pub fn load_sensor_report() -> i32 {
     1
 }
 
+/// Load the policy maps on this kernel and report what happened (`F2.WS.04`).
+///
+/// A separate object with no programs, so the answer is about the maps alone.
+/// Returns the process exit code — 0 created, 1 refused — so a guest run reads
+/// as easily to a script as to a person.
+#[cfg(target_os = "linux")]
+pub fn load_policy_report() -> i32 {
+    match aisme_linux::load_policy_maps() {
+        Ok(names) => {
+            println!("load-policy: ACCEPTED");
+            for name in names {
+                println!("  map: {name}");
+            }
+            0
+        }
+        Err(e) => {
+            // Every link of the cause. A wrapper whose Display is a constant is
+            // what turned one failure into a diagnosis nobody had established.
+            println!("load-policy: REFUSED ({:?})", e.kind);
+            println!("  {}", e.detail);
+            1
+        }
+    }
+}
+
+/// Not Linux: there are no BPF maps to create, and saying so beats a silent zero.
+#[cfg(not(target_os = "linux"))]
+pub fn load_policy_report() -> i32 {
+    println!("load-policy: UNSUPPORTED (this build has no Linux adapter)");
+    1
+}
+
 /// The path resolver for this platform (`F2.WS.02`).
 ///
 /// Canonicalization is I/O, so it lives in an adapter and this is where the

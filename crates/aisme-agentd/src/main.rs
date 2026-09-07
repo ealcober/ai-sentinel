@@ -26,19 +26,12 @@ mod wal;
 #[global_allocator]
 static ALLOCATOR: mimalloc::MiMalloc = mimalloc::MiMalloc;
 
-/// Compose the whole slice and drive it (`F2.WS.02`).
+/// `--ticks N` and `--serve-ipc <path>`, as `--run` takes them.
 ///
-/// Everything is the real thing except what the platform cannot supply: the
-/// sensors are whatever `platform::sensors` composed, the resolver is the
-/// platform's, and the sink is the file-backed WAL. Declarations arrive as a
-/// `Sensor` like any other producer, so the engine sees one stream.
-fn run_slice(dir: &std::path::Path, rest: &[String]) -> std::io::Result<()> {
-    use aisme_core::detect::DetectorSet;
-    use aisme_core::engine::Engine;
-    use aisme_core::policy::PolicyGeneration;
-    use aisme_core::sensor::{Sensor, SensorConfig};
-    use std::time::Duration;
-
+/// Its own function so `run_slice` stays about the slice: an argument parser
+/// inline in a composition root makes the composition harder to read than the
+/// thing it composes.
+fn parse_run_args(rest: &[String]) -> std::io::Result<(u64, Option<String>)> {
     let mut ticks: u64 = 1_000;
     let mut socket: Option<String> = None;
     let mut it = rest.iter();
@@ -56,6 +49,23 @@ fn run_slice(dir: &std::path::Path, rest: &[String]) -> std::io::Result<()> {
             other => return Err(std::io::Error::other(format!("unknown argument `{other}`"))),
         }
     }
+    Ok((ticks, socket))
+}
+
+/// Compose the whole slice and drive it (`F2.WS.02`).
+///
+/// Everything is the real thing except what the platform cannot supply: the
+/// sensors are whatever `platform::sensors` composed, the resolver is the
+/// platform's, and the sink is the file-backed WAL. Declarations arrive as a
+/// `Sensor` like any other producer, so the engine sees one stream.
+fn run_slice(dir: &std::path::Path, rest: &[String]) -> std::io::Result<()> {
+    use aisme_core::detect::DetectorSet;
+    use aisme_core::engine::Engine;
+    use aisme_core::policy::PolicyGeneration;
+    use aisme_core::sensor::{Sensor, SensorConfig};
+    use std::time::Duration;
+
+    let (ticks, socket) = parse_run_args(rest)?;
 
     let caps = platform::probe();
     let mut sensors: Vec<Box<dyn Sensor>> = platform::sensors(&caps);
@@ -120,6 +130,26 @@ fn run_slice(dir: &std::path::Path, rest: &[String]) -> std::io::Result<()> {
     Ok(())
 }
 
+/// Say what this machine would serve, and what it costs where it falls short.
+///
+/// Its own function because it is the daemon's answer to "what am I", which is
+/// a different question from "what do I do next" — and because `main` is a
+/// dispatcher, not a place to grow prose.
+fn report_composition() -> aisme_core::capability::CapabilitySet {
+    let caps = platform::probe();
+    println!(
+        "aisme-agentd: tier {}, {} sensor(s), {} enforcer(s), {} adjudicator rung(s)",
+        platform::tier(&caps).as_str(),
+        platform::sensors(&caps).len(),
+        platform::enforcers(&caps).len(),
+        platform::adjudicators(&caps).len()
+    );
+    for lost in aisme_core::tier::degradations(&caps) {
+        println!("  degraded: {lost}");
+    }
+    caps
+}
+
 fn main() {
     // 10 ms: purge soon after a burst, not on every free. The plan's value
     // (§F1.6, MIMALLOC_PURGE_DELAY=10); `verify-budgets --profile idle`
@@ -132,17 +162,7 @@ fn main() {
     }
     // F1: the composition root exists and composes. The hot loop that drives
     // it is F1.RT.03; until then, report what this machine would serve.
-    let caps = platform::probe();
-    println!(
-        "aisme-agentd: tier {}, {} sensor(s), {} enforcer(s), {} adjudicator rung(s)",
-        platform::tier(&caps).as_str(),
-        platform::sensors(&caps).len(),
-        platform::enforcers(&caps).len(),
-        platform::adjudicators(&caps).len()
-    );
-    for lost in aisme_core::tier::degradations(&caps) {
-        println!("  degraded: {lost}");
-    }
+    let caps = report_composition();
     // Whether this platform can turn a requested path into a canonical one
     // (`F2.WS.02`), asked rather than assumed: `/` resolves to itself wherever
     // canonicalization works at all, and to nothing where it does not. A
@@ -195,6 +215,13 @@ fn main() {
     // suite; it is a diagnostic for a disposable guest.
     if std::env::args().nth(1).as_deref() == Some("--load-sensor") {
         std::process::exit(platform::load_sensor_report());
+    }
+    // `--load-policy-probe`: the same question for the policy maps' own object
+    // (`F2.WS.04`). Separate from `--load-sensor` so one answer cannot be read
+    // as the other, and both are run in the same guest boot so a regression in
+    // either is visible at once.
+    if std::env::args().nth(1).as_deref() == Some("--load-policy-probe") {
+        std::process::exit(platform::load_policy_report());
     }
     if std::env::args().nth(1).as_deref() == Some("--measure-idle") {
         match measure_idle() {

@@ -57,6 +57,39 @@ pub struct TrieImage {
     pub entries: Vec<TrieEntry>,
 }
 
+/// The policy maps' object, embedded when `cargo xtask build-ebpf` produced one.
+#[cfg(policy_object_present)]
+const POLICY_OBJECT: &[u8] = include_bytes!(env!("AISME_POLICY_OBJECT"));
+/// No object was built; the probe says so and names the command.
+#[cfg(not(policy_object_present))]
+const POLICY_OBJECT: &[u8] = &[];
+
+/// Load the policy maps on this kernel and say what happened (`F2.WS.04`).
+///
+/// A separate object with no programs, so the answer is about the maps and
+/// nothing else. Returns the map names it created, or the loader's failure with
+/// **every link of its cause** — a wrapper whose `Display` is a constant is how
+/// one real failure became "aya cannot parse this toolchain's BTF", which is a
+/// cause asserted rather than established.
+///
+/// # Errors
+///
+/// `Unsupported` when the object is absent or the kernel refuses it.
+pub fn load_policy_maps() -> aisme_core::error::Result<Vec<String>> {
+    use aisme_core::error::Error;
+    if POLICY_OBJECT.is_empty() {
+        return Err(Error::unsupported(
+            "no policy object is embedded; run `cargo xtask build-ebpf` and rebuild",
+        ));
+    }
+    let ebpf = aya::EbpfLoader::new()
+        .load(POLICY_OBJECT)
+        .map_err(|e| Error::unsupported(crate::sensor::error_chain(&e)))?;
+    let mut names: Vec<String> = ebpf.maps().map(|(name, _)| name.to_owned()).collect();
+    names.sort();
+    Ok(names)
+}
+
 /// Lowers a compiled policy into LPM trie entries.
 #[derive(Clone, Copy, Debug, Default)]
 pub struct BpfTrieBackend;

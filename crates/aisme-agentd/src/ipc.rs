@@ -119,13 +119,65 @@ pub fn in_session_cgroup(pid: i32) -> bool {
     })
 }
 
+/// How many declarations a peer has made, and when the window started.
+///
+/// Keyed by the peer for now, not by the session: sessions are established by
+/// `F2.WS.08`, and a limiter that pretended to key by one before it exists
+/// would be counting something it cannot name.
+pub struct Declarations {
+    /// Start of the current minute, as a monotonic instant.
+    window: std::time::Instant,
+    /// Accepted in this window.
+    count: u32,
+}
+
+impl Declarations {
+    /// A fresh counter.
+    #[must_use]
+    pub fn new() -> Declarations {
+        Declarations {
+            window: std::time::Instant::now(),
+            count: 0,
+        }
+    }
+
+    /// Whether one more declaration fits, counting it if it does.
+    ///
+    /// The window is a plain reset rather than a sliding one: at this bound the
+    /// difference is a burst of at most `2 × DECLARATIONS_PER_MINUTE` across a
+    /// boundary, which is still bounded, and a sliding window costs a ring of
+    /// timestamps in a daemon with a 50 MB budget.
+    fn admit(&mut self) -> bool {
+        if self.window.elapsed() >= std::time::Duration::from_secs(60) {
+            self.window = std::time::Instant::now();
+            self.count = 0;
+        }
+        if self.count >= rpc::DECLARATIONS_PER_MINUTE {
+            return false;
+        }
+        self.count += 1;
+        true
+    }
+}
+
+impl Default for Declarations {
+    fn default() -> Declarations {
+        Declarations::new()
+    }
+}
+
 /// Serve one line-framed request from `line`, as `peer`.
 ///
 /// Framing is one JSON object per line: it is greppable in a capture, it
 /// needs no length prefix to resynchronise after a bad frame, and the
 /// protocol's messages are small (Annex I). Returns the response line.
 #[must_use]
-pub fn serve_line(line: &str, peer: &Peer, owner_uid: u32) -> String {
+pub fn serve_line(
+    line: &str,
+    peer: &Peer,
+    owner_uid: u32,
+    declarations: &mut Declarations,
+) -> String {
     let request = match rpc::parse_request(line) {
         Ok(request) => request,
         Err(e) => return rpc::error(e.id, e.code, &e.message),
@@ -153,6 +205,46 @@ pub fn serve_line(line: &str, peer: &Peer, owner_uid: u32) -> String {
                 ),
             ]),
         ),
+        // `F2.WS.03`. A declaration is an observation, never an authorization:
+        // it creates no grant, changes no verdict and carries no scope, and
+        // `DT-04` exists because a declaration may be a lie. The engine records
+        // it beside the actions it claims to explain and checks it later.
+        Method::DeclareToolCall => {
+            if !declarations.admit() {
+                // A *result*, not an error (Annex I.2): the caller learns the
+                // bound applied and the declarations already accepted stand.
+                return rpc::response(
+                    request.id,
+                    Value::object([
+                        ("outcome", Value::string("rate_limited")),
+                        (
+                            "per_minute",
+                            Value::Int(i64::from(rpc::DECLARATIONS_PER_MINUTE)),
+                        ),
+                    ]),
+                );
+            }
+            let toolcall_id = request.params.get("toolcall_id").and_then(|v| match v {
+                Value::Int(n) => Some(*n),
+                _ => None,
+            });
+            match toolcall_id {
+                Some(id) => rpc::response(
+                    request.id,
+                    Value::object([
+                        ("outcome", Value::string("accepted")),
+                        ("toolcall_id", Value::Int(id)),
+                    ]),
+                ),
+                // A declaration with no id cannot be joined to anything, so
+                // accepting it would record a fact nobody can use.
+                None => rpc::error(
+                    request.id,
+                    ErrorCode::InvalidParams,
+                    "toolcall_id is required and must be an integer",
+                ),
+            }
+        }
         // Every other method is F8a's; saying so is better than a stub that
         // answers something plausible.
         other => rpc::response(
@@ -181,12 +273,21 @@ pub fn serve(path: &Path, owner_uid: u32, mut until: impl FnMut() -> bool) -> st
         let peer = peer_of(&stream)?;
         let reader = BufReader::new(stream.try_clone()?);
         let mut writer = stream;
+        // One counter per connection: a peer that reconnects to reset it has
+        // done the expensive part of the attack — a new connection, a new
+        // SO_PEERCRED check — for a new window, which is a far worse trade than
+        // sending declarations down one socket. F2.WS.08 keys it by session.
+        let mut declarations = Declarations::new();
         for line in reader.lines() {
             let line = line?;
             if line.trim().is_empty() {
                 continue;
             }
-            writeln!(writer, "{}", serve_line(&line, &peer, owner_uid))?;
+            writeln!(
+                writer,
+                "{}",
+                serve_line(&line, &peer, owner_uid, &mut declarations)
+            )?;
         }
         if until() {
             break;
@@ -203,6 +304,85 @@ mod tests {
     use aisme_proto::json;
 
     const OWNER: u32 = 1000;
+
+    /// An agent may declare its own work, and the declaration grants nothing:
+    /// the answer carries an outcome and the id, and no scope, verdict or
+    /// grant. `DT-04` exists because a declaration may be a lie, so anything
+    /// resembling permission in this response would be a defect.
+    #[test]
+    fn an_agent_may_declare_its_own_tool_call_and_it_authorizes_nothing() {
+        let mut d = Declarations::new();
+        let response = call_with(
+            "declareToolCall",
+            r#"{"toolcall_id":7,"tool_name":"Bash","params_hash":"ab","declared_targets":["/tmp/x"]}"#,
+            &agent(),
+            &mut d,
+        );
+        let result = response.get("result").expect("a result, not an error");
+        assert_eq!(
+            result.get("outcome").and_then(json::Value::as_str),
+            Some("accepted")
+        );
+        assert_eq!(
+            result.get("toolcall_id").and_then(json::Value::as_int),
+            Some(7)
+        );
+        for forbidden in ["grant", "grant_id", "scope", "verdict", "allow", "token"] {
+            assert!(
+                result.get(forbidden).is_none(),
+                "a declaration must not answer with `{forbidden}`"
+            );
+        }
+    }
+
+    /// Beyond the bound the answer is a *result*, not an error (Annex I.2), and
+    /// everything accepted before it stands.
+    #[test]
+    fn declarations_beyond_the_bound_are_rate_limited_and_the_accepted_ones_stand() {
+        let mut d = Declarations::new();
+        let params = r#"{"toolcall_id":1}"#;
+        for i in 0..rpc::DECLARATIONS_PER_MINUTE {
+            let response = call_with("declareToolCall", params, &agent(), &mut d);
+            assert_eq!(
+                response
+                    .get("result")
+                    .and_then(|r| r.get("outcome"))
+                    .and_then(json::Value::as_str),
+                Some("accepted"),
+                "declaration {i} of the allowance"
+            );
+        }
+        let over = call_with("declareToolCall", params, &agent(), &mut d);
+        let result = over.get("result").expect("a result, never an error");
+        assert_eq!(
+            result.get("outcome").and_then(json::Value::as_str),
+            Some("rate_limited")
+        );
+        assert_eq!(
+            result.get("per_minute").and_then(json::Value::as_int),
+            Some(i64::from(rpc::DECLARATIONS_PER_MINUTE)),
+            "the caller is told the bound that applied"
+        );
+        assert!(
+            over.get("error").is_none(),
+            "a bound is not a protocol error"
+        );
+    }
+
+    /// A declaration nobody can join to anything is refused rather than
+    /// recorded: accepting it would store a fact with no use.
+    #[test]
+    fn a_declaration_without_an_id_is_refused() {
+        let mut d = Declarations::new();
+        let response = call_with(
+            "declareToolCall",
+            r#"{"tool_name":"Bash"}"#,
+            &agent(),
+            &mut d,
+        );
+        assert!(response.get("result").is_none());
+        assert!(response.get("error").is_some());
+    }
 
     fn user() -> Peer {
         Peer {
@@ -229,8 +409,14 @@ mod tests {
     }
 
     fn call(method: &str, peer: &Peer) -> json::Value {
-        let line = format!(r#"{{"jsonrpc":"2.0","id":1,"method":"{method}","params":{{}}}}"#);
-        json::parse(&serve_line(&line, peer, OWNER)).unwrap()
+        call_with(method, "{}", peer, &mut Declarations::new())
+    }
+
+    /// One call with its own params and its own counter, so a test can send
+    /// several and watch the bound apply.
+    fn call_with(method: &str, params: &str, peer: &Peer, d: &mut Declarations) -> json::Value {
+        let line = format!(r#"{{"jsonrpc":"2.0","id":1,"method":"{method}","params":{params}}}"#);
+        json::parse(&serve_line(&line, peer, OWNER, d)).unwrap()
     }
 
     #[test]
@@ -289,7 +475,8 @@ mod tests {
 
     #[test]
     fn a_malformed_line_is_a_protocol_error_with_the_id_when_there_is_one() {
-        let response = json::parse(&serve_line("{", &user(), OWNER)).unwrap();
+        let response =
+            json::parse(&serve_line("{", &user(), OWNER, &mut Declarations::new())).unwrap();
         assert_eq!(
             response
                 .get("error")
@@ -301,6 +488,7 @@ mod tests {
             r#"{"jsonrpc":"2.0","id":42,"method":"nope"}"#,
             &user(),
             OWNER,
+            &mut Declarations::new(),
         ))
         .unwrap();
         assert_eq!(response.get("id").and_then(json::Value::as_int), Some(42));

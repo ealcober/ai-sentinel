@@ -50,11 +50,25 @@ fn main() -> ExitCode {
     let stderr = io::stderr();
     let mut actions = stdout.lock();
     let mut truth = stderr.lock();
+    // `--declare` opens the control socket; without it declarations go to a
+    // sink that discards them, so the replay behaves the same and the report
+    // still says how many there were.
+    let mut declare: Box<dyn io::Write> = match options.declare_to.as_deref() {
+        Some(path) => match std::os::unix::net::UnixStream::connect(path) {
+            Ok(socket) => Box::new(socket),
+            Err(e) => {
+                eprintln!("aisme-agentsim: --declare {path}: {e}");
+                return ExitCode::FAILURE;
+            }
+        },
+        None => Box::new(io::sink()),
+    };
     match replay::replay(
         &trace,
         &options,
         &mut actions,
         &mut truth,
+        &mut declare,
         std::thread::sleep,
     ) {
         Ok(report) => {

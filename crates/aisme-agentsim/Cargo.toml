@@ -9,5 +9,12 @@ publish = false
 
 [dependencies]
 
+# L4 -> L1, tests only. The replay writes the declaration by hand because it
+# must be one line on a socket with no dependency in the shipped path; the test
+# then parses it with the server's own parser, so the two cannot drift apart
+# without a test failing.
+[dev-dependencies]
+aisme-proto = { path = "../aisme-proto" }
+
 [lints]
 workspace = true

@@ -1618,7 +1618,7 @@ test $(grep -rn 'cfg(target_os' crates/aisme-core/src --include='*.rs' | grep -v
 |---|---|---|
 | `F2.WS.01` | `BpfSensor` implementing `Sensor` with one tracepoint, real ringbuf | Events reach `agentd` with correct `RawEvent` layout |
 | `F2.WS.02` | Hot loop wired: `poll` → intern → canonicalize → correlate → WAL | Zero allocations in steady state, verified by `dhat` |
-| `F2.WS.03` | `agentsim` emits one synthetic ToolCall with a hidden correlation token | Ground-truth scoring possible from day one |
+| `F2.WS.03` | `agentsim` emits one synthetic ToolCall with a hidden correlation token, declared to `agentd` over Annex I's **`declareToolCall`** (`aisme-agentsim --declare <socket>`) — the token stays on the ground-truth stream and never crosses the socket | Ground-truth scoring possible from day one |
 | `F2.WS.04` | One AISME-PL rule compiled by the real F1 compiler and published to a real BPF map | Policy generation counter increments; no torn read |
 | `F2.WS.05` | `SeccompEnforcer` implementing `Enforcer`: suspend, ask, respond | A denied `openat` returns `-EACCES` to the caller |
 | `F2.WS.06` | `TerminalAdjudicator` implementing `Adjudicator`, with the terminal prompt specified in `docs/design/01_permission-model.md` §7.3 | A human answers in the terminal and the syscall obeys; `AISME_TERMINAL_ANSWER=<d\|1\|s\|a>` is accepted for unattended gates and recorded as such in the WAL |
@@ -3837,6 +3837,9 @@ One protocol, spoken by the desktop UI, the CLI, `aisme-uiagent`, the mobile app
 | `pairDevice` | `{ qr_payload, device_pubkey, hw_pubkey? }` | `paired` \| `rejected` | **local peer only** | no |
 | `revokeDevice` | `{ device_id }` | `revoked` | local peer, or the device revoking itself | yes |
 | `verifySession` | `{ session_id }` | inclusion proofs, `key_hw`, anchor status | any | yes |
+| `declareToolCall` | `{ toolcall_id, tool_name, params_hash, declared_targets[] }` | `accepted` \| `rate_limited` | any | **no** — two identical declarations are two tool calls, not one retried |
+
+**`declareToolCall` authorizes nothing** (`F2.WS.03`). It creates no grant, changes no verdict and carries no scope: it is an observation an agent volunteers about its own work, recorded beside the actions it claims to explain so correlation has something to match against while they happen. `DT-04` exists precisely because a declaration may be a lie, so the engine treats it as evidence to be checked, never as permission. **The correlation token never travels on it** — if it did, the engine could join on it and §4.6's precision and recall would measure the join rather than the correlator. Beyond `DECLARATIONS_PER_MINUTE` per session the answer is the *result* `rate_limited`, not an error (Annex I.2): a declaration storm is cheap to send and expensive to correlate, and the bound is derived from the reference workload's 200 tool calls/hour rather than guessed.
 
 **Four authorization classes**, checked by the server on every call and never by the client:
 

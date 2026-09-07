@@ -32,6 +32,9 @@ It solves three problems that would otherwise need three mechanisms:
 | 1 | Resolve the session scope: `--scope` flags, then `.aisme/scope.toml` **narrowing only**, then detection (VCS root, toolchain), then the baseline profile for the detected agent | `F7.PS.07` |
 | 2 | Create the session cgroup and place itself in it, so the tree is captured by construction | `F2.WS.08` |
 | 3 | Register the session with `agentd` over the control-plane socket, receiving the compiled policy generation | `F8.CLI.01` |
+
+The same socket carries **`declareToolCall`** (`F2.WS.03`): an agent volunteers that a tool call is starting, so correlation has something to match against while the actions happen. It authorizes nothing — no grant, no verdict, no scope — and the correlation token never travels on it, because an engine that could join on the token would make §4.6's precision and recall measure the join rather than the correlator. Beyond `DECLARATIONS_PER_MINUTE` per connection the answer is the result `rate_limited`, not an error.
+
 | 4 | Install the seccomp filter for the escalate class, passing everything else | `F3.EN.12` |
 | 5 | Apply the Landlock ruleset compiled from the session policy — deny writes outside scope, deny the never-promptable classes, deny AISME's own files | `F2.WS.11`, `F3.EN.09`, `F3.EN.11` |
 | 6 | Set the environment: export the key-log variables for known runtimes pointing at the `agentd` socket; strip variables that would defeat observation | `F4.CO.04` |

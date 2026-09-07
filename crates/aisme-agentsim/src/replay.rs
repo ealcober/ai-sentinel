@@ -23,7 +23,10 @@ use std::time::{Duration, Instant};
 use crate::trace::{Action, Entry, Trace};
 
 /// How the replay is to be run.
-#[derive(Clone, Copy, Debug, PartialEq)]
+///
+/// `Clone` but not `Copy`: the declaration socket's path is owned, and a
+/// replay reads its options rather than shuffling copies of them about.
+#[derive(Clone, Debug, PartialEq)]
 pub struct Options {
     /// 1.0 is the recorded pace; 2.0 is twice as fast. Expressed in
     /// thousandths so the schedule is integer arithmetic and two machines
@@ -34,6 +37,13 @@ pub struct Options {
     /// The most jitter to add to a gap, in microseconds. Zero replays the
     /// recorded gaps exactly.
     pub jitter_us: u64,
+    /// The control socket to declare tool calls on, if any (`F2.WS.03`).
+    ///
+    /// Declarations go to `agentd` over Annex I's `declareToolCall` while the
+    /// actions happen, so correlation has something to match against live.
+    /// Without it the replay is what it always was: actions on one stream and
+    /// ground truth on another.
+    pub declare_to: Option<String>,
 }
 
 impl Default for Options {
@@ -42,12 +52,14 @@ impl Default for Options {
             speed_milli: 1_000,
             seed: 0,
             jitter_us: 0,
+            declare_to: None,
         }
     }
 }
 
 impl Options {
-    /// Parse `--speed`, `--seed` and `--jitter-us` from a command line.
+    /// Parse `--speed`, `--seed`, `--jitter-us` and `--declare` from a
+    /// command line.
     ///
     /// # Errors
     ///
@@ -86,6 +98,9 @@ impl Options {
                     options.jitter_us = raw
                         .parse()
                         .map_err(|_| format!("--jitter-us {raw} is not a number"))?;
+                }
+                "--declare" => {
+                    options.declare_to = Some(value("--declare")?);
                 }
                 other => return Err(format!("unknown argument `{other}`")),
             }
@@ -131,6 +146,11 @@ pub struct ReplayReport {
     pub entries: usize,
     /// Declared tool calls, whose tokens went to the scorer.
     pub tool_calls: usize,
+    /// Declarations written to the control socket. Equal to `tool_calls` when
+    /// a socket was given, and zero when none was: a difference between the two
+    /// is a declaration that did not reach `agentd`, which is a gap in the
+    /// ground truth rather than a cosmetic one.
+    pub declared: usize,
     /// How long the replay took.
     pub elapsed_us: u64,
     /// What the schedule said it should have taken.
@@ -165,6 +185,7 @@ pub fn replay(
     options: &Options,
     actions: &mut dyn Write,
     truth: &mut dyn Write,
+    declare: &mut dyn Write,
     mut sleep: impl FnMut(Duration),
 ) -> io::Result<ReplayReport> {
     let mut report = ReplayReport::default();
@@ -190,6 +211,24 @@ pub fn replay(
                 truth,
                 "{:016x} {}",
                 entry.correlation_token, entry.declared_intent
+            )?;
+            // The declaration, on Annex I's `declareToolCall`. It carries the
+            // id, the name, the params hash and the declared targets — and
+            // **never `correlation_token`**. If the token reached `agentd` the
+            // correlator could join on it, and §4.6's precision and recall
+            // would measure the join instead of the correlation.
+            report.declared += 1;
+            writeln!(
+                declare,
+                concat!(
+                    r#"{{"jsonrpc":"2.0","id":{},"method":"declareToolCall","params":"#,
+                    r#"{{"toolcall_id":{},"tool_name":"{}","params_hash":"{:016x}","#,
+                    r#""declared_targets":[]}}}}"#
+                ),
+                report.declared,
+                report.declared,
+                entry.declared_intent.replace('"', "'"),
+                entry.args_hash
             )?;
         } else if entry.correlation_token != 0 {
             writeln!(
@@ -249,9 +288,15 @@ mod tests {
         let mut slept: Vec<Duration> = Vec::new();
         let mut actions = Vec::new();
         let mut truth = Vec::new();
-        let report = replay(&trace, &Options::default(), &mut actions, &mut truth, |d| {
-            slept.push(d);
-        })
+        let mut declare = Vec::new();
+        let report = replay(
+            &trace,
+            &Options::default(),
+            &mut actions,
+            &mut truth,
+            &mut declare,
+            |d| slept.push(d),
+        )
         .unwrap();
         assert_eq!(
             slept,
@@ -275,6 +320,7 @@ mod tests {
             },
             &mut Vec::new(),
             &mut Vec::new(),
+            &mut Vec::new(),
             |d| fast.push(d),
         )
         .unwrap();
@@ -290,11 +336,13 @@ mod tests {
         let trace = trace();
         let mut actions = Vec::new();
         let mut truth = Vec::new();
+        let mut declare = Vec::new();
         replay(
             &trace,
             &Options::default(),
             &mut actions,
             &mut truth,
+            &mut declare,
             |_| {},
         )
         .unwrap();
@@ -315,6 +363,70 @@ mod tests {
             "the tool call and the two actions it caused"
         );
         assert_eq!(actions.lines().count(), 3);
+
+        // The third stream, and the one this whole measurement rests on: the
+        // declaration `agentd` receives. If the token crossed it, the
+        // correlator could join on it and §4.6's precision and recall would
+        // measure the join instead of the correlation.
+        let declare = String::from_utf8(declare).unwrap();
+        assert!(
+            !declare.contains("00000000000000aa"),
+            "the token must not cross the socket:\n{declare}"
+        );
+        assert!(
+            !declare.contains("correlation_token"),
+            "nor a field named for it"
+        );
+        assert_eq!(
+            declare.lines().count(),
+            1,
+            "one declaration for the one tool call, none for the actions"
+        );
+        assert!(
+            declare.contains(r#""method":"declareToolCall""#),
+            "{declare}"
+        );
+        assert!(declare.contains(r#""toolcall_id":1"#), "{declare}");
+        // The params hash travels; the arguments themselves never do.
+        assert!(declare.contains("params_hash"), "{declare}");
+    }
+
+    /// A declaration must be a request `agentd` actually accepts, not a line
+    /// that merely looks like one. This parses it with the server's own parser
+    /// and checks the method it resolves to.
+    #[test]
+    fn the_declaration_is_a_request_the_server_parses_as_declaretoolcall() {
+        let trace = trace();
+        let mut declare = Vec::new();
+        replay(
+            &trace,
+            &Options::default(),
+            &mut Vec::new(),
+            &mut Vec::new(),
+            &mut declare,
+            |_| {},
+        )
+        .unwrap();
+        let line = String::from_utf8(declare).unwrap();
+        let request = aisme_proto::rpc::parse_request(line.trim()).expect("a valid request");
+        assert_eq!(request.method, aisme_proto::rpc::Method::DeclareToolCall);
+        assert_eq!(
+            request.method.auth(),
+            aisme_proto::rpc::AuthClass::AnyAuthenticated,
+            "an agent declares its own work"
+        );
+        assert!(
+            !request.method.idempotent(),
+            "two identical declarations are two tool calls, not one retried"
+        );
+        assert!(
+            request.params.get("toolcall_id").is_some(),
+            "a declaration nobody can join is refused by the server"
+        );
+        assert!(
+            request.params.get("correlation_token").is_none(),
+            "the token never crosses"
+        );
     }
 
     #[test]
@@ -331,6 +443,7 @@ mod tests {
                 },
                 &mut Vec::new(),
                 &mut Vec::new(),
+                &mut Vec::new(),
                 |d| slept.push(d),
             )
             .unwrap();
@@ -343,6 +456,22 @@ mod tests {
             let _ = without;
             assert!(with.as_micros() <= 45_000, "{with:?} exceeds gap + jitter");
         }
+    }
+
+    #[test]
+    fn the_declaration_socket_is_parsed_from_the_command_line() {
+        let args = ["--declare".to_owned(), "/run/aisme.sock".to_owned()];
+        let options = Options::parse(&args).expect("valid");
+        assert_eq!(options.declare_to.as_deref(), Some("/run/aisme.sock"));
+        assert_eq!(
+            Options::default().declare_to,
+            None,
+            "without it the replay declares nothing and says so in the report"
+        );
+        assert!(
+            Options::parse(&["--declare".to_owned()]).is_err(),
+            "needs a value"
+        );
     }
 
     #[test]
@@ -372,6 +501,7 @@ mod tests {
         let honest = ReplayReport {
             entries: 3,
             tool_calls: 1,
+            declared: 0,
             elapsed_us: 51_000,
             scheduled_us: 50_000,
             worst_lateness_us: 900,

@@ -15,6 +15,19 @@ use crate::json::{self, Value};
 /// The protocol version this crate speaks (§I.4, semver in `aisme-proto`).
 pub const PROTOCOL_VERSION: &str = "1.0.0";
 
+/// The most declarations one session may make in a minute (`F2.WS.03`).
+///
+/// Derived, not guessed: the reference workload is **200 tool calls/hour**
+/// (plan §2.19), which is 3.33 a minute. 64 leaves about nineteen times that in
+/// headroom, so a legitimate burst — an agent firing a batch of calls — never
+/// trips it, while a declaration storm is cut at 64 instead of being unbounded.
+/// A storm is cheap to send and expensive to correlate, which is what makes the
+/// bound a denial-of-service defence rather than tidiness.
+///
+/// Exceeding it is a **result**, not an error (Annex I.2): the caller is told
+/// `rate_limited` and the declarations already accepted are unaffected.
+pub const DECLARATIONS_PER_MINUTE: u32 = 64;
+
 /// Who may call a method (Annex I, four classes). The **server** checks
 /// this on every call; a client never does.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
@@ -59,11 +72,23 @@ pub enum Method {
     RevokeDevice,
     /// Inclusion proofs and anchor status.
     VerifySession,
+    /// An agent volunteers that a tool call is starting (`F2.WS.03`).
+    ///
+    /// **It authorizes nothing.** It creates no grant, changes no verdict and
+    /// carries no scope; `DT-04` exists precisely because a declaration may be
+    /// a lie. It is an observation, recorded beside the actions it claims to
+    /// explain so that correlation has something to match against while the
+    /// actions happen.
+    ///
+    /// The correlation token never travels on this method. If it did, the
+    /// engine could join on it and §4.6's precision and recall would measure
+    /// the join instead of the correlator.
+    DeclareToolCall,
 }
 
 impl Method {
     /// Every method, in Annex I.1's order.
-    pub const ALL: [Method; 12] = [
+    pub const ALL: [Method; 13] = [
         Method::GetCapabilities,
         Method::ListSessions,
         Method::GetSession,
@@ -76,12 +101,14 @@ impl Method {
         Method::PairDevice,
         Method::RevokeDevice,
         Method::VerifySession,
+        Method::DeclareToolCall,
     ];
 
     /// The name on the wire.
     #[must_use]
     pub const fn as_str(self) -> &'static str {
         match self {
+            Method::DeclareToolCall => "declareToolCall",
             Method::GetCapabilities => "getCapabilities",
             Method::ListSessions => "listSessions",
             Method::GetSession => "getSession",
@@ -115,7 +142,11 @@ impl Method {
             | Method::GetSession
             | Method::GetGraph
             | Method::Subscribe
-            | Method::VerifySession => AuthClass::AnyAuthenticated,
+            | Method::VerifySession
+            // An agent declares its own work, so the class is the weakest one:
+            // requiring more would mean the agent could not speak about itself,
+            // and the declaration grants nothing that would need protecting.
+            | Method::DeclareToolCall => AuthClass::AnyAuthenticated,
             Method::RespondEscalation | Method::RevokeDevice => AuthClass::RemotePeer,
             Method::PairDevice => AuthClass::LocalPeer,
             Method::SetPolicy | Method::ManageGrant | Method::ManageSuppression => {
@@ -129,7 +160,9 @@ impl Method {
     pub const fn idempotent(self) -> bool {
         !matches!(
             self,
-            Method::SetPolicy | Method::PairDevice | Method::Subscribe
+            // Two identical declarations are two tool calls, not one
+            // retried: replaying them would invent work that never happened.
+            Method::SetPolicy | Method::PairDevice | Method::Subscribe | Method::DeclareToolCall
         )
     }
 }

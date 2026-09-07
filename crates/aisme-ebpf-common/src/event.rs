@@ -145,6 +145,32 @@ impl RawEvent {
     pub const fn truncated(&self) -> bool {
         self.flags & FLAG_TRUNCATED != 0
     }
+
+    /// The event's bytes, as the ring buffer and the WAL carry them.
+    ///
+    /// The conversion lives here, in L0, because it is layout work and L0 is
+    /// where §3.1 permits `unsafe` for layout — `aisme-core` forbids it
+    /// outright (`F1.RT.08`), and the WAL calling this is the reason it can.
+    #[must_use]
+    pub fn to_bytes(&self) -> [u8; RAW_EVENT_SIZE] {
+        // SAFETY: `RawEvent` is `repr(C)`, exactly RAW_EVENT_SIZE bytes, with
+        // every field an integer, an integer newtype or the all-integer
+        // payload union, and no padding — every offset is asserted below — so
+        // its bytes are fully initialised and this is a copy.
+        unsafe { core::mem::transmute_copy(self) }
+    }
+
+    /// An event from its bytes.
+    ///
+    /// Total: every bit pattern is a valid `RawEvent`, which is why `kind`
+    /// and `outcome` are wire codes rather than enums (`F1.EV.01`). What the
+    /// bytes *mean* is then decided by `decode`, which can refuse.
+    #[must_use]
+    pub fn from_bytes(bytes: [u8; RAW_EVENT_SIZE]) -> RawEvent {
+        // SAFETY: as above, in the other direction: no field has an invalid
+        // bit pattern, so any RAW_EVENT_SIZE bytes are a valid value.
+        unsafe { core::mem::transmute(bytes) }
+    }
 }
 
 /// The fixed size and alignment, checked when the crate compiles for either

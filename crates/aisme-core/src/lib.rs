@@ -4,6 +4,12 @@
 //! This crate has no I/O, no async runtime, no `cfg(target_os)` and no platform
 //! dependency. That single rule is what lets one engine serve Linux, WSL2,
 //! Android, iOS and the SDK (plan §3.1, rule `A-01`).
+//!
+//! **No `unsafe` here, ever** (`F1.RT.08`, §3.4). The layout tricks live in
+//! L0, where the kernel boundary needs them and every one carries a safety
+//! comment; a rule that has to be remembered is not a rule, so this one is
+//! `forbid`, which no module can lift.
+#![forbid(unsafe_code)]
 
 pub mod adjudicate;
 pub mod capability;

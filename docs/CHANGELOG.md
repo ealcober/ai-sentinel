@@ -29,6 +29,7 @@ All notable changes to this repository. Format: [Keep a Changelog](https://keepa
   ```
 
 ### Added
+- **`F1.RT.08` — the crate lints**: `forbid(unsafe_code)` in `aisme-core` (which found three violations: the WAL's transmutes, moved to L0 as `RawEvent::to_bytes`/`from_bytes`, and two hand-rolled test wakers, now `Waker::noop`) and `deny(clippy::unwrap_used, clippy::expect_used)` in `aisme-agentd`, allowed only in test modules.
 - **`F1.SIM.01` — replay** (`aisme-agentsim::replay`): recorded inter-arrival timing, `--speed`, `--seed` with deterministic counter-based jitter, actions on stdout and ground truth on stderr, and a faithfulness report that fails the run when the schedule drifted. 5 tests.
 - **`F1.SIM.02` — the trace format** (`aisme-agentsim::trace`): text, one line per action, a `[summary]` carrying §2.22's counts, and a parser that refuses a lying summary, out-of-order entries or an orphan correlation token. The crate gains a library target so the scorer can use the format. 5 tests.
 - **`F1.RT.07` — the privilege split** as `deploy/systemd/` units (oneshot loader with two capabilities and no `CAP_SYS_ADMIN`; daemon with none, `NoNewPrivileges` and `Delegate=yes` for T2's freeze) plus `aisme-loaderd::units`, which checks each property and is shown failing on each violation. The plan's Part VI tree gains `deploy/systemd/`. 3 tests.

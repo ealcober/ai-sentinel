@@ -187,11 +187,7 @@ pub fn append(segment: &mut Vec<u8>, event: &RawEvent) {
 /// One record's bytes.
 #[must_use]
 pub fn encode_record(event: &RawEvent) -> [u8; RAW_EVENT_SIZE] {
-    // SAFETY: `RawEvent` is `repr(C)`, exactly RAW_EVENT_SIZE bytes, with
-    // every field an integer, an integer newtype or the all-integer payload
-    // union and no padding (every offset is asserted in `F1.EV.03`), so its
-    // bytes are fully initialised and this is a copy.
-    unsafe { core::mem::transmute_copy(event) }
+    event.to_bytes()
 }
 
 /// The record at `offset`, and where the next one starts.
@@ -211,10 +207,7 @@ pub fn read_record(segment: &[u8], offset: usize) -> Result<(RawEvent, usize), W
     }
     let mut bytes = [0u8; RAW_EVENT_SIZE];
     bytes.copy_from_slice(&segment[offset..end]);
-    // SAFETY: every bit pattern of those bytes is a valid `RawEvent` — see
-    // `encode_record`; the kind and outcome are wire codes precisely so that
-    // this is true (`F1.EV.01`).
-    let event: RawEvent = unsafe { core::mem::transmute(bytes) };
+    let event = RawEvent::from_bytes(bytes);
     Ok((event, end))
 }
 

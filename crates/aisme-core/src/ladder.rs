@@ -227,13 +227,12 @@ mod tests {
     /// The caller's runtime: resolve unless the adjudicator has no answer,
     /// which stands for "the budget passed".
     fn run(future: BoxFuture<'_, Verdict>, _budget: Duration) -> Option<Verdict> {
-        use core::task::{Context, Poll, RawWaker, RawWakerVTable, Waker};
-        const VTABLE: RawWakerVTable =
-            RawWakerVTable::new(|_| RawWaker::new(&(), &VTABLE), |_| {}, |_| {}, |_| {});
-        // SAFETY: the clone returns an equivalent waker; the rest are no-ops.
-        let waker = unsafe { Waker::from_raw(RawWaker::new(&(), &VTABLE)) };
+        use core::task::{Context, Poll, Waker};
+        // `Waker::noop` rather than a hand-rolled vtable: these futures never
+        // pend, and aisme-core forbids `unsafe` (F1.RT.08).
+        let waker = Waker::noop();
         let mut future = future;
-        match future.as_mut().poll(&mut Context::from_waker(&waker)) {
+        match future.as_mut().poll(&mut Context::from_waker(waker)) {
             Poll::Ready(v) => Some(v),
             Poll::Pending => None,
         }

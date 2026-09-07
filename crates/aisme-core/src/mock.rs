@@ -522,14 +522,11 @@ mod tests {
     /// Drive a future to completion without a runtime: `aisme-core` has
     /// none, and these futures never pend.
     fn futures_lite_block_on<T>(mut future: BoxFuture<'_, T>) -> T {
-        use core::task::{Context, Poll, RawWaker, RawWakerVTable, Waker};
-        const VTABLE: RawWakerVTable =
-            RawWakerVTable::new(|_| RawWaker::new(&(), &VTABLE), |_| {}, |_| {}, |_| {});
-        // SAFETY: the vtable's clone returns an equivalent waker and the
-        // other operations are no-ops, so every requirement of `RawWaker` is
-        // met by construction.
-        let waker = unsafe { Waker::from_raw(RawWaker::new(&(), &VTABLE)) };
-        match future.as_mut().poll(&mut Context::from_waker(&waker)) {
+        use core::task::{Context, Poll, Waker};
+        // `Waker::noop` rather than a hand-rolled vtable: this future never
+        // pends, and aisme-core forbids `unsafe` (F1.RT.08).
+        let waker = Waker::noop();
+        match future.as_mut().poll(&mut Context::from_waker(waker)) {
             Poll::Ready(value) => value,
             Poll::Pending => panic!("a PolicyAdjudicator future never pends"),
         }

@@ -98,6 +98,10 @@ impl Default for SelfObserver {
 }
 
 #[cfg(test)]
+// A panic *is* the failure report in a test, so the two lints the daemon
+// denies are allowed here — and only here, which is the point: the denial
+// covers the code that runs in production (§3.5, F1.RT.08).
+#[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
     use super::*;
 

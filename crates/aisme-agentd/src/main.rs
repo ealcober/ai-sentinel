@@ -5,6 +5,13 @@
 //! composition root — the only module permitted to name concrete adapters or use
 //! `cfg(target_os)` (plan §3.1).
 
+// §3.5, `F1.RT.08`: a panic in a security daemon is a silent protection
+// outage — the process dies and nothing is watched until someone notices. So
+// the two ways to write one by accident are denied here rather than left to
+// review. `expect_used` is denied too: a message does not make a panic safe,
+// it makes it legible after the fact.
+#![deny(clippy::unwrap_used, clippy::expect_used)]
+
 mod platform;
 mod runtime;
 mod selfobs;

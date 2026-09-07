@@ -57,6 +57,45 @@ A phase is done when its `GATE F<n>` block passes in full. Code that works but w
 - **Never claim a measurement you did not take.** Budget numbers come from `cargo xtask verify-budgets`, not from estimation.
 - **Do not report completion for partial work.** Report what is done, what is not, and why.
 
+## 3-bis. Verification rules
+
+Each of these was paid for by a defect that reached a commit or a VM. They are
+here rather than in a habit, because a habit is not a rule.
+
+- **Verify the effect of an edit, never the report of the edit.** A script that
+  prints `ok` has proved that it ran, not that it changed anything: an edit
+  whose anchor drifted matches nothing and reports success. Confirm with
+  `grep`, a compile, or a test — and read the count, not the exit code.
+- **Measure exit codes with no pipe in the way.** `cmd | tail` makes `$?` the
+  status of `tail`, so a gate that failed reports 0, and a truncating pipe
+  silently discards the number being reported. Use `cmd > file 2>&1; echo $?`
+  or `PIPESTATUS`.
+- **A check that produces no result must say so.** An empty answer reads as a
+  clean one. A probe that parses nothing prints `NONE FOUND`; a comparison the
+  script can make, the script makes — never leave the reader to compare by eye.
+- **See a guard fail before trusting it.** Break the thing it guards on purpose
+  and watch it name the failure. A guard only ever exercised by the happy path
+  is a guard nobody has seen work, and three in this repository were reporting
+  compliance they had never checked.
+- **Run it, do not read it.** The defects that reading missed and running found:
+  a guard that announced a refusal and then ran the command, a loop that spun a
+  core flat out, a `cp` glob that skipped two binaries, an error message that
+  blamed a cause it had not measured. Reading confirms intent; running confirms
+  behaviour.
+- **Never state a cause you did not establish.** An error that reports the
+  likely reason instead of the observed one sends the next reader to the wrong
+  place. Report what the failing component said, and add a cause only where the
+  evidence names it.
+- **Scope a search before concluding an absence.** A `grep` over the wrong
+  subtree prints "does not exist" for something that does. An absence is a
+  finding only when the search covered where the thing would be.
+- **Never rewrite a file by line range.** Splicing by index deleted 716 lines
+  of a working file in this repository. Edit by anchor, and confirm the anchor
+  matched exactly once.
+- **A counter nobody reads may as well not exist.** Wire every measurement to
+  something that reports it — a health state, a gate line, a summary — in the
+  same change that adds it.
+
 ## 4. Forbidden actions
 
 | Never | Why |

@@ -29,6 +29,7 @@ All notable changes to this repository. Format: [Keep a Changelog](https://keepa
   ```
 
 ### Added
+- **The idle budget is measured**: `aisme-agentd --measure-idle` writes `target/budget/idle.toml` after running the engine on `MockSensor`, and `verify-budgets` reads artefacts from that directory — 13.75 MB against the 25 MB ceiling, so GATE F1's budget line reports a number instead of a skip.
 - **`cargo xtask test-detect --determinism`** (`F1.DT.01`'s gate line): same input → same findings, different input → different findings, no clock read, order-independent — the property behind Annex G.0's "tested once, on CI, for every target". 3 tests.
 - **`cargo xtask bench-hotloop`** (`F1.RT.03`'s gate line): drives the real engine and reports 0 allocations and 0 ring drops over 200 064 events; `MockSensor::start` rewinds its trace so a long run allocates nothing.
 - **`F1.IPC.01` — the local control plane, and `Q-12` taken**: a hand-written JSON codec plus JSON-RPC 2.0 and Annex I's methods in `aisme-proto` (no dependency, no `unsafe`, bounded depth, floats and duplicate keys refused), and a Unix-socket server in `agentd` whose authorization rests on `SO_PEERCRED` and on whether the caller sits inside a session cgroup (`F7.PS.08`). `serde_json` is still absent from `agentd` (`I-21`). 12 tests.

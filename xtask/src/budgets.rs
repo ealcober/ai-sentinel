@@ -22,6 +22,39 @@ pub(crate) struct Measured {
 /// Measure what exists. Absent artefacts are reported as skipped, never as pass.
 pub(crate) fn measure() -> Vec<Measured> {
     let mut out = Vec::new();
+    // Artefacts a run wrote: `aisme-agentd --measure-idle` writes
+    // target/budget/idle.toml, and any other run may add a file there. A
+    // measurement is a *file a run produced*, never a number in a source
+    // file, which is what keeps "measured" from drifting into "assumed".
+    if let Ok(entries) = std::fs::read_dir("target/budget") {
+        for entry in entries.flatten() {
+            let Ok(text) = std::fs::read_to_string(entry.path()) else {
+                continue;
+            };
+            let Ok(doc) = text.parse::<toml::Value>() else {
+                continue;
+            };
+            if let Some(table) = doc.as_table() {
+                for (key, value) in table {
+                    if let Some(number) = value.as_float().or_else(|| {
+                        // A budget written as an integer: exact below
+                        // 2^53, which every budget in this project is.
+                        #[allow(clippy::cast_precision_loss)]
+                        value.as_integer().map(|i| i as f64)
+                    }) {
+                        out.push(Measured {
+                            // A handful of keys, leaked in a command that exits
+                            // seconds later: the alternative is threading a
+                            // lifetime through the report for no benefit.
+                            key: Box::leak(key.clone().into_boxed_str()),
+                            value: number,
+                            unit: unit_of(key),
+                        });
+                    }
+                }
+            }
+        }
+    }
     let binary = Path::new("target/release/aisme-agentd");
     if let Ok(meta) = std::fs::metadata(binary) {
         #[allow(clippy::cast_precision_loss)] // a binary is far below 2^53 bytes
@@ -33,6 +66,20 @@ pub(crate) fn measure() -> Vec<Measured> {
         });
     }
     out
+}
+
+/// The unit a key is measured in, from its name: the budget table's own
+/// suffixes, so a new key needs no table here.
+fn unit_of(key: &str) -> &'static str {
+    if key.ends_with("_mb") {
+        "MB"
+    } else if key.ends_with("_pct") {
+        "%"
+    } else if key.ends_with("_us") {
+        "µs"
+    } else {
+        ""
+    }
 }
 
 /// `min` fails above `hard`, `max` fails below it; equality passes.

@@ -66,6 +66,19 @@ fn main() {
     } else {
         println!("self: /proc/self unavailable — rss and cpu stay absent, not zero");
     }
+    // F1.RT.06 + the GATE F1 budget line: compose the engine on MockSensor,
+    // let it settle, and write what this daemon actually costs. A budget
+    // nobody measured is a budget nobody keeps.
+    if std::env::args().nth(1).as_deref() == Some("--measure-idle") {
+        match measure_idle() {
+            Ok(path) => println!("idle profile written to {path}"),
+            Err(e) => {
+                eprintln!("measure-idle: {e}");
+                std::process::exit(1);
+            }
+        }
+        return;
+    }
     // F1.IPC.01: the control socket. `--serve-ipc <path>` runs it; without
     // the flag the daemon reports that it can, because F1 has no hot loop to
     // serve alongside it yet (that is F2's walking skeleton).
@@ -101,4 +114,64 @@ fn main() {
         }
         Err(e) => eprintln!("runtime: could not start: {e}"),
     }
+}
+
+/// Run the engine on `MockSensor` and write the idle profile's artefact
+/// (`profiles.idle.agentd_rss_mb`, GATE F1).
+///
+/// "Idle" is the plan's sense: `agentd` composed and running, with the mock
+/// sensor and no platform sensors attached (`budgets.toml`'s comment says
+/// exactly that). The number is this process's RSS after the loop has run,
+/// so it includes the allocator, the runtime and the engine's arenas — the
+/// things a smaller measurement would leave out.
+fn measure_idle() -> std::io::Result<String> {
+    use std::io::Write as _;
+    use std::time::Duration;
+
+    use aisme_core::detect::DetectorSet;
+    use aisme_core::engine::Engine;
+    use aisme_core::mock::{CountingSink, MockSensor};
+    use aisme_core::sensor::SensorConfig;
+
+    let mut engine = Engine::new(
+        vec![Box::new(MockSensor::with_every_kind())],
+        Box::new(CountingSink::new()),
+        DetectorSet::new(),
+        128,
+    );
+    engine
+        .start(&SensorConfig::default())
+        .map_err(|e| std::io::Error::other(e.to_string()))?;
+    for tick in 0..1_000u64 {
+        if engine.tick(Duration::ZERO, 1_000 + tick).is_err() {
+            break;
+        }
+        if tick % 100 == 0 {
+            // The trace is short; starting again rewinds it, so the loop
+            // keeps working rather than idling on an exhausted sensor.
+            let _ = engine.start(&SensorConfig::default());
+        }
+    }
+    let usage = selfobs::SelfObserver::new().sample().ok_or_else(|| {
+        std::io::Error::other("/proc/self is unavailable; RSS cannot be measured here")
+    })?;
+    #[allow(clippy::cast_precision_loss)] // an RSS is far below 2^53 bytes
+    let rss_mb = usage.rss_bytes as f64 / (1024.0 * 1024.0);
+    let dir = std::path::Path::new("target/budget");
+    std::fs::create_dir_all(dir)?;
+    let path = dir.join("idle.toml");
+    let mut file = std::fs::File::create(&path)?;
+    writeln!(
+        file,
+        "# Written by `aisme-agentd --measure-idle` ({} events through the engine on\n\
+         # MockSensor, no platform sensors). Read by `cargo xtask verify-budgets`.\n\
+         \"profiles.idle.agentd_rss_mb\" = {rss_mb:.2}\n\
+         \"process.agentd.rss_mb\" = {rss_mb:.2}",
+        engine.totals().drained
+    )?;
+    println!(
+        "idle: rss {rss_mb:.2} MB after {} events",
+        engine.totals().drained
+    );
+    Ok(path.display().to_string())
 }

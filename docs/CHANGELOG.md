@@ -29,6 +29,7 @@ All notable changes to this repository. Format: [Keep a Changelog](https://keepa
   ```
 
 ### Added
+- **`F1.RT.01` — `mimalloc`** as `aisme-agentd`'s global allocator with a 10 ms purge delay (`H-03`); `cargo deny` passes with it.
 - **`F1.DT.03` — signed weights** (`aisme-core::weights`): the format, a pure verifier that checks shape, digest and then a loader-supplied signature, rollback refused with the header inside the signed message, and a `CRITICAL` threshold no file can lower. 4 tests.
 - **`F1.DT.02` — `DT-09` session risk** (`aisme-core::risk`): a deterministic decaying accumulator in integer thousandths with weights as plain data, posture thresholds, and a pinned measured value so a change of arithmetic cannot pass unnoticed. 4 tests.
 - **`F1.DT.01` — the detector interface** (`aisme-core::detect`): pure `observe(&GraphDelta, &SessionState) -> Option<Finding>`, ordered composition where every detector runs, and Annex G.0's single-plane cap enforced by the set rather than trusted to the detector. 3 tests.

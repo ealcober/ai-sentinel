@@ -12,6 +12,11 @@ publish = false
 # their own phase (A-05); nothing here reaches sideways.
 aisme-core = { path = "../aisme-core" }
 aisme-ebpf-common = { path = "../aisme-ebpf-common" }
+# H-03: the 50 MB budget is the product. mimalloc returns freed pages to the
+# OS aggressively (MIMALLOC_PURGE_DELAY, set in main), which glibc's allocator
+# does not: an arena that grows during a burst and never shrinks is how a
+# daemon passes its budget on the bench and fails it after an hour.
+mimalloc = { version = "0.1.52", default-features = false }
 
 [lints]
 workspace = true

@@ -16,6 +16,7 @@ pub mod ladder;
 pub mod mock;
 pub mod ontology;
 pub mod policy;
+pub mod risk;
 pub mod sensor;
 pub mod taint;
 pub mod tier;
@@ -38,6 +39,7 @@ pub use ontology::{
     BootNs, DetectorId, Digest, Edge, EdgeKind, EvidenceRefs, InstructionSignals, Node, NodeId,
     NodeKind, PathClass, PermissionGroup, ResultOrigin, SessionId, Severity, SuppressionOrigin,
 };
+pub use risk::{RiskEvent, SessionRisk, Weights};
 pub use sensor::{
     BatchFull, EventBatch, EventSink, Sensor, SensorConfig, SensorHealth, SessionCandidate,
     SessionDiscovery,

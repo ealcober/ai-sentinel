@@ -29,6 +29,7 @@ All notable changes to this repository. Format: [Keep a Changelog](https://keepa
   ```
 
 ### Added
+- **`F1.DT.02` — `DT-09` session risk** (`aisme-core::risk`): a deterministic decaying accumulator in integer thousandths with weights as plain data, posture thresholds, and a pinned measured value so a change of arithmetic cannot pass unnoticed. 4 tests.
 - **`F1.DT.01` — the detector interface** (`aisme-core::detect`): pure `observe(&GraphDelta, &SessionState) -> Option<Finding>`, ordered composition where every detector runs, and Annex G.0's single-plane cap enforced by the set rather than trusted to the detector. 3 tests.
 - **`F1.PA.07` — the dependency-direction rule, shown failing**: `direction_violations()` is a pure function over the real `layers.toml` and a set of edges; tests plant `aisme-core → aisme-linux` and an L2 sibling edge and assert the messages, and confirm an unlayered dependency is not a direction violation. 4 tests.
 - **`F1.PA.06` — the composition root** (`aisme-agentd::platform`): the single module allowed to name adapters or use `cfg(target_os)`, composing sensors, enforcers and the adjudicator ladder from the capability set, never yielding zero of any of them. `verify-layering` reports it present. 2 tests.

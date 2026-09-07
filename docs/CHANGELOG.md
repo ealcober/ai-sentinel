@@ -7,6 +7,22 @@ All notable changes to this repository. Format: [Keep a Changelog](https://keepa
 ## [Unreleased]
 
 ### State
+- **GATE F1 passed in full on 2026-09-07 — the interface freeze.** The block, line by line:
+
+  ```
+  exit 0  cargo test --workspace                      222 passed, 0 failed
+  exit 0  cargo xtask verify-layering                 A-01…A-06
+  exit 0  cargo xtask build-ebpf                      RawEvent compiles for bpfel-unknown-none
+  exit 0  cargo xtask bench-hotloop --events 5000000  5 000 064 events, 0 allocations, 0 drops
+  exit 0  cargo xtask verify-budgets --profile idle   agentd RSS 13.75 MB (hard 25)
+  exit 0  cargo xtask test-policy-compiler            determinism, static validation, I-05 + I-26
+  exit 0  cargo xtask test-taint --scenario rf-09 --mock
+  exit 0  cargo xtask test-detect --determinism
+  exit 0  ! cargo tree -p aisme-agentd | grep -q serde_json      (I-21)
+  exit 0  no cfg(target_os) in aisme-core's code                 (A-01)
+  ```
+
+  **After this gate the L1 traits in §3.2 may only change through an ADR.**
 - **Phase F0 closed on 2026-09-07; F1 in progress.** GATE F0, run line by line on `134c8f7` with interop and KVM live:
 
   ```

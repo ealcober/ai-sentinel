@@ -1576,7 +1576,9 @@ cargo xtask test-policy-compiler             # determinism, static validation, I
 cargo xtask test-taint --scenario rf-09 --mock  # the corrected algebra reaches the agent
 cargo xtask test-detect --determinism           # same input, same findings, every target
 ! cargo tree -p aisme-agentd | grep -q serde_json   # must NOT be present (I-21)
-test $(grep -rl 'cfg(target_os' crates/aisme-core/ | wc -l) -eq 0   # rule A-01
+test $(grep -rn 'cfg(target_os' crates/aisme-core/src --include='*.rs' | grep -v '//' | wc -l) -eq 0   # rule A-01, code only —
+                                                     # `verify-layering` above is the real check (it strips comments);
+                                                     # the first form counted the doc line that *states* the rule
 ```
 
 > **After this gate, the L1 traits in §3.2 may only change through an ADR.** Five tracks code against them in parallel; a silent signature change would invalidate work in four of them. This is the single most valuable freeze point in the schedule.

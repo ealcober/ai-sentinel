@@ -29,6 +29,7 @@ All notable changes to this repository. Format: [Keep a Changelog](https://keepa
   ```
 
 ### Added
+- **`F1.DT.01` — the detector interface** (`aisme-core::detect`): pure `observe(&GraphDelta, &SessionState) -> Option<Finding>`, ordered composition where every detector runs, and Annex G.0's single-plane cap enforced by the set rather than trusted to the detector. 3 tests.
 - **`F1.PA.07` — the dependency-direction rule, shown failing**: `direction_violations()` is a pure function over the real `layers.toml` and a set of edges; tests plant `aisme-core → aisme-linux` and an L2 sibling edge and assert the messages, and confirm an unlayered dependency is not a direction violation. 4 tests.
 - **`F1.PA.06` — the composition root** (`aisme-agentd::platform`): the single module allowed to name adapters or use `cfg(target_os)`, composing sensors, enforcers and the adjudicator ladder from the capability set, never yielding zero of any of them. `verify-layering` reports it present. 2 tests.
 - **`F1.PA.04` / `F1.PA.05` — the tier function and the degradation state machine** (`aisme-core::tier`): Annex D.1's rows as code, `I-19`'s one-function-per-absence list, and `Serving`/`Degraded` transitions announced once each with the sentence the UI and SIEM get. 3 tests.

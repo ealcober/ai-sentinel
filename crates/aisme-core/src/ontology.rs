@@ -18,8 +18,9 @@ use crate::taint::Taint;
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, Default)]
 pub struct BootNs(pub u64);
 
-/// A monitored session.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
+/// A monitored session. `Default` is id 0 — no session, which is what a
+/// state that has not been attached to one holds.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, Default)]
 pub struct SessionId(pub u64);
 
 /// A node's identity inside one graph, issued by the graph (`F1.ON.02`).

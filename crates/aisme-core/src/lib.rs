@@ -7,6 +7,7 @@
 
 pub mod adjudicate;
 pub mod capability;
+pub mod detect;
 pub mod enforce;
 pub mod error;
 pub mod intern;
@@ -24,6 +25,7 @@ pub use adjudicate::{
     PolicySource, Warning,
 };
 pub use capability::{CapabilitySet, KeyHw, SentinelCapabilities};
+pub use detect::{Detector, DetectorSet, Finding, GraphDelta, Plane, SessionState};
 pub use enforce::{EnforcementTier, Enforcer, EscalationId, SuspendScope, SuspendToken};
 pub use error::{Error, ErrorKind, Result};
 pub use intern::{Interner, InternerStats, StrId, TooLong};

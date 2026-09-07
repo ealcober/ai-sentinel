@@ -9,6 +9,7 @@ pub mod adjudicate;
 pub mod capability;
 pub mod detect;
 pub mod enforce;
+pub mod engine;
 pub mod error;
 pub mod intern;
 pub mod labels;
@@ -29,12 +30,14 @@ pub use adjudicate::{
 pub use capability::{CapabilitySet, KeyHw, SentinelCapabilities};
 pub use detect::{Detector, DetectorSet, Finding, GraphDelta, Plane, SessionState};
 pub use enforce::{EnforcementTier, Enforcer, EscalationId, SuspendScope, SuspendToken};
+pub use engine::{Engine, TickReport};
 pub use error::{Error, ErrorKind, Result};
 pub use intern::{Interner, InternerStats, StrId, TooLong};
 pub use labels::{LabelError, TreeLabels};
 pub use ladder::{Adjudication, AdjudicatorLadder, Refusal};
 pub use mock::{
-    catalogue_trace, MemorySink, MockSensor, NullEnforcer, PolicyAdjudicator, CATALOGUE,
+    catalogue_trace, CountingSink, MemorySink, MockSensor, NullEnforcer, PolicyAdjudicator,
+    CATALOGUE,
 };
 pub use ontology::{
     BootNs, DetectorId, Digest, Edge, EdgeKind, EvidenceRefs, InstructionSignals, Node, NodeId,

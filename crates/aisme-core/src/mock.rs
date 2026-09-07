@@ -290,6 +290,47 @@ impl EventSink for MemorySink {
     }
 }
 
+/// A sink that counts and keeps nothing — the shape the WAL has once it
+/// writes into its mapped segments (`F1.RT.05`), and the one to measure the
+/// hot loop against: a sink that accumulates in a `Vec` grows, and its
+/// growth is not the loop's allocation.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct CountingSink {
+    events: u64,
+    batches: u64,
+}
+
+impl CountingSink {
+    /// A fresh one.
+    #[must_use]
+    pub const fn new() -> CountingSink {
+        CountingSink {
+            events: 0,
+            batches: 0,
+        }
+    }
+
+    /// Events appended.
+    #[must_use]
+    pub const fn events(&self) -> u64 {
+        self.events
+    }
+
+    /// Batches appended.
+    #[must_use]
+    pub const fn batches(&self) -> u64 {
+        self.batches
+    }
+}
+
+impl EventSink for CountingSink {
+    fn append(&mut self, batch: &EventBatch) -> Result<()> {
+        self.events += batch.len() as u64;
+        self.batches += 1;
+        Ok(())
+    }
+}
+
 /// Every kind, written out — the list `F1.EV.03`'s producer-coverage check
 /// compares against `EventKind::ALL`.
 ///

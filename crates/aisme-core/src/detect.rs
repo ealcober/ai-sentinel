@@ -141,6 +141,11 @@ pub struct DetectorSet {
 }
 
 impl DetectorSet {
+    /// The most findings one tick keeps. The hot loop preallocates this
+    /// many, and a pass that would raise more counts the rest rather than
+    /// grow the buffer (`F1.RT.03`, `F1.RT.04`).
+    pub const MAX_FINDINGS_PER_TICK: usize = 32;
+
     /// An empty set.
     #[must_use]
     pub fn new() -> DetectorSet {
@@ -172,19 +177,39 @@ impl DetectorSet {
     /// the pass.
     #[must_use]
     pub fn observe(&self, delta: &GraphDelta<'_>, state: &SessionState) -> Vec<Finding> {
-        self.detectors
-            .iter()
-            .filter_map(|d| {
-                d.observe(delta, state).map(|mut finding| {
-                    debug_assert_eq!(finding.dt, d.id(), "a detector filed under another's id");
-                    let cap = severity_cap(d.planes());
-                    if finding.severity > cap {
-                        finding.severity = cap;
-                    }
-                    finding
-                })
-            })
-            .collect()
+        let mut out = Vec::new();
+        self.observe_into(delta, state, &mut out);
+        out
+    }
+
+    /// The same pass, into a buffer the caller owns: the hot loop's form,
+    /// which reuses one buffer for the life of the engine. A pass that would
+    /// raise more than [`Self::MAX_FINDINGS_PER_TICK`] stops filling rather
+    /// than grow — the cap is the backpressure `F1.RT.04` asks for, applied
+    /// where the memory would be spent.
+    pub fn observe_into(
+        &self,
+        delta: &GraphDelta<'_>,
+        state: &SessionState,
+        out: &mut Vec<Finding>,
+    ) {
+        for detector in &self.detectors {
+            if out.len() == DetectorSet::MAX_FINDINGS_PER_TICK {
+                break;
+            }
+            if let Some(mut finding) = detector.observe(delta, state) {
+                debug_assert_eq!(
+                    finding.dt,
+                    detector.id(),
+                    "a detector filed under another's id"
+                );
+                let cap = severity_cap(detector.planes());
+                if finding.severity > cap {
+                    finding.severity = cap;
+                }
+                out.push(finding);
+            }
+        }
     }
 }
 

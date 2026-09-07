@@ -29,6 +29,7 @@ All notable changes to this repository. Format: [Keep a Changelog](https://keepa
   ```
 
 ### Added
+- **`F1.RT.03` — the hot loop** (`aisme-core::engine`): drain → classify → intern → risk → detect → sink, everything preallocated, with a counting-allocator test measuring **zero** allocations across ten steady-state ticks (and a control test that the counter would notice one). `DetectorSet::observe_into` writes into a reused buffer capped at 32 findings per tick; `CountingSink` is the sink shape the WAL will have. 4 engine tests, 2 allocation tests.
 - **`F1.RT.02` — the capped runtime**: tokio with two worker threads, 512 KiB stacks, named threads and a minimal feature set, plus the hot loop's `LocalSet`. 2 tests.
 - **`F1.RT.01` — `mimalloc`** as `aisme-agentd`'s global allocator with a 10 ms purge delay (`H-03`); `cargo deny` passes with it.
 - **`F1.DT.03` — signed weights** (`aisme-core::weights`): the format, a pure verifier that checks shape, digest and then a loader-supplied signature, rollback refused with the header inside the signed message, and a `CRITICAL` threshold no file can lower. 4 tests.

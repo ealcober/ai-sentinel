@@ -77,7 +77,7 @@ L0 WIRE      aisme-ebpf-common — no_std, zero deps, layout-stable
 | No platform-specific type in `aisme-core`'s public API. | This is what keeps `ADR-02` reversible. |
 | `agentd` depends on adapters **only through L1 traits**. | Enables `MockSensor` for the whole test suite. |
 | The composition root is `aisme-agentd::platform` — the **only** module that names concrete adapters or uses `cfg(target_os)`. | A rule with no legal home is not a rule. |
-| `unsafe` is forbidden in `aisme-core` and in L4; permitted in L0 (layout), L2 (platform FFI) and the L3 runtimes (`mmap` for ring buffer and WAL), always with a safety comment. | `agentd` cannot map its own ring buffer without it. |
+| `unsafe` is forbidden in `aisme-core` and in the **product** edges of L4 (`cli`, `otel`, `relay`, `clientcore`, the mobile shells); permitted in L0 (layout), L2 (platform FFI) and the L3 runtimes (`mmap` for ring buffer and WAL), always with a safety comment. `xtask` is L4 and is build tooling, not shipped: its one `unsafe impl GlobalAlloc` **is** how the zero-allocation invariant is measured (`F1.RT.03`), and there is no safe way to write a global allocator. | `agentd` cannot map its own ring buffer without it. |
 
 **The system has three interfaces, not fifteen subsystems:** `Sensor`, `Enforcer`, `Adjudicator`. Five sensing mechanisms and five prompt-delivery mechanisms are *implementations*, not subsystems. If you find yourself writing a parallel code path for a platform, you are probably missing a trait implementation.
 

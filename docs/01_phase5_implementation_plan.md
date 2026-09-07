@@ -1009,7 +1009,7 @@ Two things belong here rather than in the annex. First, the **principle**: a det
 The architecture is five layers with **strictly downward dependencies**. This is the single most important structural rule in the codebase: it is what makes the engine testable on a laptop, portable to a phone, and survivable across platform decisions like `ADR-02`.
 
 ```
-L4  EDGES          aisme-cli · aisme-otel · aisme-relay · aisme-proto ·
+L4  EDGES          aisme-cli · aisme-otel · aisme-relay ·
                    aisme-clientcore · aisme-agentsim · xtask · ui · mobile shells
                    ↓ may depend on L3, L1, L0
 L3  ENGINES        aisme-agentd (hot, 50 MB) · aisme-forensicd (cold) · aisme-loaderd
@@ -1023,6 +1023,8 @@ L1  CORE           aisme-core        ontology, traits, policy IR + compiler, tai
                    aisme-compress    SAC-lite — deterministic, no I/O
                    aisme-observer    schema + scoring only; the HTTP client is in
                                      forensicd, which is L3
+                   aisme-proto       the control-plane vocabulary (Annex I): types and
+                                     codec, no I/O — an edge and an engine both speak it
                    ↓ may depend on L0 only
 L0  WIRE           aisme-ebpf-common — no_std, zero dependencies, layout-stable types
 
@@ -2843,7 +2845,8 @@ AI-SYSTEM-MONITOR/
 │   ├── aisme-compress/      [L1] SAC-lite pipeline (stages L2–L5)
 │   ├── aisme-observer/      [L1] Observer schema + scoring (client lives in forensicd)
 │   ├── aisme-otel/          [L4] OTLP export, semantic conventions
-│   ├── aisme-proto/         [L4] Control-plane protocol + TS codegen
+│   ├── aisme-proto/         [L1] Control-plane protocol (Annex I) + TS codegen — a wire
+│   │                             vocabulary, not an edge: agentd speaks it (F1.IPC.01)
 │   ├── aisme-cli/           [L4] aisme run / status / policy / verify / pair
 │   ├── aisme-clientcore/    [L4] Shared desktop+mobile client core (uniffi)
 │   ├── aisme-relay/         [L4] Blind store-and-forward relay

@@ -19,6 +19,11 @@ aisme-core        = "L1"
 aisme-correlate   = "L1"   # pure graph/taint logic, no I/O — runs in the hot loop
 aisme-compress    = "L1"   # deterministic SAC-lite; no I/O
 aisme-observer    = "L1"   # schema + scoring only; the HTTP client lives in forensicd
+aisme-proto       = "L1"   # the control-plane *vocabulary* (Annex I): pure types and a
+                          # codec, no I/O, no platform, no runtime. Both an edge (cli, ui)
+                          # and an engine (agentd, F1.IPC.01) speak it, so it cannot be an
+                          # edge itself — at L4 it made agentd depend upward, which
+                          # verify-layering caught.
 
 aisme-linux       = "L2"
 aisme-tls         = "L2"
@@ -32,7 +37,6 @@ aisme-loaderd     = "L3"
 aisme-cli         = "L4"
 aisme-otel        = "L4"
 aisme-relay       = "L4"
-aisme-proto       = "L4"
 aisme-clientcore  = "L4"
 aisme-agentsim    = "L4"
 xtask             = "L4"

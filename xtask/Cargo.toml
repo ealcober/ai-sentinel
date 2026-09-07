@@ -8,6 +8,11 @@ rust-version.workspace = true
 publish = false
 
 [dependencies]
+# The gate commands drive the real engine rather than a copy of it: bench-hotloop
+# (F1.RT.03) and test-detect (F1.DT.01) measure aisme-core itself, and a bench
+# that measured a reimplementation would measure nothing.
+aisme-core = { path = "../crates/aisme-core" }
+aisme-ebpf-common = { path = "../crates/aisme-ebpf-common" }
 # L4 tooling. `I-21` forbids serde_json on the hot path — that ban is scoped to
 # aisme-agentd, and the forbidden-dependency gate (F0.GATE.05) enforces it there.
 # Here they read layers.toml, budgets.toml and `cargo metadata`.

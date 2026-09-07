@@ -80,7 +80,12 @@ impl MockSensor {
 
 impl Sensor for MockSensor {
     fn start(&mut self, _cfg: &SensorConfig) -> Result<()> {
+        // Starting a replay sensor begins the replay: a second `start`
+        // rewinds rather than resuming, which is what "start" means for a
+        // recorded trace and what lets a bench run longer than one trace
+        // without allocating (`F1.RT.03`).
         self.started = true;
+        self.next = 0;
         Ok(())
     }
 

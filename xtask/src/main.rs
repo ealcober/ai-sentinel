@@ -19,6 +19,7 @@
 
 mod annex_h;
 mod assets;
+mod bench;
 mod budgets;
 mod docgate;
 mod doctor;
@@ -50,6 +51,13 @@ pub(crate) fn workspace_root() -> PathBuf {
         .parent()
         .map_or_else(|| PathBuf::from("."), Path::to_path_buf)
 }
+
+/// The counting allocator `bench-hotloop` needs (`F1.RT.03`). It is installed
+/// for the whole tool because a global allocator can only be chosen once; it
+/// forwards everything to the system allocator and counts only while the
+/// bench asks it to, so every other command runs exactly as before.
+#[global_allocator]
+static ALLOCATOR: bench::Counting = bench::Counting;
 
 fn main() -> ExitCode {
     if let Err(e) = std::env::set_current_dir(workspace_root()) {
@@ -117,6 +125,7 @@ fn run(name: &str, args: &[&str]) -> Option<u8> {
         "doctor" => doctor::run(),
         "gate" => gate::run(args),
         "build-ebpf" => tooling::build_ebpf(),
+        "bench-hotloop" => bench::hot_loop(args),
         "dist" => tooling::dist(),
         "test-taint" => scenarios::test_taint(args),
         "test-policy-compiler" => scenarios::test_policy_compiler(args),

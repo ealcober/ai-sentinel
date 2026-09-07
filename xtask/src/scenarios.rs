@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
-//! Scenario runners: `test-taint` (`F1.ON.05`).
+//! Scenario runners: `test-taint` (`F1.ON.05`), `test-policy-compiler`
+//! (`F1.PL.05`).
 //!
 //! A scenario is a named integration test in the crate that owns the logic;
 //! the command selects it and reports in the gate's vocabulary. `--mock`
@@ -64,6 +65,41 @@ pub(crate) fn test_taint(args: &[&str]) -> u8 {
     } else {
         eprint!("{}", String::from_utf8_lossy(&output.stderr));
         println!("FAIL test-taint {label} --mock: {ran}");
+        1
+    }
+}
+
+/// `cargo xtask test-policy-compiler` — determinism, static validation,
+/// `I-05` and `I-26`: the parser, compiler and determinism suites of
+/// `aisme-core`, reported in the gate's vocabulary.
+pub(crate) fn test_policy_compiler(args: &[&str]) -> u8 {
+    if let Some(other) = args.first() {
+        eprintln!("usage: cargo xtask test-policy-compiler  (unexpected: {other})");
+        return 1;
+    }
+    let mut cmd = Command::new("cargo");
+    cmd.args(["test", "-q", "-p", "aisme-core"]);
+    for suite in ["policy_parse", "policy_compile", "policy_determinism"] {
+        cmd.args(["--test", suite]);
+    }
+    let Ok(output) = cmd.output() else {
+        eprintln!("skip: could not run cargo");
+        return SKIP;
+    };
+    let text = String::from_utf8_lossy(&output.stdout);
+    let results: Vec<&str> = text
+        .lines()
+        .filter_map(|l| l.strip_prefix("test result: "))
+        .collect();
+    if output.status.success()
+        && results.len() == 3
+        && results.iter().all(|r| !r.contains("0 passed"))
+    {
+        println!("PASS test-policy-compiler: {}", results.join(" · "));
+        0
+    } else {
+        eprint!("{}", String::from_utf8_lossy(&output.stderr));
+        println!("FAIL test-policy-compiler: {}", results.join(" · "));
         1
     }
 }

@@ -12,6 +12,7 @@
 pub mod ast;
 pub mod backend;
 pub mod compile;
+pub mod encode;
 pub mod parse;
 
 pub use ast::{Assert, Match, MatchKey, Policy, Rule, SessionDefaults, Suppression, Text};
@@ -23,4 +24,5 @@ pub use compile::{
     compile, Bindings, CompileError, CompileErrorKind, CompiledPolicy, CompiledRule, Predicate,
     Term,
 };
+pub use encode::{digest, encode, PolicyDigest, POLICY_ENCODING_VERSION};
 pub use parse::{parse, ParseError};

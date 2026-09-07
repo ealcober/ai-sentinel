@@ -1,9 +1,12 @@
 // SPDX-License-Identifier: Apache-2.0
-//! Agent simulator that drives the reference workload.
-//!
-//! Deterministic replay is what makes a budget number reproducible (plan §2.22).
+//! The simulator's command line.
+
+use aisme_agentsim::trace;
 
 fn main() {
-    // Phase F0: the crate exists and compiles. Behaviour arrives with its
-    // own task; see docs/ai/STATE.md for the current one.
+    println!(
+        "aisme-agentsim: trace format v{} (F1.SIM.02)",
+        trace::FORMAT_VERSION
+    );
+    println!("replay arrives in the same phase (F1.SIM.01)");
 }

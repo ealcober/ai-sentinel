@@ -14,6 +14,7 @@ pub mod backend;
 pub mod compile;
 pub mod diagnostics;
 pub mod encode;
+pub mod evaluate;
 pub mod parse;
 
 pub use ast::{Assert, Match, MatchKey, Policy, Rule, SessionDefaults, Suppression, Text};
@@ -27,4 +28,5 @@ pub use compile::{
 };
 pub use diagnostics::{at_least_as_strict, over_blocking, Raises, Weakening};
 pub use encode::{digest, encode, PolicyDigest, POLICY_ENCODING_VERSION};
+pub use evaluate::{evaluate, glob_match, Decision, EventFacts};
 pub use parse::{parse, ParseError};

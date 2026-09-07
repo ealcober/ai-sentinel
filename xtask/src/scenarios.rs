@@ -85,6 +85,7 @@ pub(crate) fn test_policy_compiler(args: &[&str]) -> u8 {
         "policy_determinism",
         "policy_backend",
         "policy_diagnostics",
+        "policy_evaluate",
     ] {
         cmd.args(["--test", suite]);
     }
@@ -98,7 +99,7 @@ pub(crate) fn test_policy_compiler(args: &[&str]) -> u8 {
         .filter_map(|l| l.strip_prefix("test result: "))
         .collect();
     if output.status.success()
-        && results.len() == 5
+        && results.len() == 6
         && results.iter().all(|r| !r.contains("0 passed"))
     {
         println!("PASS test-policy-compiler: {}", results.join(" · "));

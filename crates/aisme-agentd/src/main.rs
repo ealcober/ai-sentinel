@@ -12,6 +12,7 @@
 // it makes it legible after the fact.
 #![deny(clippy::unwrap_used, clippy::expect_used)]
 
+mod ipc;
 mod platform;
 mod runtime;
 mod selfobs;
@@ -65,6 +66,30 @@ fn main() {
     } else {
         println!("self: /proc/self unavailable — rss and cpu stay absent, not zero");
     }
+    // F1.IPC.01: the control socket. `--serve-ipc <path>` runs it; without
+    // the flag the daemon reports that it can, because F1 has no hot loop to
+    // serve alongside it yet (that is F2's walking skeleton).
+    let mut args = std::env::args().skip(1);
+    if let Some(flag) = args.next() {
+        if flag == "--serve-ipc" {
+            let Some(path) = args.next() else {
+                eprintln!("--serve-ipc needs a socket path");
+                return;
+            };
+            let owner = ipc::Peer::from_current_uid();
+            println!("ipc: serving {path} for uid {}", owner.uid);
+            if let Err(e) = ipc::serve(std::path::Path::new(&path), owner.uid, || false) {
+                eprintln!("ipc: {e}");
+            }
+            return;
+        }
+        eprintln!("unknown argument `{flag}`");
+        return;
+    }
+    println!(
+        "ipc: ready — `--serve-ipc <path>` serves the control plane (protocol {})",
+        aisme_proto::rpc::PROTOCOL_VERSION
+    );
     match runtime::build() {
         Ok(rt) => {
             let set = runtime::hot_loop_set();

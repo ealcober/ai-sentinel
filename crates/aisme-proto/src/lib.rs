@@ -3,3 +3,6 @@
 //!
 //! One protocol, spoken by the desktop UI, the CLI, `aisme-uiagent`, the mobile
 //! app and the relay.
+
+pub mod json;
+pub mod rpc;

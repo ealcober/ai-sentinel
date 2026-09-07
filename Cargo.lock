@@ -8,6 +8,8 @@ version = "0.1.0"
 dependencies = [
  "aisme-core",
  "aisme-ebpf-common",
+ "aisme-proto",
+ "libc",
  "mimalloc",
  "tokio",
 ]

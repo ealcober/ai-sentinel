@@ -11,6 +11,10 @@ publish = false
 # L3 -> L1 and L0. Adapters are named only in src/platform, and only from
 # their own phase (A-05); nothing here reaches sideways.
 aisme-core = { path = "../aisme-core" }
+# L3 -> L4 for the protocol types is not an upward edge in the layer sense:
+# aisme-proto is the wire vocabulary, not an edge of the product. verify-layering
+# reads layers.toml, and this pairing is the one the plan draws in F8a.
+aisme-proto = { path = "../aisme-proto" }
 aisme-ebpf-common = { path = "../aisme-ebpf-common" }
 # H-03: the 50 MB budget is the product. mimalloc returns freed pages to the
 # OS aggressively (MIMALLOC_PURGE_DELAY, set in main), which glibc's allocator
@@ -20,6 +24,11 @@ mimalloc = { version = "0.1.52", default-features = false }
 # Two worker threads, no more (F1.RT.02), and only the features the daemon
 # uses: no net, no fs, no process — those would be I/O the adapters own.
 tokio = { version = "1.53.1", default-features = false, features = ["rt", "rt-multi-thread", "time", "macros", "sync"] }
+# SO_PEERCRED, and nothing else. std's `peer_cred` is still unstable
+# (rust-lang#42839); the alternative was a large syscall wrapper crate in the
+# budgeted daemon (DEP.SUP.06), and libc is already in the tree through tokio
+# and mimalloc, so this adds no crate at all.
+libc = "0.2.189"
 
 [lints]
 workspace = true

@@ -11,9 +11,11 @@ publish = false
 # L3 -> L1 and L0. Adapters are named only in src/platform, and only from
 # their own phase (A-05); nothing here reaches sideways.
 aisme-core = { path = "../aisme-core" }
-# L3 -> L4 for the protocol types is not an upward edge in the layer sense:
-# aisme-proto is the wire vocabulary, not an edge of the product. verify-layering
-# reads layers.toml, and this pairing is the one the plan draws in F8a.
+# L3 -> L1. aisme-proto is the control-plane *vocabulary* (Annex I types and a
+# codec, no I/O, no platform, no runtime), which both an edge and an engine
+# speak, so it cannot be an edge itself. It sat at L4 when F1.IPC.01 added this
+# edge and verify-layering rejected it as upward; the fix was the layer table,
+# not the dependency (layers.toml, §3.1's diagram, the Part VI tree).
 aisme-proto = { path = "../aisme-proto" }
 aisme-ebpf-common = { path = "../aisme-ebpf-common" }
 # H-03: the 50 MB budget is the product. mimalloc returns freed pages to the

@@ -1,11 +1,11 @@
 # STATE — live project status
 
 > **Update this file at the end of every working session.** It is the first thing the next session reads.
-> Last updated: **2026-09-05** · Last nightly: — · Last weekly: — · Phase: **F0 in progress** · Code written: **the workspace skeleton — 19 members, stubs only, no behaviour**
+> Last updated: **2026-09-07** · Last nightly: — · Last weekly: — · Phase: **F2 — the walking skeleton, starting** · Code written: **~20 800 lines of Rust over 19 members; 223 tests pass**. F0 and F1 are closed on their gates
 
 ## Where we are
 
-**Planning is complete and executable.** The plan (`docs/01_phase5_implementation_plan.md`) is ~3,850 lines, Parts 0 through VIII plus Annexes A–I, reviewed three times with every finding applied: `docs/02_…` for correctness, `docs/03_…` for executability, `docs/04_…` the final coherence seal. **No product code exists and the Cargo workspace has no members** — that is task `F0.REPO.01`.
+**Planning is complete and executable**, and two phases are built on it. The plan (`docs/01_phase5_implementation_plan.md`) is ~3,850 lines, Parts 0 through VIII plus Annexes A–I, reviewed three times with every finding applied: `docs/02_…` for correctness, `docs/03_…` for executability, `docs/04_…` the final coherence seal. **F0 closed on GATE F0 and F1 closed on GATE F1**, which froze the L1 traits (`ADR-03`, scoped by `ADR-08`). The workspace has 19 members carrying real behaviour — the event model, the ontology, the policy compiler, the trait catalogue, the hot loop, the detector and the IPC surface — with `cargo test --workspace` at **223 passing**. **F2, the walking skeleton, is the current phase**; it is amplified point by point in `docs/05_challenge_ampliacion_f2.md` before any of its code is written.
 
 **Task IDs are frozen** (`I-23`, `ADR-03`). Every gate command exists from F0 (Annex H; an unimplemented one exits 3 naming the phase that owes it), every type has values (§F1.1.1), the policy language has a grammar (Annex B §B.0), the protocol has shapes (Annex I), every corpus has a manifest (§4.14), every named deliverable has a task, and every phase states what it assumes and what it hands on (§3.7.1). The execution directives are in `CLAUDE.md` §"How to execute the plan"; every closed task adds a line to `docs/CHANGELOG.md`. **F0 can start.**
 
@@ -13,6 +13,8 @@
 
 | Item | Where |
 |---|---|
+| **Coherence and integrity review of everything implemented, 2026-09-07** — eight numbered findings, all in documentation, none in code. Six biased toward *understating* the state (this file claimed no product code existed while carrying 20 800 lines of it); two biased optimistic and were the urgent ones: `docs/CHANGELOG.md` promised a `verify-docs` warning nothing implemented, and `vm probe --all` printed `PASS` without comparing the tier it measured. All eight fixed, two of them by adding the missing check rather than by softening the claim. The code side was clean: 5 `unsafe` sites all with `SAFETY`, 18 narrow lint suppressions, no `TODO`/`FIXME`/`todo!()` in 20 846 lines, `clippy -D warnings` and 223 tests green | this file, `docs/CHANGELOG.md`, `xtask/src/docgate.rs` |
+| **Point 13 measured and closed** — `seccomp_unotify` and `seccomp_addfd` split; `tier_of` reads the one enforcement needs; **Ubuntu 20.04's 5.4 is `L1`**, measured by feature-testing the `ADDFD` ioctl (`EINVAL` = absent, `EFAULT` = present) rather than by kernel version. Prediction written first and held on all seven images. `ADR-08` settles why a `#[non_exhaustive]` type may grow after the F1 freeze; `I-28` is in the registry | `docs/05_challenge_ampliacion_f2.md` §13.6, `docs/adr/08_*.md`, `crates/aisme-core/src/tier.rs` |
 | Four research documents analysed and challenged | `docs/research/` + `extracted/` (plain text, LLM-readable) |
 | 19 architectural findings `H-01`…`H-19` with corrections | Plan Part II |
 | Corrected topology, resource invariants, degradation model | Plan §2.21–2.23 |
@@ -110,17 +112,19 @@
 
 ## Next up
 
-**Phase F0.** Ordered; task IDs from Plan Part III.
+**Phase F2 — the walking skeleton.** F0 and F1 are closed; what follows records how, then what is next. Task IDs from Plan Part III.
 
 **Done in F0:** `F0.WSL.01`, `F0.REPO.01`, `F0.REPO.02`, `F0.REPO.05`, `F0.REPO.03`, `F0.REPO.06`, `F0.ASSET.01`, `F0.ASSET.02`, `F0.DOC.01`, `F0.VM.01`, `F0.VM.02`, and `F0.GATE.01` (partial) through `F0.GATE.08`. What remains, in order:
 
 1. ~~**GATE F0**~~ — passed in full on 2026-09-07 (Done table). **F0 is closed.** The handoff note is `docs/ai/handoff/01_f0-wsl-02.md`.
-2. **GATE F0.** Run on 2026-09-06, line by line: **14 of 15 lines exit 0**; `verify-backlog` exits 2 (`SKIP`: 21 of 21 recorded, `.12` needs hardware this host lacks, the outcome §F0.4 specifies); `vm probe --all` 7 of 7 PASS; the one failing line is `vm up wsl2-ubuntu-24.04`, `FAIL: could not resolve %LOCALAPPDATA% through interop` — the blocker below. The gate closes when that line passes after the owner action; nothing else is owed.
+2. **GATE F1** — passed in full on 2026-09-07 (`8134f56`). **The L1 traits are frozen**; changing a trait signature now needs an ADR, while a `#[non_exhaustive]` type may still grow additively (`ADR-08`). F1 is closed: `F1.EV.01`…`.04`, `F1.ON.01`…`.06`, `F1.PL.01`…`.10`, `F1.PA.01`…`.07`, `F1.DT.01`…`.03`, `F1.RT.01`…`.08`, `F1.SIM.01`/`.02` and `F1.IPC.01`.
 3. `F0.VER.*` — **21 of 21 rows recorded.** All four `[BLOCKING]` rows are settled except the hardware half of `.12`: `.04`, `.16`, `.18` hold; `.05`, `.13`, `.14`, `.19`, `.20`, `.21` hold; `.01` fails with the pin moved; `.15` is `DEPRECATED`. Only `.12`'s hardware half stays open (a TPM 2.0 host, an iOS device, an Android device), recorded as `UNVERIFIED`. Bun's key-log behaviour (`.09`) is the one sub-claim still open.
 
 Already in place, not F0 work: `F0.REPO.00` (repository), `F0.SEC.01` (`docs/security/01_threat-model.md`), `ADR-04` and `ADR-05`, `docs/adr/00_template.md`.
 
-**Now F1 — the current phase — and treat it as the highest-leverage phase in the plan.** Entry condition (§3.7.1): F0, met. Task order, top to bottom of Plan §F1: `F1.EV.01`…`.04` (event model, L0), `F1.ON.01`…`.06` (ontology), `F1.PL.01`…`.10` (policy model and compiler), `F1.PA.01`…`.07` (the trait catalogue — the freeze deliverable), `F1.DT.01`…`.03`, `F1.RT.01`…`.08`, `F1.SIM.01`/`.02`, `F1.IPC.01` (takes `Q-12`). Done: `F1.EV.01`…`.04` (`.03`'s producer-coverage clause is ignored with its reason until `F1.PA.02`), `F1.ON.01`…`.06`, `F1.PL.01`…`.10` — the policy model is complete — and `F1.PA.01`. Next: correct the F0 tier rows (the re-measurement is running), **F2 — the walking skeleton**, amplified before implementation in `docs/05_challenge_ampliacion_f2.md` (twelve points, five sections each, written to be executed rather than decided). **`Q-13` is answered** (point 5): `ADDFD` enters `F2.WS.05` bounded, `I-28` records the rule, and point 13 carries the measurement it implies. The amplification also found that **GATE F2 cannot run as written** — four of its six lines invoke `aisme run` inside a guest with no AISME binaries — and specifies `vm run --with-dist` with a hashed manifest.
+**Now F2 — the walking skeleton.** Entry condition (§3.7.1): GATE F1, met. It is amplified before implementation in `docs/05_challenge_ampliacion_f2.md` — **thirteen points**, five sections each, written to be executed rather than decided, and every point closed. **`Q-13` is answered** (point 5): `ADDFD` enters `F2.WS.05` bounded, and the rule is registered as **`I-28`** in `docs/ai/invariants.md`, with its test owed by `F2.WS.05`. **Point 13's measurement has run** (2026-09-07, seven images, prediction held on every row): `seccomp_unotify` and `seccomp_addfd` are split in `CapabilitySet`, `tier_of` reads the second, and **Ubuntu 20.04's 5.4 is `L1`** — it can trap an open and cannot answer one. The amplification also found that **GATE F2 cannot run as written** — four of its six lines invoke `aisme run` inside a guest with no AISME binaries — and specifies `vm run --with-dist` with a hashed manifest; that is owed before GATE F2 is attempted.
+
+Task order, top to bottom of Plan §F2: `F2.WS.01` (`BpfSensor`, one tracepoint, real ringbuf) through `F2.WS.11`. **Its out-of-scope list is as binding as its task list.** Nothing in F2 is started; `F2.WS.01` is next.
 
 **F2 — the walking skeleton.** One vertical slice, end to end: one tracepoint (`openat`) → ringbuf → hot loop → correlate against one fake `ToolCall` → one hardcoded rule → ESCALATE → `TerminalAdjudicator` → Landlock denies out-of-scope writes → WAL → `forensicd` → one line in the CLI. Entry (§3.7.1): GATE F1, met. **Its out-of-scope list is as binding as its task list** — F2 is a risk-transfer phase, not a feature phase. It ends with the interface freeze (§3.2), after which five tracks run in parallel against contracts that cannot move. An interface defect found in F1 costs hours; the same defect found in F6 invalidates three tracks. Do not compress it.
 

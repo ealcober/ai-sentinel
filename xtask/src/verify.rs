@@ -512,6 +512,10 @@ fn cross_document_checks(r: &mut Report, plan: &str) {
         ),
         ("NN_slug.md naming under docs/, and no NN_-", g::nn_naming()),
         (
+            "every task ID in a commit subject has a changelog line",
+            g::changelog_covers_commits(),
+        ),
+        (
             "the phase addends sum to the stated critical path",
             g::phase_sums(plan),
         ),

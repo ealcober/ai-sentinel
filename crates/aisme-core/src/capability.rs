@@ -41,8 +41,15 @@ pub struct CapabilitySet {
     pub ringbuf: bool,
     /// Sleepable LSM programs, kernel ≥ 5.10.
     pub sleepable_lsm: bool,
-    /// `seccomp_unotify`, kernel ≥ 5.9.
+    /// The seccomp user notifier exists — a syscall can be *trapped*.
+    /// `SECCOMP_GET_NOTIF_SIZES`, kernel ≥ 5.0; `CONTINUE` ≥ 5.5.
     pub seccomp_unotify: bool,
+    /// `SECCOMP_IOCTL_NOTIF_ADDFD` exists — a decision can be *delivered*
+    /// without the target re-resolving the path (`I-28`). Kernel ≥ 5.9;
+    /// `ADDFD_FLAG_SEND` ≥ 5.14. Separate from `seccomp_unotify` because
+    /// trapping and answering are different capabilities: 5.4 has the first
+    /// and not the second, measured on the matrix (`F0.VM.02`).
+    pub seccomp_addfd: bool,
     /// cgroup v2 freezer, kernel ≥ 5.2 with cgroup2 mounted.
     pub cgroup_v2_freeze: bool,
     /// uprobes.
@@ -79,6 +86,7 @@ impl CapabilitySet {
         ringbuf: false,
         sleepable_lsm: false,
         seccomp_unotify: false,
+        seccomp_addfd: false,
         cgroup_v2_freeze: false,
         uprobe: false,
         landlock_abi: 0,

@@ -15,8 +15,9 @@ use crate::capability::CapabilitySet;
 pub enum Tier {
     /// Observation only: no in-kernel deny, no escalation trap.
     L1 = 1,
-    /// Seccomp-only enforcement: every watched path decision traps
-    /// (`seccomp_unotify`) and T2 can freeze.
+    /// Seccomp-only enforcement: every watched path decision traps and is
+    /// answered with a validated descriptor (`seccomp_addfd`, `I-28`), and
+    /// T2 can freeze.
     L2Minus = 2,
     /// In-kernel file deny (Landlock) **and** in-kernel network deny
     /// (cgroup `sock_addr`), plus the L2- escalation path.
@@ -52,14 +53,21 @@ impl Tier {
 ///
 /// Each step needs everything the step below it needs. Note what the rows
 /// actually say, because it is easy to read the tier off one capability:
-/// **BTF is not what separates L1 from L2-** — `seccomp_unotify` and the
+/// **BTF is not what separates L1 from L2-** — the seccomp notifier and the
 /// cgroup v2 freezer are, since without them nothing can trap or hold a
 /// decision. BTF and the ring buffer change how *observation* works
 /// (`BTFHub` fallback, perf buffer), not what can be enforced.
+///
+/// And the trap alone is not enough: L2- promises that a watched path
+/// decision is *answered*, which needs `SECCOMP_IOCTL_NOTIF_ADDFD` to hand
+/// the target a descriptor the supervisor resolved (`I-28`). A kernel that
+/// can only ever answer *deny* does not keep that promise, so `tier_of`
+/// reads `seccomp_addfd`, not `seccomp_unotify`. Measured, not assumed:
+/// 5.4 has the notifier and not `ADDFD` and is **L1** (`F0.VM.02`).
 #[must_use]
 pub fn tier_of(caps: &CapabilitySet) -> Tier {
     // L2-: something can trap a decision and something can hold it.
-    let can_escalate = caps.seccomp_unotify && caps.cgroup_v2_freeze;
+    let can_escalate = caps.seccomp_addfd && caps.cgroup_v2_freeze;
     // L2: in-kernel deny for files and for the network.
     let can_deny_in_kernel = caps.landlock_abi > 0 && caps.cgroup_sock_addr;
     if can_escalate && can_deny_in_kernel && caps.bpf_lsm {
@@ -81,6 +89,9 @@ pub fn degradations(caps: &CapabilitySet) -> Vec<&'static str> {
     let mut lost = Vec::new();
     if !caps.seccomp_unotify {
         lost.push("no seccomp_unotify: a decision cannot be trapped in flight; the escalate class applies policy without asking (T1 lost)");
+    }
+    if !caps.seccomp_addfd {
+        lost.push("no SECCOMP_IOCTL_NOTIF_ADDFD: an escalate-class open cannot be answered with a validated descriptor, so a permit would make the target re-resolve the path; every escalate-class open is denied instead (I-28)");
     }
     if !caps.cgroup_v2_freeze {
         lost.push("no cgroup v2 freezer: a scope cannot be held for slow adjudication (T2 lost; timeout-deny instead)");
@@ -244,6 +255,7 @@ mod tests {
         };
         if tier >= Tier::L2Minus {
             caps.seccomp_unotify = true;
+            caps.seccomp_addfd = true;
             caps.cgroup_v2_freeze = true;
         }
         if tier >= Tier::L2 {
@@ -289,11 +301,39 @@ mod tests {
         assert_eq!(tier_of(&CapabilitySet::NONE), Tier::L1);
     }
 
+    /// Measured on the matrix, not reasoned about: Ubuntu 20.04's 5.4 has the
+    /// seccomp notifier and the cgroup v2 freezer, and answers the `ADDFD`
+    /// ioctl with `EINVAL` because its dispatcher has no such command. It can
+    /// trap an `openat` and it cannot hand back a descriptor the supervisor
+    /// resolved, so the only decision it can deliver is *deny*. L2- promises
+    /// more than that, so this kernel is **L1** (`F0.VM.02`, 2026-09-07).
+    #[test]
+    fn the_notifier_without_addfd_is_l1_because_a_permit_cannot_be_delivered() {
+        let mut kernel_5_4 = caps_for(Tier::L2Minus);
+        kernel_5_4.seccomp_addfd = false;
+        assert!(kernel_5_4.seccomp_unotify && kernel_5_4.cgroup_v2_freeze);
+        assert_eq!(tier_of(&kernel_5_4), Tier::L1);
+        assert!(degradations(&kernel_5_4)
+            .iter()
+            .any(|l| l.contains("validated descriptor")));
+
+        // And the converse is not a real kernel but pins the rule's shape:
+        // the tier reads ADDFD, so the notifier flag alone moves nothing.
+        let mut notifier_only = caps_for(Tier::L2Minus);
+        notifier_only.seccomp_unotify = false;
+        assert_eq!(
+            tier_of(&notifier_only),
+            Tier::L2Minus,
+            "tier_of reads seccomp_addfd; seccomp_unotify is reported, not derived from"
+        );
+    }
+
     #[test]
     fn every_missing_capability_names_the_function_it_costs() {
         let none = degradations(&CapabilitySet::NONE);
-        assert_eq!(none.len(), 8, "{none:#?}");
+        assert_eq!(none.len(), 9, "{none:#?}");
         assert!(none.iter().any(|l| l.contains("T1 lost")));
+        assert!(none.iter().any(|l| l.contains("I-28")));
         assert!(none.iter().any(|l| l.contains("Network Slam lost")));
         let mut full = caps_for(Tier::L3);
         full.tpm = true;

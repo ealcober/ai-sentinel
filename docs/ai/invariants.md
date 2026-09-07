@@ -89,5 +89,8 @@ A suppression rule — learned, manual or shipped — changes only what is *show
 **I-24 — All code and documentation in English.**
 **I-25 — Findings `H-01`…`H-19` override the original research.** Contradicting one requires an ADR.
 
+**I-28 — A decision that permits a path-bearing syscall is delivered as a validated descriptor, never as a permission to re-resolve the path.**
+At L2 and L2- the escalate class is trapped with `seccomp_unotify`. When the verdict permits, the supervisor resolves the path itself and hands the target the resulting fd with `SECCOMP_IOCTL_NOTIF_ADDFD`; `SECCOMP_USER_NOTIF_FLAG_CONTINUE` may never be used to permit a syscall that carries a path, because `CONTINUE` re-resolves the string after the decision and a racing rename changes what it names. Where `ADDFD` is absent the escalate class is **denied** with the reason, never permitted: the tier says so (`tier_of` reads `seccomp_addfd`, so such a kernel is `L1`) and the degradation names the lost function. *Test: `T4.2.16`, plus the `F2.WS.05` negative that refuses `CONTINUE` for a path-bearing syscall.*
+
 **I-27 — Zero hosted-CI cost.**
 Every gate runs locally through `cargo xtask`. No workflow in this repository triggers on push, pull request or schedule. Any hosted run is announced, one-off, verified, and disabled again. *Enforced by `verify-docs`: no `.github/workflows/*.yml` with such a trigger may exist.*

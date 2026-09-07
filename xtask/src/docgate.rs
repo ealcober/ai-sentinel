@@ -295,6 +295,78 @@ pub(crate) fn nn_naming() -> Result<(), String> {
     fail(&bad)
 }
 
+/// Every task ID that appears in a commit subject has a line in the changelog.
+///
+/// `docs/CHANGELOG.md` states this rule at the top of the file and, until this
+/// check existed, nothing enforced it: the claim that `verify-docs` warns was
+/// itself the reason nobody looked, and one task (`F0.VER.03`) had already
+/// slipped through. The scan is over commit *subjects* only — a body may
+/// mention any number of IDs it did not close — and it reads the whole history
+/// because the file covers the whole history.
+///
+/// A subject may abbreviate a run of sibling tasks, as
+/// `verify(F0.VER.03,.06,.08)` does: a bare `.NN` after a full ID inherits
+/// that ID's phase and block. Without expanding it the check would read six
+/// of those seven as absent-and-therefore-fine, which is the failure mode it
+/// exists to catch.
+pub(crate) fn changelog_covers_commits() -> Result<(), String> {
+    let out = Command::new("git")
+        .args(["log", "--format=%s"])
+        .output()
+        .map_err(|e| format!("git log: {e}"))?;
+    if !out.status.success() {
+        return Err("git log failed; not a repository?".to_owned());
+    }
+    let subjects = String::from_utf8_lossy(&out.stdout).into_owned();
+    let changelog = read("docs/CHANGELOG.md");
+    let mut missing: Vec<String> = Vec::new();
+    let mut ids: Vec<String> = Vec::new();
+    for line in subjects.lines() {
+        let mut prefix: Option<String> = None;
+        for tok in line.split(|c: char| !(c.is_ascii_alphanumeric() || c == '.')) {
+            if let Some(num) = tok.strip_prefix('.') {
+                // `.06` — a sibling of the last full ID on this subject.
+                if !num.is_empty() && num.chars().all(|c| c.is_ascii_digit()) {
+                    if let Some(p) = &prefix {
+                        ids.push(format!("{p}.{num}"));
+                    }
+                }
+                continue;
+            }
+            if let Some(at) = tok.rfind('.') {
+                prefix = Some(tok[..at].to_owned());
+            }
+            ids.push(tok.to_owned());
+        }
+    }
+    for id in &ids {
+        // F<digit>.<UPPER>.<digits> — the shape Part III fixes (I-23).
+        let mut parts = id.split('.');
+        let (Some(phase), Some(block), Some(num), None) =
+            (parts.next(), parts.next(), parts.next(), parts.next())
+        else {
+            continue;
+        };
+        let shaped = phase.len() == 2
+            && phase.starts_with('F')
+            && phase[1..].chars().all(|c| c.is_ascii_digit())
+            && !block.is_empty()
+            && block.chars().all(|c| c.is_ascii_uppercase())
+            && !num.is_empty()
+            && num.chars().all(|c| c.is_ascii_digit());
+        if shaped && !changelog.contains(id.as_str()) && !missing.iter().any(|m| m == id) {
+            missing.push(id.clone());
+        }
+    }
+    missing.sort();
+    fail(
+        &missing
+            .iter()
+            .map(|id| format!("{id} closes a commit and has no changelog line"))
+            .collect::<Vec<_>>(),
+    )
+}
+
 /// The phase table sums to the critical path the plan states.
 pub(crate) fn phase_sums(plan: &str) -> Result<(), String> {
     let Some(line) = plan.lines().find(|l| l.contains("Critical path: F0")) else {

@@ -1,6 +1,6 @@
 # Challenge–amplification: F2, the walking skeleton
 
-> **Status**: complete — thirteen points, closed one at a time, in order
+> **Status**: complete — thirteen points, closed one at a time, in order; point 13's measurement ran 2026-09-07
 > **`Q-13`**: answered 2026-09-07 (point 5); its consequence is point 13, a measurement
 > **Skeleton**: plan §F2 (`F2.WS.01` … `F2.WS.11` and GATE F2)
 > **Entry**: GATE F1 passed on 2026-09-07; the L1 traits of §3.2 are frozen
@@ -79,7 +79,7 @@ Safe, clear, compliant — with one addition that makes it so rather than assumi
 - `crates/aisme-ebpf/src/main.rs` will gain one `#[tracepoint]` program, `sys_enter_openat`,
   which will: read `tgid`; look it up in `AISME_SESSIONS` (`HashMap<u32, u64>`, tgid → session
   id) and `return 0` on a miss; `bpf_ringbuf_reserve` a `RawEvent`; fill `ts_ns`
-  (`bpf_ktime_get_boot_ns`), `seq` (a per-CPU counter), `session_id`, `pid`, `tgid`, `ppid`,
+  (`bpf_ktime_get_boot_ns`), `seq` (a per-CPU counter), `session_id`, `pid`, `tgid`,
   `uid`, `kind = FileOpen`, `outcome = Observed`, `wire_version`; copy the path with
   `bpf_probe_read_user_str` into `FilePayload::path`, set `path_len`, set `FLAG_PATH_UNRESOLVED`,
   and set `FLAG_TRUNCATED` when the copy filled the array; then `submit`. On reserve failure it
@@ -111,6 +111,12 @@ a second producer so the reader knows the set grew.
 - In-VM integration (`cargo xtask vm run`): open a known path from inside a session and assert
   one `RawEvent` arrives with `kind = FileOpen`, `tgid` matching, `FLAG_PATH_UNRESOLVED` set, and
   the path bytes equal to what was requested.
+- A format test across the matrix: the tracepoint's `filename` argument offset is read in the
+  guest from `/sys/kernel/debug/tracing/events/syscalls/sys_enter_openat/format` and compared
+  with the constant the program uses. An offset that moved on some kernel is a finding with that
+  kernel named, not a crash.
+- An ingest test for `ppid`: filled from `/proc/<tgid>/status` for a live process, and left `0`
+  — the documented "the producer did not have it" — for one that exited before the drain.
 - A negative: a process **outside** the session map opens the same path and produces no event —
   the session filter is what keeps the non-session overhead at the §2.22 budget.
 - A drop test: fill the ring by refusing to poll and assert the drop counter rises and a
@@ -126,6 +132,23 @@ a second producer so the reader knows the set grew.
 - `docs/ai/memory/`: a new file if the in-VM measurement contradicts the assumption that a
   tracepoint's `args[1]` is the path pointer on every matrix kernel — it is an ABI detail worth
   keeping if it bites.
+
+**Correction found by the implementation challenge (2026-09-07), before any code was written.**
+This point said the tracepoint program would fill `ppid`. It cannot: a parent's tgid lives in
+`task_struct->real_parent->tgid`, which needs `bpf_get_current_task` plus CO-RE relocations
+against a vmlinux BTF, and F2's scope table lists neither for the sensor. Verified against the
+pinned loader's own surface: `aya-ebpf 0.2.1` exposes `bpf_get_current_pid_tgid`,
+`bpf_get_current_uid_gid`, `bpf_probe_read_user_str_bytes`, `RingBuf::reserve::<T>()` — which
+compiles for `RawEvent`, whose alignment is 8 — and `HashMap::get`, with
+`TracePointContext::read_at` reading at a byte offset into the trace-event format; nothing there
+yields a parent without BTF.
+
+**So `ppid` is filled at ingest, not in the kernel**, from `/proc/<tgid>/status`'s `PPid:` line
+through the bounded cache `F2.WS.02`'s resolver owns, and **`ppid == 0` means the producer did
+not have it**: tgid 0 is `swapper` and can never be a real parent, so the sentinel is
+unambiguous. It will be documented on the field rather than left for a reader to infer. A flag
+bit was considered and rejected: it would spend wire space distinguishing a value that is already
+impossible.
 
 **Closing.** Verified against `docs/01_phase5_implementation_plan.md:1611` (the task row),
 `:1596` (the scope row naming `sys_enter_openat`), Annex D.1's ring-buffer row, and
@@ -1299,12 +1322,53 @@ distinction: a kernel with the notifier but **without** `ADDFD` is **L1**, not L
 - `docs/ai/memory/`: a durable note if 5.4 turns out to carry a backport, because that is exactly
   the kind of fact a version check would have got wrong.
 
+### 6. The measurement, and what it settled
+
+`cargo xtask vm probe --all`, seven images under KVM, 2026-09-07. **The prediction held on every
+row**, including the one that changes:
+
+| Image | Kernel | `ADDFD` ioctl errno | `seccomp_addfd` | Tier |
+|---|---|---|---|---|
+| ubuntu-20.04 | 5.4.0-216 | **`EINVAL` (22)** | **no** | **L1** *(was L2-)* |
+| debian-11 | 5.10.0-46 | `EFAULT` (14) | yes | L2- |
+| ubuntu-22.04 | 5.15.0-190 | `EFAULT` (14) | yes | L2 |
+| debian-12 | 6.1.0-52 | `EFAULT` (14) | yes | L3 |
+| ubuntu-24.04 | 6.8.0-138 | `EFAULT` (14) | yes | L2 |
+| fedora-40 | 6.8.5-301 | `EFAULT` (14) | yes | L3 |
+| ubuntu-26.04 | 7.0.0-30 | `EFAULT` (14) | yes | L2 |
+
+Predicted `L1, L2-, L2, L3, L2, L3, L2`; measured the same, so 5.4 carries no backport and
+§2.23's `>= 5.9` annotation is accurate — it was the *probe* that measured the wrong thing, not
+the annotation that was imprecise. The 5.4 row moves for the third and, on this evidence, last
+time: it has the notifier and the freezer, it cannot deliver a validated descriptor, and L2-
+promises a decision that is *answered*.
+
+**The discrimination is itself a measured fact, and the first version of it was wrong.** The probe
+attempts `SECCOMP_IOCTL_NOTIF_ADDFD` with a `NULL` argument on a live listener and reads `errno`.
+Its first rule was `absent if ENOTTY`, which returned "present" on all seven images — an absence
+read as a value (general rule 9) inside the very check written to avoid one, and the second time
+this point produced one. `ENOTTY` never appears: the listener is an anon inode whose own handler
+answers an unknown command from its `default:` arm with `EINVAL`, so the VFS's `ENOTTY` is
+unreachable. A kernel that has the command reaches `copy_from_user` and rejects the `NULL` with
+`EFAULT`. The rule is `addfd = (errno == EFAULT)`, and §2 of this point had already written
+`ENOTTY`/`EINVAL` absent, `EBADF`/`EFAULT` present — the document was right and the code diverged
+from it.
+
+**A second defect surfaced by the same run, and it is the more serious one.** `vm probe --all`
+printed `PASS` for ubuntu-20.04 while its measured tier `L1` sat beside `plan expects 5.4 (L2-)`
+in the same row. The `result` column was computed from the guest's exit code alone: `Image.expect`
+was free text that nothing parsed, so the summary could never disagree with the plan, and the F0
+report's claim that seven of seven passed *"with every measured tier equal to the plan's
+expectation"* was true by coincidence rather than by check. `Image` now carries a machine-readable
+`tiers` list, `result` is the conjunction of "the probe ran" and "the tier is one the plan names",
+a disagreement prints `FAIL tier` and lifts the exit code, and a unit test pins the printed
+expectation and the compared list to agree. Direction: the defect was **optimistic** — it reported
+agreement it had not checked — which is the urgent direction (general rule 4).
+
 **Closing.** Verified against §2.23's annotation, Annex D.1's L2- row, `aisme-core::tier::tier_of`
-as implemented, `xtask/src/vm.rs`'s current probe (which asks `SECCOMP_GET_NOTIF_SIZES`), and the
-kernel versions of the three seccomp features. Nothing is claimed yet: this point ends with a
-**prediction and a measurement to run**, not a correction, because the correction it expects would
-be the third time this row moves and it will move on evidence. Open, and deliberately so, until
-`vm probe --all` runs with the new feature test.
+as implemented, `xtask/src/vm.rs`'s probe, and the measurement above. `ADR-08` records why adding
+`seccomp_addfd` to `CapabilitySet` four days after the GATE F1 freeze is legal: the freeze binds
+trait signatures, and a `#[non_exhaustive]` type grows additively. **Closed.**
 
 ---
 
@@ -1324,8 +1388,9 @@ be the third time this row moves and it will move on evidence. Open, and deliber
 | 10 | `F2.WS.10` | The gate runs the daemon's own composition; only the platform ends are substituted |
 | 11 | `F2.WS.11` | `FLAG_INFERRED_FROM_EXIT`; an ambiguous `EACCES` is recorded as ambiguous, not attributed |
 | 12 | GATE F2 | **The gate cannot run as written**: `vm run --with-dist` and a staged, hashed manifest are required to put the binaries in the guest |
-| 13 | *(from `Q-13`)* | `seccomp_unotify` and `seccomp_addfd` split; the tier's L2- boundary follows the one enforcement needs; prediction written, measurement pending |
+| 13 | *(from `Q-13`)* | `seccomp_unotify` and `seccomp_addfd` split; the tier's L2- boundary follows the one enforcement needs. **Measured**: 5.4 answers the `ADDFD` ioctl `EINVAL` and is **L1**; the other six answer `EFAULT` and keep their tier. The run also caught `vm probe --all` printing `PASS` without ever comparing the measured tier with the plan's — fixed, with `ADR-08` covering the frozen-type question |
 
 **`Q-13` is answered** (point 5): the `ADDFD` mechanism enters `F2.WS.05`, bounded, with `I-28`
-recording the rule. Everything in this document is now executable as written, with one measurement
-outstanding — point 13's `ADDFD` feature test across the matrix, whose prediction is on record.
+recording the rule. Everything in this document is executable as written, and **no measurement is
+outstanding**: point 13's `ADDFD` feature test ran across the matrix on 2026-09-07, its prediction
+held on all seven rows, and 5.4 is `L1`.

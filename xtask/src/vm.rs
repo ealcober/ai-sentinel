@@ -21,18 +21,26 @@ use std::process::Command;
 struct Image {
     name: &'static str,
     url: &'static str,
-    /// The kernel the plan's matrix expects from it (§F0.VM.02).
+    /// The kernel the plan's matrix expects from it (§F0.VM.02), as the
+    /// summary prints it.
     expect: &'static str,
+    /// The tiers `expect` names, machine-readable — the column headed
+    /// `result` compares the *measured* tier against this list, so a row
+    /// that disagrees with the plan is a FAIL and not a note for a reader
+    /// to notice. Several entries where the plan itself allows a range
+    /// (6.8 is L2 on Ubuntu and L3 on Fedora, by LSM policy, not version).
+    /// `expect` and this list are checked to agree by a unit test.
+    tiers: &'static [&'static str],
 }
 
 const IMAGES: &[Image] = &[
-    Image { name: "ubuntu-20.04", url: "https://cloud-images.ubuntu.com/focal/current/focal-server-cloudimg-amd64.img", expect: "5.4 (L2-)" },
-    Image { name: "debian-11", url: "https://cloud.debian.org/images/cloud/bullseye/latest/debian-11-genericcloud-amd64.qcow2", expect: "5.10 (L2-)" },
-    Image { name: "ubuntu-22.04", url: "https://cloud-images.ubuntu.com/jammy/current/jammy-server-cloudimg-amd64.img", expect: "5.15 (L2)" },
-    Image { name: "debian-12", url: "https://cloud.debian.org/images/cloud/bookworm/latest/debian-12-genericcloud-amd64.qcow2", expect: "6.1 (L3)" },
-    Image { name: "ubuntu-24.04", url: "https://cloud-images.ubuntu.com/noble/current/noble-server-cloudimg-amd64.img", expect: "6.8 (L2/L3)" },
-    Image { name: "fedora-40", url: "https://archives.fedoraproject.org/pub/archive/fedora/linux/releases/40/Cloud/x86_64/images/Fedora-Cloud-Base-Generic.x86_64-40-1.14.qcow2", expect: "6.8 (L3)" },
-    Image { name: "ubuntu-26.04", url: "https://cloud-images.ubuntu.com/resolute/current/resolute-server-cloudimg-amd64.img", expect: "7.0 (L2/L3, Landlock audit)" },
+    Image { name: "ubuntu-20.04", url: "https://cloud-images.ubuntu.com/focal/current/focal-server-cloudimg-amd64.img", expect: "5.4 (L1)", tiers: &["L1"] },
+    Image { name: "debian-11", url: "https://cloud.debian.org/images/cloud/bullseye/latest/debian-11-genericcloud-amd64.qcow2", expect: "5.10 (L2-)", tiers: &["L2-"] },
+    Image { name: "ubuntu-22.04", url: "https://cloud-images.ubuntu.com/jammy/current/jammy-server-cloudimg-amd64.img", expect: "5.15 (L2)", tiers: &["L2"] },
+    Image { name: "debian-12", url: "https://cloud.debian.org/images/cloud/bookworm/latest/debian-12-genericcloud-amd64.qcow2", expect: "6.1 (L3)", tiers: &["L3"] },
+    Image { name: "ubuntu-24.04", url: "https://cloud-images.ubuntu.com/noble/current/noble-server-cloudimg-amd64.img", expect: "6.8 (L2/L3)", tiers: &["L2", "L3"] },
+    Image { name: "fedora-40", url: "https://archives.fedoraproject.org/pub/archive/fedora/linux/releases/40/Cloud/x86_64/images/Fedora-Cloud-Base-Generic.x86_64-40-1.14.qcow2", expect: "6.8 (L3)", tiers: &["L3"] },
+    Image { name: "ubuntu-26.04", url: "https://cloud-images.ubuntu.com/resolute/current/resolute-server-cloudimg-amd64.img", expect: "7.0 (L2/L3, Landlock audit)", tiers: &["L2", "L3"] },
 ];
 
 const DIR: &str = "vm/images";
@@ -196,6 +204,7 @@ fn probe_all() -> u8 {
             field("landlock_abi:"),
             field("tier:"),
             image.expect,
+            image.tiers,
             code,
         ));
     }
@@ -203,11 +212,24 @@ fn probe_all() -> u8 {
         "\n{:<14} {:<22} {:<12} {:<5} {:<30} result",
         "image", "kernel", "ABI", "tier", "plan expects"
     );
-    for (n, k, a, t, e, c) in &rows {
+    for (n, k, a, t, e, x, c) in &rows {
+        // PASS is the conjunction, not the exit code. The guest exiting 0
+        // says the probe ran; it says nothing about whether what it measured
+        // is what the plan expects, and this column is headed `result` right
+        // beside `plan expects`, so reading it as agreement is the natural
+        // reading. It was not one until the tier comparison below existed.
+        let agrees = x.contains(&t.as_str());
         println!(
             "{n:<14} {k:<22} {a:<12} {t:<5} {e:<30} {}",
-            if *c == 0 { "PASS" } else { "FAIL" }
+            match (*c == 0, agrees) {
+                (true, true) => "PASS",
+                (true, false) => "FAIL tier",
+                (false, _) => "FAIL",
+            }
         );
+        if *c == 0 && !agrees {
+            worst = worst.max(1);
+        }
     }
     worst
 }
@@ -421,9 +443,44 @@ print("landlock_abi:", abi if abi > 0 else "unavailable")
 for key in ("CONFIG_BPF_LSM", "CONFIG_CGROUP_BPF", "CONFIG_DEBUG_INFO_BTF", "CONFIG_LSM"): print(k(key))
 print("btf_vmlinux:", "present" if btf else "absent"); print("cgroup2:", "yes" if cg2 else "no")
 print("seccomp_unotify:", "yes" if unotify else "no"); print("cgroup_freeze:", "yes" if freeze else "no")
+# SECCOMP_IOCTL_NOTIF_ADDFD (kernel >= 5.9) is what lets an *allow* be delivered
+# as a validated descriptor (I-28); the notifier alone can only deny safely.
+# Feature-tested, never version-tested: a backport makes uname wrong in one
+# direction and a vendor kernel in the other. A listener fd is opened with a
+# filter that allows everything, then the ioctl is called with a NULL argument:
+# The discrimination is EFAULT vs EINVAL, measured rather than assumed: seccomp's
+# notify ioctl handler answers an unknown command with EINVAL from its switch's
+# default arm — not with ENOTTY, which is what a file with no ioctl handler at
+# all would give. A kernel that has ADDFD reaches copy_from_user and answers
+# EFAULT for the NULL argument. Measured 2026-09-07: 5.4 EINVAL, 5.10 EFAULT.
+addfd = False
+try:
+    libc.prctl(38, 1, 0, 0, 0)  # PR_SET_NO_NEW_PRIVS, required without CAP_SYS_ADMIN
+    class SockFilter(ctypes.Structure):
+        _fields_ = [("code", ctypes.c_uint16), ("jt", ctypes.c_uint8), ("jf", ctypes.c_uint8), ("k", ctypes.c_uint32)]
+    class SockFprog(ctypes.Structure):
+        _fields_ = [("len", ctypes.c_ushort), ("filter", ctypes.POINTER(SockFilter))]
+    insns = (SockFilter * 1)(SockFilter(0x06, 0, 0, 0x7fff0000))  # BPF_RET|BPF_K, SECCOMP_RET_ALLOW
+    prog = SockFprog(1, insns)
+    listener = libc.syscall(ctypes.c_long(317), ctypes.c_uint(1), ctypes.c_uint(1 << 3), ctypes.byref(prog))
+    if listener >= 0:
+        ctypes.set_errno(0)
+        libc.ioctl(ctypes.c_int(listener), ctypes.c_ulong(0x40182103), None)
+        err = ctypes.get_errno()
+        addfd = err == 14  # EFAULT: the command exists and rejected the NULL pointer
+        print("seccomp_addfd probe errno:", err)
+        os.close(listener)
+    else:
+        print("seccomp_addfd probe: listener unavailable, errno", ctypes.get_errno())
+except OSError as e:
+    print("seccomp_addfd probe:", e)
+print("seccomp_addfd:", "yes" if addfd else "no")
 # The product's rule, aisme-core::tier::tier_of, spelled the same way here so
 # the matrix measures what the engine will derive (Annex D.1).
-escalate = unotify and freeze
+# Annex D.1's L2- promise is "every watched path decision traps" — a trap that
+# can only ever answer deny is not that promise, so the boundary follows the
+# capability enforcement needs (I-28, docs/05 point 13).
+escalate = addfd and freeze
 deny_in_kernel = abi > 0 and "landlock" in lsm and cg2
 tier = "L3" if escalate and deny_in_kernel and "bpf" in lsm.split(",") else "L2" if escalate and deny_in_kernel else "L2-" if escalate else "L1"
 print("tier:", tier)
@@ -970,6 +1027,19 @@ mod tests {
     fn every_catalogued_image_names_the_kernel_the_matrix_expects() {
         for i in IMAGES {
             assert!(i.expect.contains('('), "{} has no tier expectation", i.name);
+            // The printed expectation and the one `result` compares against
+            // are two spellings of one fact, so they are checked to agree:
+            // a row whose text says L2- while its list says L1 would print a
+            // PASS nobody could interpret.
+            assert!(!i.tiers.is_empty(), "{} expects no tier", i.name);
+            for tier in i.tiers {
+                assert!(
+                    i.expect.contains(tier),
+                    "{}: `{}` does not name tier {tier}",
+                    i.name,
+                    i.expect
+                );
+            }
             assert!(
                 i.url.starts_with("https://"),
                 "{} is not fetched over https",

@@ -2,6 +2,7 @@
 
 **Status**: **Accepted** 2026-08-17
 **Supersedes in part**: the original Part III phase ordering
+**Scoped by**: `ADR-08` — what the interface freeze binds (trait signatures) and what it does not (a `#[non_exhaustive]` type growing additively). Read the two together; this one alone does not say which changes are ADR-gated.
 
 ## Context
 

@@ -8,7 +8,7 @@ Measured by `F0.VM.02` on 2026-09-06, inside each distribution's own cloud image
 
 | Image | Kernel | Active LSM list | Landlock ABI | Tier |
 |---|---|---|---|---|
-| Ubuntu 20.04 | 5.4.0-216 | `lockdown,capability,yama,apparmor` | — (pre-5.13) | **L2-** |
+| Ubuntu 20.04 | 5.4.0-216 | `lockdown,capability,yama,apparmor` | — (pre-5.13) | **L1** (no `ADDFD`) |
 | Debian 11 | 5.10.0-46 | `lockdown,capability,yama,apparmor,tomoyo` | — (pre-5.13) | **L2-** |
 | Ubuntu 22.04 | 5.15.0-190 | `lockdown,capability,landlock,yama,apparmor` | 1 | **L2** |
 | Debian 12 | 6.1.0-52 | `lockdown,capability,landlock,yama,apparmor,tomoyo,**bpf**` | 2 | **L3** |
@@ -16,7 +16,7 @@ Measured by `F0.VM.02` on 2026-09-06, inside each distribution's own cloud image
 | Fedora 40 | 6.8.5-301 | `lockdown,capability,yama,selinux,**bpf**,landlock` | 4 | **L3** |
 | Ubuntu 26.04 | 7.0.0-30 | `lockdown,capability,landlock,yama,apparmor,ima,evm` | 8 | **L2** |
 
-The tier column is Annex D.1's rule as `aisme-core::tier::tier_of` implements it — L2- needs `seccomp_unotify` and the cgroup v2 freezer, L2 adds Landlock and the cgroup connect hook, L3 adds `bpf` in the active list — and all seven guests have the first two, measured. Every one of them compiles `CONFIG_BPF_LSM=y`; what differs is whether `bpf` is in the **active** list, which is set by the kernel command line (`lsm=`) and defaults to `CONFIG_LSM`. Debian and Fedora put it there. Ubuntu does not, on any release measured. BTF is present on all seven, including the 5.4 of Ubuntu 20.04 — so BTF is present everywhere. **L1 is not "no BTF"**: it is a kernel that can neither trap a decision nor hold one — pre-5.0 for the notifier, pre-5.2 for the freezer — which none of the matrix distributions ship.
+The tier column is Annex D.1's rule as `aisme-core::tier::tier_of` implements it — L2- needs `SECCOMP_IOCTL_NOTIF_ADDFD` (kernel ≥ 5.9, measured by feature test, not by version) **and** the cgroup v2 freezer, L2 adds Landlock and the cgroup connect hook, L3 adds `bpf` in the active list. All seven guests have the freezer and the seccomp notifier; **only 20.04's 5.4 lacks `ADDFD`**, which is why it is L1 while every other row can answer a trapped decision. Every one of them compiles `CONFIG_BPF_LSM=y`; what differs is whether `bpf` is in the **active** list, which is set by the kernel command line (`lsm=`) and defaults to `CONFIG_LSM`. Debian and Fedora put it there. Ubuntu does not, on any release measured. BTF is present on all seven, including the 5.4 of Ubuntu 20.04 — so BTF is present everywhere. **L1 is not "no BTF"**: it is a kernel that cannot *answer* a trapped decision or cannot *hold* one. 20.04's 5.4 is the case that shows it — BTF present, notifier present, freezer present, `ADDFD` absent, so the only verdict it could ever deliver on an escalate-class open is *deny*, and L2- promises more than that.
 
 **Why it matters:** the plan's §2.17 tier ladder is right, but the *distribution* a user runs decides where they land without touching anything. A Debian 12 or Fedora user gets full L3 enforcement from the first `aisme run`. An Ubuntu user gets L2 — a real tier, Landlock and cgroup hooks in kernel — and reaching L3 is a `lsm=…,bpf` on the kernel command line plus a reboot. Two of the plan's own expectations were wrong in opposite directions: it expected 5.4 to be L1 and Debian 12 to be L2 or worse.
 

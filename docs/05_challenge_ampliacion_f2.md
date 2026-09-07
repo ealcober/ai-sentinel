@@ -1,6 +1,7 @@
 # Challenge–amplification: F2, the walking skeleton
 
-> **Status**: complete — twelve points, closed one at a time, in order
+> **Status**: complete — thirteen points, closed one at a time, in order
+> **`Q-13`**: answered 2026-09-07 (point 5); its consequence is point 13, a measurement
 > **Skeleton**: plan §F2 (`F2.WS.01` … `F2.WS.11` and GATE F2)
 > **Entry**: GATE F1 passed on 2026-09-07; the L1 traits of §3.2 are frozen
 > **Rule that governs this phase**: *F2 is a walking skeleton, not a feature phase. Its
@@ -409,7 +410,7 @@ point is implemented.
 
 ---
 
-## Point 5 — `F2.WS.05`: `SeccompEnforcer` — and the one question this phase must not answer alone
+## Point 5 — `F2.WS.05`: `SeccompEnforcer` — and the question the owner has now answered (`Q-13`)
 
 **Done when:** a denied `openat` returns `-EACCES` to the caller.
 
@@ -448,78 +449,127 @@ TOCTOU-vulnerable, in the phase whose entire purpose is to prove the seams are s
 
 ### 2. Verification
 
-This is not 100 % safe as the skeleton stands, and the skill's rule applies: **ask, do not
-resolve.**
+The skeleton as written is **not** 100 % safe, the point stopped and asked (`Q-13`), and the owner
+has answered: **the mechanism of `F3.EN.12` enters `F2.WS.05`.** What follows is the decision as
+taken, with the reasoning kept because a decision without its reasoning is re-litigated in six
+months.
 
-> **Question to the owner (Q-13).** Should `F2.WS.05` include `SECCOMP_IOCTL_NOTIF_ADDFD`
-> — that is, should `F3.EN.12` move into F2 — so that the walking skeleton's *allow* path is
-> TOCTOU-free from the first day?
->
-> **Recommendation: yes.** The alternative is a demo whose central gesture is unsound, in the
-> one phase whose value is risk removal; and `F3.EN.12` would then be F3 re-doing F2's work
-> rather than widening it. The cost is roughly one day and one more `ioctl` in the same file.
-> If the answer is no, `F2.WS.05` must be re-scoped to deny-only, `F2.WS.06`'s prompt loses its
-> "allow once" answer at F2, and the exit-criterion demo changes wording — none of which this
-> point will decide.
+**Why no weaker answer survives the threat model.** An *allow* delivered with
+`SECCOMP_USER_NOTIF_FLAG_CONTINUE` makes the kernel **re-resolve the path after the decision**:
+the human authorizes `~/.aws/credentials` and the agent obtains a different file. That does not
+weaken the escalate class, it removes it, and it is precisely what `H-01` and
+`docs/ai/memory/seccomp-unotify-toctou.md` forbid.
 
-Two properties hold either way and will be implemented regardless:
+**Why freezing the session is not the cheap alternative.** The obvious mitigation — hold the rest
+of the session with the cgroup freezer while the human answers — does not close the race, and
+saying so here stops it being proposed later. The attack does not need the *bytes of the path* to
+change: renaming a directory component or swapping a symlink changes what the same string
+resolves to, and any process on the machine can do that, inside the session or not. The freezer
+is also out of F2's scope. Only a descriptor the supervisor opened and validated survives.
 
-- **`SECCOMP_IOCTL_NOTIF_ID_VALID` before every response.** A notification whose target died is
-  answered into a reused id otherwise. This is cheap and unconditional.
-- **Fail-closed on supervisor death.** If `agentd` dies while a notification is outstanding, the
-  kernel's default is to let the syscall proceed (`ENOSYS`-shaped behaviour differs by kernel);
-  the filter will therefore be installed with the escalate class defaulting to `EACCES` in the
-  classic filter, so a lost supervisor denies rather than allows.
+**The decision, with the two limits that make it small and fail-closed:**
+
+1. On *allow*, the supervisor opens the file itself and answers with
+   `SECCOMP_IOCTL_NOTIF_ADDFD`, so the target receives the descriptor the supervisor validated
+   and never re-resolves anything. `SECCOMP_ADDFD_FLAG_SEND` (kernel ≥ 5.14) is used where it
+   exists — it adds the descriptor and returns it as the syscall's value in one step — and the
+   two-step `ADDFD` then `RESP` where it does not. Both are safe with respect to *our* decision:
+   the notified thread is blocked throughout.
+2. On *deny*, `-EACCES` and no descriptor. **`CONTINUE` is never used to permit a syscall that
+   carries a path.**
+3. **Limit one — only what F2 can reproduce faithfully.** `openat` for reading, `O_CLOEXEC`.
+   Any escalate-class open whose flags this subset cannot reproduce exactly (`O_CREAT`,
+   `O_TRUNC`, `O_APPEND`, `O_DIRECTORY`, and the `open`/`openat2` entry points) is **denied with
+   the reason stated**, never allowed. A descriptor that does not mean what the caller asked for
+   is worse than a refusal.
+4. **Limit two — only when the target's uid is the supervisor's.** Opening a file with
+   credentials the target does not have would be a privilege escalation served by the guard
+   itself. In F2 both are the same user; where they are not, the answer is a deny with the reason.
+   Credential-matched opening is `F3.EN.12`'s widening.
+5. `SECCOMP_IOCTL_NOTIF_ID_VALID` before every response, and the classic filter installed with
+   the escalate class defaulting to `EACCES`, so a supervisor that dies denies rather than allows.
+
+**This becomes an invariant, not a habit.** The rule is the kind this project does not leave to
+memory:
+
+> **`I-28` — A decision that permits a path-bearing syscall is delivered as a validated
+> descriptor, never by re-executing the syscall.** Where the kernel cannot deliver one, the
+> escalate class degrades to *deny* and the degradation is declared (`I-16`, `I-19`).
+
+**What the decision does to `F3.EN.12`.** It stops being "close a hole F2 left" and becomes
+widening: the full flag matrix, `open` and `openat2`, directory opens, credential-matched
+opening, and the story for kernels without `ADDFD`. Its plan row will say so.
+
+**One consequence that must be measured, not assumed** — it is large enough to be its own point
+and is amplified as **Point 13**: `ADDFD` arrived in kernel 5.9, and §2.23 annotates its own
+capability field as `seccomp_unotify: bool, // kernel >= 5.9 (CONTINUE >= 5.5)`. The plan
+therefore already meant *the decidable form* by that field, while `F0`'s probe measured the
+notifier (`SECCOMP_GET_NOTIF_SIZES`, present since 5.0) and reported `yes` on 5.4.
 
 ### 3. Implementation
 
-Written for the recommended answer (a); if the owner answers (b), the marked paragraph is
-dropped and the `allow` arm becomes a recorded `deny`.
-
-- `crates/aisme-linux` will gain `SeccompEnforcer` implementing `Enforcer`: `publish` installs
-  the classic filter for the escalate class through `aisme run` before `exec` (it cannot be
-  installed later without a window); `suspend`/`resume` are `Unsupported` at F2 (the freezer is
-  F3) and say so; `respond` answers the outstanding notification; `tier` is `Partial`.
-- The notification loop will run on `agentd`'s control thread, not the hot loop: a human's answer
+- `crates/aisme-linux` will gain `SeccompEnforcer` implementing `Enforcer`: `publish` installs the
+  classic filter for the escalate class from `aisme run` before `exec` (it cannot be installed
+  later without a window); `suspend`/`resume` return `Unsupported` at F2 with the reason (the
+  freezer is F3); `respond` answers the outstanding notification; `tier` is `Partial`.
+- The notification loop runs on `agentd`'s control thread, never the hot loop: a human's answer
   takes seconds and the hot loop's budget is microseconds.
-- **(a)** On *allow*, the supervisor opens the path itself with `openat2(RESOLVE_NO_MAGICLINKS)`
-  relative to the target's cwd via `pidfd`, validates it against the compiled policy, and answers
-  with `SECCOMP_IOCTL_NOTIF_ADDFD` so the target receives a descriptor to the file the supervisor
-  checked. On *deny*, it answers `-EACCES` with no fd.
-- Every answer is recorded as a `VerdictIssued` event carrying `decided_by`, the channel, and —
-  for (a) — the fact that the target received a validated descriptor rather than a re-resolved
-  path.
+- The allow path, in order: `ID_VALID` → read the request → check `flags` against the F2 subset
+  (deny with reason if outside) → check the target's uid against the supervisor's (deny with
+  reason if different) → obtain the target's cwd via `pidfd` → `openat2` with
+  `RESOLVE_NO_MAGICLINKS` → evaluate the *opened* file against the compiled policy → `ADDFD`
+  (with `SEND` where available) → respond.
+- `aisme-core::capability::CapabilitySet` gains `seccomp_addfd: bool`, and
+  `aisme-core::tier::degradations` gains its sentence: *no `SECCOMP_IOCTL_NOTIF_ADDFD`: an
+  escalate-class allow cannot be delivered as a validated descriptor; the class degrades to deny
+  (T1 allow lost)*.
+- Every answer is recorded as a `VerdictIssued` event carrying `decided_by`, the channel, and
+  whether the target received a validated descriptor — so the WAL distinguishes a permitted open
+  from a re-executed one.
 
 ### 4. Tests
 
-**New:**
+**New, and the first two are written before the enforcer:**
 
-- In-VM: `cat /etc/shadow` inside a session returns `-EACCES` and the WAL carries the deny with
-  its rule id.
-- In-VM, the TOCTOU test itself: a target that swaps the path bytes between the syscall and the
-  supervisor's read must not obtain the swapped file. Under (a) the test passes because the
-  descriptor came from the supervisor; under (b) it passes because the answer was a deny. **This
-  test is written first and is the same test either way**, which is what makes the owner's
-  answer a scope decision rather than a correctness one.
-- A supervisor-death test: kill `agentd` with a notification outstanding; the syscall must fail
+- **The TOCTOU test, in both of its forms.** (i) A target that rewrites the path buffer between
+  the syscall and the supervisor's read must receive the descriptor for the file the supervisor
+  validated, not the swapped one. (ii) A second process that `rename`s a directory component
+  between the decision and the response must not change which file the target receives. Form (ii)
+  is the one the freezer would not have caught, and it is the reason the decision is what it is.
+- A flags test: `O_CREAT`, `O_TRUNC`, `O_DIRECTORY` and an `openat2` entry are each denied with
+  their stated reason, and the denial names the flag rather than saying "unsupported".
+- A credentials test: a target running as another uid is denied with the reason, and no
+  descriptor is delivered.
+- A supervisor-death test: kill `agentd` with a notification outstanding; the syscall fails
   closed.
-- A stale-notification test: the target dies before the answer; `ID_VALID` must catch it and the
-  supervisor must not answer into a reused id.
+- A stale-notification test: the target dies before the answer; `ID_VALID` catches it and the
+  supervisor does not answer into a reused id.
+- A degradation test on a kernel without `ADDFD`: the escalate class denies, the capability
+  banner names the lost function, and `aisme run` still works.
+- In-VM, the gate's own line: `cat /etc/shadow` inside a session returns `-EACCES` and the WAL
+  carries the deny with its rule id.
 
 ### 5. Documentation
 
-- Plan `F2.WS.05`'s row and the F2 scope table's Enforcement row, depending on the answer.
-- Plan `F3.EN.12`: either removed to F2 or annotated as the closing of a gap F2 knowingly left.
-- `docs/ai/STATE.md` → *Open decisions needing an ADR*: `Q-13` recorded until answered.
-- `docs/ai/memory/seccomp-unotify-toctou.md`: a line recording that F2 is where the rule is first
-  enforced in code, with the task that does it.
+- Plan `F2.WS.05`'s row: the `ADDFD` mechanism, the two limits, and the reference to `I-28`.
+- Plan `F3.EN.12`'s row: rewritten as the widening, naming what F2 already did.
+- `docs/ai/invariants.md`: `I-28`, with its test named.
+- Plan §2.23's `Capabilities` block: `seccomp_addfd` beside `seccomp_unotify`, and the annotation
+  corrected so the two versions are not conflated again.
+- `docs/ai/memory/seccomp-unotify-toctou.md`: a line recording that `F2.WS.05` is where the rule
+  first becomes code, and that the directory-rename form is why a freezer does not substitute.
+- `docs/ai/STATE.md`: `Q-13` moved from open to answered, with the date and the answer.
 
 **Closing.** Verified against the plan's `F2.WS.05` row (`:1617`), `F3.EN.12` (`:1711`), `H-01`,
-and `docs/ai/memory/seccomp-unotify-toctou.md:7`. The skeleton's done-condition — "a denied
-`openat` returns `-EACCES`" — survives untouched; what falls is the *silence* around the allow
-path, which as written would ship a TOCTOU in the phase meant to remove risk. **This point stops
-and asks (`Q-13`)** rather than deciding, per the algorithm's second section, and both branches
-are specified so the answer is an edit, not a redesign.
+`docs/ai/memory/seccomp-unotify-toctou.md:7`, §2.23's capability annotation, and the kernel
+versions of `ADDFD` (5.9) and `SECCOMP_ADDFD_FLAG_SEND` (5.14). `Q-13` is **answered**: the
+mechanism moves into F2, bounded to read-only `openat` at matching credentials, with everything
+outside that subset denied and stated. Two claims fell in the process — the skeleton's silence
+about the allow path, which would have shipped a full bypass of the escalate class in the phase
+whose purpose is removing risk; and the tempting mitigation of freezing the session, which the
+directory-rename form of the attack walks straight through. What remains open is not a decision
+but a measurement, and it has its own point: whether `ADDFD` exists on each matrix kernel, and
+what that does to the L2- boundary (**Point 13**).
 
 ---
 
@@ -1157,6 +1207,107 @@ step in the seed script.
 
 ---
 
+## Point 13 — the capability `ADDFD` names, and what it does to the L2- boundary
+
+This point exists because `Q-13`'s answer surfaced it (Point 5), and it is a measurement rather
+than a decision, so it is amplified separately instead of being smuggled into a task row.
+
+**The claim to test:** `seccomp_unotify` as `F0`'s probe measures it is **not** the capability
+the plan means by that name, and the tier derived from it may be wrong on the oldest matrix
+kernel.
+
+### 1. Challenge
+
+*Is the current probe the best one?* No, and the evidence is in the plan's own annotation.
+§2.23 declares the field as `seccomp_unotify: bool, // kernel >= 5.9 (CONTINUE >= 5.5)`. The
+notifier interface itself landed in 5.0; `SECCOMP_USER_NOTIF_FLAG_CONTINUE` in 5.5;
+`SECCOMP_IOCTL_NOTIF_ADDFD` in **5.9**. The plan's `>= 5.9` therefore means the *decidable* form —
+the one that can deliver a validated descriptor — which is exactly what `I-28` now requires and
+what Point 5 pulled into F2.
+
+`F0`'s probe measures `SECCOMP_GET_NOTIF_SIZES` (present since 5.0) and reported `seccomp_unotify:
+yes` on all seven matrix images, including 5.4. That is a true statement about the notifier and a
+false one about what the tier needs.
+
+*Is it coherent with the specs?* Annex D.1 puts `seccomp_unotify (T1)` at `kernel ≥ 5.9` in the
+L2- column. `aisme-core::tier::tier_of` derives L2- from `seccomp_unotify && cgroup_v2_freeze`. If
+the field means the notifier, 5.4 is L2-; if it means the plan's `≥ 5.9`, 5.4 is **L1** — which is
+what the plan expected before any of this was measured, and what my first correction to that row
+overturned with a probe that was too permissive.
+
+*Can it be simplified?* Yes, and the simplification is also the honest fix: **two fields, each
+measured by the thing it names.**
+
+### 2. Verification
+
+Safe and clear, with the discipline this project applies to any capability:
+
+- **`seccomp_unotify` and `seccomp_addfd` become separate fields.** One says a syscall can be
+  trapped; the other says a decision can be delivered safely. Conflating them is what produced a
+  tier that overstated what the machine can enforce.
+- **The probe feature-tests, never version-tests.** A kernel version is a proxy; a backport makes
+  it wrong in one direction and a vendor kernel in the other. The probe will install a filter in
+  a short-lived child, take one notification, and attempt `SECCOMP_IOCTL_NOTIF_ADDFD`,
+  distinguishing `ENOTTY`/`EINVAL` (absent) from `EBADF`/`EFAULT` (present, wrong arguments) — the
+  same shape as `F0.VER.04`'s Landlock probe, which asked the syscall rather than `uname`.
+- **The tier follows the capability that enforcement needs.** `tier_of` will read
+  `seccomp_addfd`, because L2-'s promise is "escalate/deny via seccomp — every watched path
+  decision traps", and a trap that can only ever answer *deny* is not that promise.
+- **Nothing is asserted before it is measured.** The prediction below is written first, as
+  `F0.VER`-style rows are.
+
+**Prediction, written before the run.** `ADDFD` will be **absent on 5.4** (Ubuntu 20.04) and
+**present on 5.10, 5.15, 6.1, 6.8 ×2 and 7.0**. The matrix tiers will therefore read
+**L1**, L2-, L2, L3, L2, L3, L2 — one change, on the first row, restoring the plan's original
+expectation. If instead `ADDFD` is present on 5.4 (a backport), the row stays L2- and §2.23's
+`>= 5.9` annotation is what is imprecise; either way one document is corrected by the
+measurement, and this point says which in advance.
+
+### 3. Implementation
+
+- `xtask/src/vm.rs`'s tier probe gains the `ADDFD` feature test and prints `seccomp_addfd: yes|no`
+  beside the two it already prints, then derives the tier from
+  `addfd && freeze` for L2- rather than from `unotify && freeze`.
+- `aisme-core::capability::CapabilitySet` gains `seccomp_addfd`; `tier_of` uses it; `degradations`
+  gains the sentence from Point 5.
+- `aisme-agentd::platform::probe` reports both fields once `F3.LD.01` gives it a real probe; until
+  then it reports neither present, as it does today.
+- `cargo xtask vm probe --all` is re-run over the seven images and the result recorded in
+  `docs/reports/01_f0-verification.md` beside the tier table, with the prediction and the outcome.
+
+### 4. Tests
+
+**Existing to change:** `crates/aisme-core/src/tier.rs`'s unit tests — the `caps_for` helper sets
+`seccomp_addfd` alongside `seccomp_unotify` for L2- and above, and one new case pins the
+distinction: a kernel with the notifier but **without** `ADDFD` is **L1**, not L2-.
+
+**New:**
+
+- A `degradations` case naming the lost function when `ADDFD` is absent.
+- The in-VM feature test itself, which is the probe: it must answer the same way twice on the same
+  image, and must not leave the child process behind.
+
+### 5. Documentation
+
+- Plan §2.23: the two fields, with the version each one means, so the annotation cannot be read
+  as one capability again.
+- Plan Annex D.1: the L2- row cites `SECCOMP_IOCTL_NOTIF_ADDFD` explicitly rather than
+  "seccomp_unotify (T1) | kernel ≥ 5.9".
+- Plan's `F0.VM.02` row and `docs/reports/01_f0-verification.md`: the re-measured tiers, with the
+  lesson stated once — a capability probed by its weakest interface reports a tier the product
+  cannot deliver.
+- `docs/ai/memory/`: a durable note if 5.4 turns out to carry a backport, because that is exactly
+  the kind of fact a version check would have got wrong.
+
+**Closing.** Verified against §2.23's annotation, Annex D.1's L2- row, `aisme-core::tier::tier_of`
+as implemented, `xtask/src/vm.rs`'s current probe (which asks `SECCOMP_GET_NOTIF_SIZES`), and the
+kernel versions of the three seccomp features. Nothing is claimed yet: this point ends with a
+**prediction and a measurement to run**, not a correction, because the correction it expects would
+be the third time this row moves and it will move on evidence. Open, and deliberately so, until
+`vm probe --all` runs with the new feature test.
+
+---
+
 ## Summary of what this amplification changed
 
 | # | Point | What the amplification added or corrected |
@@ -1165,7 +1316,7 @@ step in the seed script.
 | 2 | `F2.WS.02` | `PathResolver` as an L1 ingest hook so canonicalization is not I/O in `aisme-core`; `dhat` → the counting allocator, restated |
 | 3 | `F2.WS.03` | `declareToolCall` as one new Annex I method; the token proven not to cross it |
 | 4 | `F2.WS.04` | Atomic publication given a mechanism: array-of-maps double buffer, generation inside the same swap |
-| 5 | `F2.WS.05` | **`Q-13` raised, not answered**: the skeleton's *allow* path is TOCTOU-vulnerable without `ADDFD`; both branches specified |
+| 5 | `F2.WS.05` | **`Q-13` answered**: `ADDFD` enters F2, bounded to read-only `openat` at matching credentials; everything outside the subset denied and stated; `CONTINUE` never permits a path-bearing syscall (**`I-28`**) |
 | 6 | `F2.WS.06` | `AISME_TERMINAL_ANSWER` constrained: captured by `aisme run`, stripped from the child, capped at `Medium`, never a grant, recorded as canned |
 | 7 | `F2.WS.07` | Checkpoint after work and fsync it; per-batch fsync as the writer's default |
 | 8 | `F2.WS.08` | `openSession`/`closeSession`: the CLI asks `agentd` to create the cgroup, because the subtree is delegated to the daemon |
@@ -1173,6 +1324,8 @@ step in the seed script.
 | 10 | `F2.WS.10` | The gate runs the daemon's own composition; only the platform ends are substituted |
 | 11 | `F2.WS.11` | `FLAG_INFERRED_FROM_EXIT`; an ambiguous `EACCES` is recorded as ambiguous, not attributed |
 | 12 | GATE F2 | **The gate cannot run as written**: `vm run --with-dist` and a staged, hashed manifest are required to put the binaries in the guest |
+| 13 | *(from `Q-13`)* | `seccomp_unotify` and `seccomp_addfd` split; the tier's L2- boundary follows the one enforcement needs; prediction written, measurement pending |
 
-**One question is owed to the owner before implementation starts: `Q-13`** (point 5). Everything
-else in this document is executable as written.
+**`Q-13` is answered** (point 5): the `ADDFD` mechanism enters `F2.WS.05`, bounded, with `I-28`
+recording the rule. Everything in this document is now executable as written, with one measurement
+outstanding — point 13's `ADDFD` feature test across the matrix, whose prediction is on record.

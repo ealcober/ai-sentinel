@@ -13,7 +13,7 @@
 
 use aisme_ebpf_common::Verdict;
 
-use super::compile::CompiledPolicy;
+use super::compile::{CompiledPolicy, CompiledRule};
 
 /// A generation of published policy: §3.6's monotonic counter. Readers use
 /// the last good one and never see a torn policy.
@@ -269,6 +269,140 @@ impl core::fmt::Display for LowerError {
 
 impl core::error::Error for LowerError {}
 
+/// Why a backend will not take a rule (`F1.PL.08`). Tier-specific: the
+/// message names the backend, the rule, and the key or verdict at fault.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Rejection {
+    /// A match key the target cannot evaluate; the rule is enforced by
+    /// another backend or in user space, and the composition (`F1.PA.06`)
+    /// has to find which.
+    UnsupportedKey {
+        /// The key.
+        key: &'static str,
+    },
+    /// The target would enforce a weaker verdict than written for an
+    /// `escalate` or `deny`, and the rule does not say `degrade_open`.
+    DowngradeRefused {
+        /// As written.
+        written: Verdict,
+        /// What the target would enforce.
+        would_enforce: Verdict,
+    },
+}
+
+/// One rule the target takes, with what it will actually enforce.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Lowered {
+    /// The rule.
+    pub rule_id: String,
+    /// As written.
+    pub written: Verdict,
+    /// As the target enforces it, `f(written)`.
+    pub enforced: Verdict,
+    /// Which way, if any.
+    pub degradation: Degradation,
+}
+
+/// What a target will do with a compiled policy: every rule accounted for,
+/// accepted with its enforced verdict or rejected with its reason. Nothing
+/// is dropped without a line here — §B.9's answer to `AppArmor`'s silently
+/// ignored `priority`.
+#[derive(Clone, Debug, PartialEq, Eq, Default)]
+pub struct LoweringPlan {
+    /// Rules the target enforces, in policy order.
+    pub accepted: Vec<Lowered>,
+    /// Rules the target will not take, each with its reason.
+    pub rejected: Vec<(String, Rejection)>,
+}
+
+impl LoweringPlan {
+    /// The accepted rules whose verdict the map changed — the compiler names
+    /// every one of these, never substitutes silently.
+    pub fn changed(&self) -> impl Iterator<Item = &Lowered> + '_ {
+        self.accepted
+            .iter()
+            .filter(|l| l.degradation != Degradation::Exact)
+    }
+
+    /// Decide one rule against a target's capabilities.
+    fn consider(caps: &BackendCapabilities, rule: &CompiledRule) -> Result<Lowered, Rejection> {
+        let keys = rule
+            .predicate
+            .terms
+            .iter()
+            .chain(rule.except.iter().flat_map(|e| e.terms.iter()))
+            .map(super::compile::Term::name);
+        for key in keys {
+            if !caps.supports_key(key) {
+                return Err(Rejection::UnsupportedKey { key });
+            }
+        }
+        let enforced = caps.map.apply(rule.verdict);
+        let degradation = caps.map.degradation(rule.verdict);
+        if degradation == Degradation::Downward
+            && matches!(rule.verdict, Verdict::Escalate | Verdict::Deny)
+            && !rule.degrade_open
+        {
+            return Err(Rejection::DowngradeRefused {
+                written: rule.verdict,
+                would_enforce: enforced,
+            });
+        }
+        Ok(Lowered {
+            rule_id: rule.id.clone(),
+            written: rule.verdict,
+            enforced,
+            degradation,
+        })
+    }
+
+    /// Every rule of `policy` against `caps`.
+    #[must_use]
+    pub fn of(caps: &BackendCapabilities, policy: &CompiledPolicy) -> LoweringPlan {
+        let mut plan = LoweringPlan::default();
+        for rule in &policy.rules {
+            match LoweringPlan::consider(caps, rule) {
+                Ok(lowered) => plan.accepted.push(lowered),
+                Err(rejection) => plan.rejected.push((rule.id.clone(), rejection)),
+            }
+        }
+        plan
+    }
+
+    /// The tier-specific messages, one per rejected rule and one per
+    /// changed verdict, ready to print.
+    #[must_use]
+    pub fn messages(&self, caps: &BackendCapabilities) -> Vec<String> {
+        let name = caps.kind.name();
+        let caveat = caps.caveat.map_or(String::new(), |c| format!(" ({c})"));
+        let mut out = Vec::with_capacity(self.rejected.len() + self.accepted.len());
+        for (id, rejection) in &self.rejected {
+            out.push(match rejection {
+                Rejection::UnsupportedKey { key } => {
+                    format!("{name}: rule \"{id}\" rejected — cannot evaluate `{key}`{caveat}")
+                }
+                Rejection::DowngradeRefused { written, would_enforce } => format!(
+                    "{name}: rule \"{id}\" rejected — would enforce {would_enforce:?} for {written:?}, a downward degradation the rule does not accept (say `degrade_open = true` to fail open){caveat}"
+                ),
+            });
+        }
+        for l in self.changed() {
+            out.push(format!(
+                "{name}: rule \"{}\" enforced as {:?} for {:?} ({})",
+                l.rule_id,
+                l.enforced,
+                l.written,
+                match l.degradation {
+                    Degradation::Upward => "fail closed",
+                    Degradation::Downward => "fail open, as the map declares",
+                    Degradation::Exact => "exact",
+                }
+            ));
+        }
+        out
+    }
+}
+
 /// One target for the IR. Implemented in the adapters (`aisme-linux`,
 /// `sentinel-core`, …); `aisme-core` names none of them.
 pub trait PolicyBackend {
@@ -283,6 +417,13 @@ pub trait PolicyBackend {
     /// measured itself narrower (an older Landlock ABI, say) overrides.
     fn capabilities(&self) -> BackendCapabilities {
         BackendCapabilities::of(self.kind())
+    }
+
+    /// What this target will do with `policy`, rule by rule: the check
+    /// `lower` performs first, exposed so the composition can ask before
+    /// building anything.
+    fn plan(&self, policy: &CompiledPolicy) -> LoweringPlan {
+        LoweringPlan::of(&self.capabilities(), policy)
     }
 
     /// Lower a compiled policy to the target's artifact. A rule the target

@@ -17,8 +17,8 @@ pub mod parse;
 
 pub use ast::{Assert, Match, MatchKey, Policy, Rule, SessionDefaults, Suppression, Text};
 pub use backend::{
-    BackendCapabilities, BackendKind, Degradation, LowerError, PolicyBackend, PolicyGeneration,
-    VerdictMap,
+    BackendCapabilities, BackendKind, Degradation, LowerError, Lowered, LoweringPlan,
+    PolicyBackend, PolicyGeneration, Rejection, VerdictMap,
 };
 pub use compile::{
     compile, compile_with, Bindings, CompileError, CompileErrorKind, CompiledGrant, CompiledPolicy,

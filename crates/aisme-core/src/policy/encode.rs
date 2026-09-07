@@ -79,6 +79,7 @@ fn put_rule(out: &mut Vec<u8>, rule: &CompiledRule) {
     out.extend_from_slice(&rule.taint.bits().to_le_bytes());
     out.push(rule.severity_floor.map_or(0, |s| s as u8));
     put_str(out, rule.event.as_deref().unwrap_or(""));
+    out.push(u8::from(rule.degrade_open));
     put_predicate(out, &rule.predicate);
     match &rule.except {
         Some(except) => {

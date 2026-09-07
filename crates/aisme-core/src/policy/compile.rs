@@ -332,6 +332,9 @@ pub struct CompiledRule {
     pub suppressible: bool,
     /// The event a hit emits.
     pub event: Option<String>,
+    /// §B.9: the rule accepts a backend degrading its `escalate` or `deny`
+    /// downward (fail open). Without it such a degradation is rejected.
+    pub degrade_open: bool,
 }
 
 /// A conjunction of resolved terms, canonical: sorted by key name, values
@@ -606,6 +609,7 @@ fn compile_rule(
         promptable: !settings.strict && rule.promptable.unwrap_or(!never),
         suppressible: rule.suppressible.unwrap_or(!never),
         event: rule.event.clone(),
+        degrade_open: rule.degrade_open.unwrap_or(false),
     })
 }
 

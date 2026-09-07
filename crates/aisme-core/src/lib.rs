@@ -8,6 +8,7 @@
 pub mod intern;
 pub mod labels;
 pub mod ontology;
+pub mod policy;
 pub mod taint;
 
 pub use intern::{Interner, InternerStats, StrId, TooLong};

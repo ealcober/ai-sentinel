@@ -10,6 +10,10 @@ publish = false
 [dependencies]
 # L1 -> L0. The only direction permitted; verify-layering enforces it.
 aisme-ebpf-common = { path = "../aisme-ebpf-common" }
+# AISME-PL's surface syntax is TOML (Annex B §B.0: no new parser). toml_edit
+# keeps byte spans, which the compiler's diagnostics (F1.PL.02) point at. Pure:
+# no I/O, no platform, so it sits inside L1.
+toml_edit = "0.25"
 
 [lints]
 workspace = true

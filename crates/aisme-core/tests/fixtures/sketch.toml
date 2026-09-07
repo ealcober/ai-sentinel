@@ -1,0 +1,66 @@
+# Annex B §B.1's sketch, with §B.11's `except` on the system-config rule and
+# §B.12's guardrail. Kept verbatim otherwise: this is the text the language
+# was designed on, and the parser must take all of it.
+
+[session.defaults]
+learning_mode_days = 7
+grant_ttl_days     = 30      # Always-grants and suppression rules decay together
+profile            = "default"   # "strict" makes every group non-promptable
+
+[[rule]]
+id      = "workspace-free"
+group   = "FILES_OUTSIDE_WORKSPACE"
+match   = { path_under = "${workspace}" }
+verdict = "allow"
+audit   = "aggregate"          # counted, not logged individually
+
+[[rule]]
+id      = "system-config-deny"
+group   = "SYSTEM_CONFIG"
+match   = { path_under = ["/etc", "/boot", "/usr/lib/systemd"] }
+except  = { path_glob  = ["/etc/hosts"] }
+verdict = "deny"
+promptable   = false           # invariant I-05
+suppressible = false           # invariant I-26 — a prompt and a silence are both
+                               # attack surfaces on this group
+
+[[rule]]
+id      = "user-scope-install"
+group   = "PACKAGE_INSTALL"
+match   = { exec_class = "package-manager", scope_rel = "user" }
+verdict = "warn"               # recorded, surfaced, non-blocking (§4.1 of the note)
+
+[[rule]]
+id      = "persistence-config"
+group   = "PERSISTENCE_CONFIG"
+match   = { path_glob = [".git/hooks/*", ".git/config", "package.json",
+                         ".cargo/config.toml", ".vscode/tasks.json", ".envrc"] }
+verdict     = "warn"
+escalate_if = { adds_executing_key = true }   # a script that runs later is not noise
+
+[[suppression]]
+match     = { path_under = "${workspace}/node_modules" }
+scope     = "workspace"
+ttl_days  = 30
+origin    = "learned"
+report    = "lm-2026-08-24"    # which learning-mode report produced it
+
+[[rule]]
+id      = "credentials-ask"
+group   = "CREDENTIALS"
+match   = { path_glob = ["**/.env", "~/.ssh/id_*", "~/.aws/credentials"] }
+verdict = "escalate"
+taint   = ["SECRET_MATERIAL"]
+severity_floor = "high"
+
+[[rule]]
+id      = "network-slam"
+group   = "NETWORK_EGRESS"
+match   = { taint_any = ["SECRET_MATERIAL","CREDENTIAL_ACCESS"],
+            dest_not_in = "${session.network_allow}",
+            not_declassified = true }
+verdict = "deny"
+event   = "aisme.exfiltration.blocked"
+
+[[assert]]
+never = { group = "SELF_PROTECTION", verdict = ["allow", "warn"] }

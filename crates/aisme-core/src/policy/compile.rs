@@ -27,7 +27,7 @@
 
 use aisme_ebpf_common::Verdict;
 
-use super::ast::{Assert, Dimension, Match, MatchKey, Policy, Rule, Segment, Span, Text};
+use super::ast::{Assert, Dimension, Match, MatchKey, Policy, Profile, Rule, Segment, Span, Text};
 use crate::ontology::{PermissionGroup, Severity};
 use crate::taint::Taint;
 
@@ -128,6 +128,9 @@ pub enum CompileErrorKind {
         /// Which field or verdict tried.
         what: &'static str,
     },
+    /// `profile = "strict"` makes every group non-promptable; a rule that
+    /// says `promptable = true` under it does not compile.
+    StrictProfile,
 }
 
 impl core::fmt::Display for CompileError {
@@ -155,6 +158,10 @@ impl core::fmt::Display for CompileError {
             CompileErrorKind::ListVariableInText { name } => {
                 write!(f, "`${{{name}}}` is a list and cannot sit inside a longer string")
             }
+            CompileErrorKind::StrictProfile => write!(
+                f,
+                "`promptable = true` under `profile = \"strict\"`, which makes every group non-promptable (F7.PS.06)"
+            ),
             CompileErrorKind::NeverPromptable { group, what } => write!(
                 f,
                 "{} is never promptable (I-05): {what} does not compile — a prompt is an attack surface on this group",
@@ -169,8 +176,37 @@ impl core::error::Error for CompileError {}
 /// A compiled policy: resolved, validated, canonical.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct CompiledPolicy {
+    /// The session settings, defaults applied.
+    pub settings: Settings,
     /// Rules in canonical order (by id), each with a resolved predicate.
     pub rules: Vec<CompiledRule>,
+}
+
+/// `[session.defaults]`, resolved: what was written, else Annex B's shipped
+/// values.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Settings {
+    /// Days of mandatory learning mode (§2.14: 7).
+    pub learning_mode_days: u32,
+    /// Always-grants and suppression rules decay together (Annex B: 30).
+    pub grant_ttl_days: u32,
+    /// Whether every group is non-promptable.
+    pub strict: bool,
+}
+
+impl Settings {
+    /// Annex B's shipped values.
+    pub const DEFAULT: Settings = Settings {
+        learning_mode_days: 7,
+        grant_ttl_days: 30,
+        strict: false,
+    };
+}
+
+impl Default for Settings {
+    fn default() -> Settings {
+        Settings::DEFAULT
+    }
 }
 
 /// One compiled rule.
@@ -338,9 +374,19 @@ impl Predicate {
 /// Every error found, each naming its rule.
 pub fn compile(policy: &Policy, bindings: &Bindings) -> Result<CompiledPolicy, Vec<CompileError>> {
     let mut errors = Vec::new();
+    let settings = policy
+        .defaults
+        .as_ref()
+        .map_or(Settings::DEFAULT, |d| Settings {
+            learning_mode_days: d
+                .learning_mode_days
+                .unwrap_or(Settings::DEFAULT.learning_mode_days),
+            grant_ttl_days: d.grant_ttl_days.unwrap_or(Settings::DEFAULT.grant_ttl_days),
+            strict: d.profile == Some(Profile::Strict),
+        });
     let mut rules = Vec::with_capacity(policy.rules.len());
     for rule in &policy.rules {
-        if let Some(compiled) = compile_rule(rule, bindings, &mut errors) {
+        if let Some(compiled) = compile_rule(rule, bindings, settings, &mut errors) {
             rules.push(compiled);
         }
     }
@@ -348,7 +394,7 @@ pub fn compile(policy: &Policy, bindings: &Bindings) -> Result<CompiledPolicy, V
     check_reachability(&rules, &policy.rules, &mut errors);
     rules.sort_by(|a, b| a.id.cmp(&b.id));
     if errors.is_empty() {
-        Ok(CompiledPolicy { rules })
+        Ok(CompiledPolicy { settings, rules })
     } else {
         errors.sort_by_key(|e| e.span.start);
         Err(errors)
@@ -358,9 +404,19 @@ pub fn compile(policy: &Policy, bindings: &Bindings) -> Result<CompiledPolicy, V
 fn compile_rule(
     rule: &Rule,
     bindings: &Bindings,
+    settings: Settings,
     errors: &mut Vec<CompileError>,
 ) -> Option<CompiledRule> {
     let before = errors.len();
+    // `profile = "strict"`: every group non-promptable, and saying otherwise
+    // is refused rather than quietly overridden.
+    if settings.strict && rule.promptable == Some(true) && !rule.group.never_promptable() {
+        errors.push(CompileError {
+            rule_id: Some(rule.id.clone()),
+            span: rule.span,
+            kind: CompileErrorKind::StrictProfile,
+        });
+    }
     if let Some(except) = &rule.except {
         for key in &except.keys {
             if rule.r#match.get(key.dimension()).is_none() {
@@ -420,7 +476,7 @@ fn compile_rule(
         except,
         taint: rule.taint.unwrap_or(Taint::EMPTY),
         severity_floor: rule.severity_floor,
-        promptable: rule.promptable.unwrap_or(!never),
+        promptable: !settings.strict && rule.promptable.unwrap_or(!never),
         suppressible: rule.suppressible.unwrap_or(!never),
         event: rule.event.clone(),
     })

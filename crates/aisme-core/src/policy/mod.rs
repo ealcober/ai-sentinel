@@ -22,7 +22,7 @@ pub use backend::{
 };
 pub use compile::{
     compile, Bindings, CompileError, CompileErrorKind, CompiledPolicy, CompiledRule, Predicate,
-    Term,
+    Settings, Term,
 };
 pub use encode::{digest, encode, PolicyDigest, POLICY_ENCODING_VERSION};
 pub use parse::{parse, ParseError};

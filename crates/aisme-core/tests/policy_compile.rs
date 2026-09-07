@@ -2,7 +2,7 @@
 //! `F1.PL.02`: the compiler's static validation, on Annex B's own text and
 //! on the cases §B.10–§B.12 name.
 
-use aisme_core::policy::{compile, parse, Bindings, CompileErrorKind, Term};
+use aisme_core::policy::{compile, parse, Bindings, CompileErrorKind, Settings, Term};
 use aisme_ebpf_common::Verdict;
 
 const SKETCH: &str = include_str!("fixtures/sketch.toml");
@@ -340,4 +340,75 @@ fn globs_past_the_budget_and_unbound_variables_do_not_compile() {
             name: "session.network_allow".into()
         }
     );
+}
+
+/// `F1.PL.06`: the five grammar items, and what `strict` does.
+#[test]
+fn the_pl06_grammar_items_compile_and_strict_makes_every_group_non_promptable() {
+    let src = "[session.defaults]\nprofile = \"strict\"\ngrant_ttl_days = 14\n".to_owned()
+        + &rule(
+            "warned",
+            "PACKAGE_INSTALL",
+            "{ exec_class = \"package-manager\" }",
+            "warn",
+            "suppressible = true",
+        )
+        + &rule(
+            "hooks",
+            "PERSISTENCE_CONFIG",
+            "{ path_class = \"PERSISTENCE_CONFIG\" }",
+            "warn",
+            "",
+        )
+        + &rule(
+            "creds",
+            "CREDENTIALS",
+            "{ path_glob = \"**/.env\" }",
+            "escalate",
+            "",
+        );
+    let compiled = compile_src(&src).unwrap_or_else(|e| panic!("{e:#?}"));
+    assert_eq!(
+        compiled.settings,
+        Settings {
+            learning_mode_days: 7,
+            grant_ttl_days: 14,
+            strict: true
+        },
+        "written values win, the rest are Annex B's defaults"
+    );
+    assert!(
+        compiled.rules.iter().all(|r| !r.promptable),
+        "strict: non-promptable everywhere"
+    );
+    let warned = compiled.rules.iter().find(|r| r.id == "warned").unwrap();
+    assert_eq!(warned.verdict, Verdict::Warn);
+    assert!(
+        warned.suppressible,
+        "strict is about prompting, not suppression"
+    );
+    let hooks = compiled.rules.iter().find(|r| r.id == "hooks").unwrap();
+    assert_eq!(
+        hooks.predicate.terms,
+        [Term::PathClass(vec![
+            aisme_core::ontology::PathClass::PersistenceConfig as u8
+        ])]
+    );
+
+    // Saying `promptable = true` under strict is refused, not overridden.
+    let contradiction = "[session.defaults]\nprofile = \"strict\"\n".to_owned()
+        + &rule(
+            "ask",
+            "CREDENTIALS",
+            "{ path_glob = \"**/.env\" }",
+            "escalate",
+            "promptable = true",
+        );
+    let errs = compile_src(&contradiction).unwrap_err();
+    assert_eq!(errs[0].kind, CompileErrorKind::StrictProfile);
+    assert!(errs[0].to_string().contains("F7.PS.06"));
+
+    // Without a [session.defaults] block, the shipped values apply.
+    let bare = rule("r", "EXECUTE", "{ exec_class = \"a\" }", "warn", "");
+    assert_eq!(compile_src(&bare).unwrap().settings, Settings::DEFAULT);
 }

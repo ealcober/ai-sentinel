@@ -29,6 +29,7 @@ All notable changes to this repository. Format: [Keep a Changelog](https://keepa
   ```
 
 ### Added
+- **`F1.PL.06` — the grammar's `warn`, `suppressible`, `grant_ttl_days`, `PERSISTENCE_CONFIG` and `profile = "strict"`** compile; `Settings` (defaults 7 / 30 / not strict) rides in the IR and its bytes; `strict` resolves every rule non-promptable and refuses `promptable = true` by name. 1 test.
 - **`F1.PL.05` — deterministic compilation and `cargo xtask test-policy-compiler`.** `encode()` gives a compiled policy its canonical bytes and `digest()` their BLAKE3; order of writing and order of bindings do not change them, meaning does. The xtask command runs the parser, compiler and determinism suites and passes (level `pr`; the GATE F1 line). `blake3` (no default features) joins `aisme-core`'s dependencies; `cargo deny` passes.
 - **`F1.PL.04` — `I-05` enforced by the compiler**: a rule on one of the three never-promptable groups with `promptable = true`, `suppressible = true` or an `escalate` verdict does not compile; the compiled rule carries resolved `promptable`/`suppressible` booleans (`false` on those groups by default). 1 test over all three groups.
 - **`F1.PL.03` — `PolicyBackend`** (`aisme-core::policy::backend`): the trait for the five targets, §B.9 as data (`BackendCapabilities::of`: keys, monotone `VerdictMap`, caveat), `Degradation`, `LowerError`, `PolicyGeneration`. The maps are checked monotone and homomorphic, and compared against the plan's own §B.9 table in a test. 5 tests.

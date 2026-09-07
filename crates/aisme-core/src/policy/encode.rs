@@ -33,6 +33,9 @@ impl core::fmt::Debug for PolicyDigest {
 pub fn encode(policy: &CompiledPolicy) -> Vec<u8> {
     let mut out = Vec::with_capacity(256 + policy.rules.len() * 128);
     out.push(POLICY_ENCODING_VERSION);
+    out.extend_from_slice(&policy.settings.learning_mode_days.to_le_bytes());
+    out.extend_from_slice(&policy.settings.grant_ttl_days.to_le_bytes());
+    out.push(u8::from(policy.settings.strict));
     put_u32(&mut out, policy.rules.len());
     for rule in &policy.rules {
         put_rule(&mut out, rule);

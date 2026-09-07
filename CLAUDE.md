@@ -95,7 +95,7 @@ Full list in `docs/ai/invariants.md`. The ones that fail the gate:
 - The Observer LLM's output can only **raise** severity, never authorize.
 - A false positive is as serious as a missed detection. The benign corpus gate tolerates **zero** blocks.
 - **Suppression silences notification, never recording or enforcement** (`I-26`).
-- **Zero hosted-CI cost** (`I-27`): every gate runs locally; no workflow triggers on push, pull request or schedule.
+- **Zero hosted-CI cost** (`I-27`), the project's hardest rule: every gate runs locally and **the repository contains no GitHub workflow or action whatsoever**. Not one with safe triggers, not a manually dispatched one. Additional consumption is zero. A hosted run, if ever needed, is announced first, one-off, verified, and its file removed again.
 
 ## Conventions
 
@@ -125,6 +125,6 @@ cargo xtask test-kernels            # eBPF verifier across the kernel matrix
 cargo xtask test-benign             # false-positive gate
 ```
 
-**Every gate runs locally.** There is no hosted CI and no workflow that triggers on push (`I-27`). Never run kernel tests outside a disposable VM (`cargo xtask vm up <name>`).
+**Every gate runs locally.** There is no hosted CI and no workflow file at all (`I-27`); `verify-docs` fails if one appears, whatever its triggers. Never run kernel tests outside a disposable VM (`cargo xtask vm up <name>`).
 
 Every `cargo xtask` command in plan Annex H exists from F0. One whose phase has not arrived exits **3** and names the task that implements it; `gate --level` reports that as `PENDING`, not as a failure.

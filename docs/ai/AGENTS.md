@@ -68,7 +68,7 @@ A phase is done when its `GATE F<n>` block passes in full. Code that works but w
 | Loosen a budget to make a test pass | The budget is the product |
 | Delete or renumber a task ID | `I-23` |
 | Weaken the benign corpus gate to ship | `I-15` |
-| Add a workflow that triggers on push, pull request or schedule | `I-27` — this project incurs zero hosted-CI cost |
+| Add a GitHub workflow or action — any file, any trigger, including `workflow_dispatch` | `I-27` — this project incurs zero hosted-CI cost, permanently; `verify-docs` fails on existence, not on triggers |
 | Let a suppression rule remove evidence or weaken enforcement | `I-26` — suppression is notification-only |
 | Regenerate a file instead of editing it | A rewrite silently loses the reasoning nobody is looking at; ask the owner if one is genuinely needed |
 | Push without being asked | `CLAUDE.md` asks for one commit per task; pushing is the owner's call |

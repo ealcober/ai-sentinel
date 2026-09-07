@@ -6,7 +6,7 @@ use crate::annex_h::COMMANDS;
 use crate::SKIP;
 use std::collections::BTreeMap;
 use std::fmt::Write as _;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::Command;
 
 const PLAN: &str = "docs/01_phase5_implementation_plan.md";
@@ -470,9 +470,10 @@ pub(crate) fn docs() -> u8 {
 
     r.check(
         no_triggered_workflows(),
-        "no workflow triggers on push, PR or schedule (I-27)",
+        "no hosted-CI workflow exists at all (I-27)",
         || {
-            ".github/workflows carries a triggered workflow — this project has zero hosted-CI cost"
+            "a GitHub workflow or action file exists — this project has zero hosted-CI cost, so \
+             the rule is no workflow at all, not a workflow with safe triggers"
                 .into()
         },
     );
@@ -617,26 +618,111 @@ fn task_ids(plan: &str) -> Vec<String> {
         .collect()
 }
 
+/// Anything under this path GitHub can bill for. The rule (`I-27`) is zero
+/// hosted-CI cost, and the only way to hold it mechanically is to have no
+/// workflow at all: a file's *content* cannot be trusted to keep it free.
+/// `workflow_dispatch` bills when someone presses the button; a `schedule:`
+/// added in a later commit bills forever; a reusable workflow bills through
+/// whoever calls it. So the check is over **existence**, not triggers.
+///
+/// This replaces a content check that read
+/// `["on:", "push:", "pull_request:", "schedule:"].iter().all(...)` — it
+/// demanded all four keys, so the single most dangerous file, one carrying
+/// only `on: push:`, passed the gate. It had also never run against anything,
+/// because the repository has no `.github` at all, which is exactly the state
+/// it exists to defend. The unit tests below run it against synthetic
+/// listings so it is exercised whether or not the directory ever appears.
+///
+/// A one-off hosted run stays possible the way the rule says: it is announced,
+/// verified and **removed again**, so the file does not live in the tree.
+fn hosted_ci_files(entries: &[String]) -> Vec<String> {
+    let mut found: Vec<String> = entries
+        .iter()
+        .filter(|p| {
+            let p = p.replace('\\', "/");
+            // Every path GitHub reads to run something billable.
+            p.contains(".github/workflows/")
+                || p.ends_with("/action.yml")
+                || p.ends_with("/action.yaml")
+                || p == ".github/action.yml"
+                || p == ".github/action.yaml"
+        })
+        .cloned()
+        .collect();
+    found.sort();
+    found
+}
+
+/// Walk `.github` and hand every path to [`hosted_ci_files`].
 fn no_triggered_workflows() -> bool {
-    let dir = Path::new(".github/workflows");
-    let Ok(entries) = std::fs::read_dir(dir) else {
-        return true;
-    };
-    for e in entries.flatten() {
-        let p = e.path();
-        if p.extension().is_some_and(|x| x == "yml" || x == "yaml") {
-            let Some(body) = read(&p.to_string_lossy()) else {
-                continue;
-            };
-            if ["on:", "push:", "pull_request:", "schedule:"]
-                .iter()
-                .all(|k| body.contains(k))
-            {
-                return false;
+    let mut entries = Vec::new();
+    let mut dirs = vec![PathBuf::from(".github")];
+    while let Some(d) = dirs.pop() {
+        let Ok(rd) = std::fs::read_dir(&d) else {
+            continue;
+        };
+        for e in rd.flatten() {
+            let p = e.path();
+            if p.is_dir() {
+                dirs.push(p);
+            } else {
+                entries.push(p.to_string_lossy().replace("./", ""));
             }
         }
     }
-    true
+    hosted_ci_files(&entries).is_empty()
+}
+
+#[cfg(test)]
+mod i27_tests {
+    use super::hosted_ci_files;
+
+    #[test]
+    fn a_workflow_that_only_pushes_is_caught() {
+        // The case the previous check missed: it demanded "on:", "push:",
+        // "pull_request:" AND "schedule:" all be present, so the one file that
+        // bills on every push — carrying only the first two — passed clean.
+        // Existence is the rule now, so its content never gets a vote.
+        let found = hosted_ci_files(&[".github/workflows/ci.yml".to_owned()]);
+        assert_eq!(found, vec![".github/workflows/ci.yml".to_owned()]);
+    }
+
+    #[test]
+    fn a_manually_triggered_workflow_is_caught_too() {
+        // workflow_dispatch has no trigger a content check would flag, and
+        // bills the moment anyone presses the button.
+        assert_eq!(
+            hosted_ci_files(&[".github/workflows/manual.yaml".to_owned()]).len(),
+            1
+        );
+    }
+
+    #[test]
+    fn composite_actions_are_caught_wherever_they_sit() {
+        let found = hosted_ci_files(&[
+            ".github/actions/setup/action.yml".to_owned(),
+            "tools/release/action.yaml".to_owned(),
+        ]);
+        assert_eq!(found.len(), 2, "{found:?}");
+    }
+
+    #[test]
+    fn the_rest_of_dot_github_is_free_and_stays_allowed() {
+        // Issue templates, CODEOWNERS, funding and a PR template cost nothing
+        // and are not automation; the rule is about what GitHub *runs*.
+        let found = hosted_ci_files(&[
+            ".github/ISSUE_TEMPLATE/bug.md".to_owned(),
+            ".github/CODEOWNERS".to_owned(),
+            ".github/FUNDING.yml".to_owned(),
+            ".github/pull_request_template.md".to_owned(),
+        ]);
+        assert!(found.is_empty(), "{found:?}");
+    }
+
+    #[test]
+    fn a_repository_with_no_dot_github_has_nothing_to_report() {
+        assert!(hosted_ci_files(&[]).is_empty());
+    }
 }
 
 // ---------------------------------------------------------------- backlog

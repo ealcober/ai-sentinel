@@ -7,6 +7,7 @@
 
 mod platform;
 mod runtime;
+mod selfobs;
 
 /// `H-03`: RSS is a budget, not an outcome. mimalloc's purge returns freed
 /// pages to the OS instead of holding an arena that only ever grows; the
@@ -40,6 +41,23 @@ fn main() {
     }
     // F1.RT.03 moves the hot loop onto this; for now, building it is what
     // proves the cap holds on this machine.
+    let mut metrics = aisme_core::metrics::Metrics::default();
+    metrics.observe_tier(
+        &aisme_core::tier::Degradation::starting_at(&caps)
+            .state()
+            .clone(),
+    );
+    if let Some(usage) = selfobs::SelfObserver::new().sample() {
+        metrics.observe_process(usage.rss_bytes, usage.cpu_milli);
+        println!(
+            "self: rss {} MiB, capability level {:?}, attention {}",
+            usage.rss_bytes / (1024 * 1024),
+            metrics.capability_level,
+            metrics.needs_attention()
+        );
+    } else {
+        println!("self: /proc/self unavailable — rss and cpu stay absent, not zero");
+    }
     match runtime::build() {
         Ok(rt) => {
             let set = runtime::hot_loop_set();

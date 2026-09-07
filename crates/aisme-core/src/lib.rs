@@ -14,6 +14,7 @@ pub mod error;
 pub mod intern;
 pub mod labels;
 pub mod ladder;
+pub mod metrics;
 pub mod mock;
 pub mod ontology;
 pub mod policy;
@@ -37,6 +38,7 @@ pub use error::{Error, ErrorKind, Result};
 pub use intern::{Interner, InternerStats, StrId, TooLong};
 pub use labels::{LabelError, TreeLabels};
 pub use ladder::{Adjudication, AdjudicatorLadder, Refusal};
+pub use metrics::Metrics;
 pub use mock::{
     catalogue_trace, CountingSink, MemorySink, MockSensor, NullEnforcer, PolicyAdjudicator,
     CATALOGUE,

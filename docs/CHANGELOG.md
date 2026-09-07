@@ -45,6 +45,7 @@ All notable changes to this repository. Format: [Keep a Changelog](https://keepa
   ```
 
 ### Added
+- **`docs/05_challenge_ampliacion_f2.md`** — F2 amplified point by point before any code: twelve points (the eleven `F2.WS.*` tasks and GATE F2), each with challenge, verification, implementation, tests and documentation, in the declarative future. It raises **`Q-13`** (the seccomp *allow* path is TOCTOU-vulnerable without `ADDFD`) and finds that **GATE F2 cannot run as written** (no AISME binaries reach the guest).
 - **The idle budget is measured**: `aisme-agentd --measure-idle` writes `target/budget/idle.toml` after running the engine on `MockSensor`, and `verify-budgets` reads artefacts from that directory — 13.75 MB against the 25 MB ceiling, so GATE F1's budget line reports a number instead of a skip.
 - **`cargo xtask test-detect --determinism`** (`F1.DT.01`'s gate line): same input → same findings, different input → different findings, no clock read, order-independent — the property behind Annex G.0's "tested once, on CI, for every target". 3 tests.
 - **`cargo xtask bench-hotloop`** (`F1.RT.03`'s gate line): drives the real engine and reports 0 allocations and 0 ring drops over 200 064 events; `MockSensor::start` rewinds its trace so a long run allocates nothing.

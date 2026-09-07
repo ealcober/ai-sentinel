@@ -1417,8 +1417,8 @@ pub struct RawEvent {
     pub ppid:       u32,
     pub uid:        u32,
     pub taint:      u32,        // Taint bitflags (H-13)
-    pub kind:       EventKind,  // u16, exhaustive enum
-    pub outcome:    Outcome,    // u8: Observed | Allowed | Warned | Escalated | Denied — what happened, in §B.10 order; distinct from the policy `Verdict`
+    pub kind:       KindCode,   // u16 on the wire; decodes to `EventKind` (§F1.1.1) — a Rust enum read from kernel-written memory is UB on a value this binary does not know, which is exactly the skew §3.6 wants *detected*
+    pub outcome:    OutcomeCode, // u8 on the wire; decodes to `Outcome`: Observed | Allowed | Warned | Escalated | Denied — what happened, in §B.10 order; distinct from the policy `Verdict`
     pub flags:      u8,
     pub wire_version: u8,       // §3.6 reads this; without it the scheme has no field
     pub _reserved:  [u8; 15],   // pads to exactly 320 B; new fields consume it
@@ -1426,7 +1426,7 @@ pub struct RawEvent {
 }
 ```
 
-Rules: fixed 320-byte total — `24 + 20 + 2 + 1 + 1 + 1 + 15 + 256`, asserted at compile time by `F1.EV.03`; no pointers; strings as inline fixed arrays in the kernel struct, interned to `StrId(u32)` at ingest; **`EventKind` is append-only and versioned** — a wire-format version byte gates the WAL and the shared section so a driver/daemon version skew is detected, not misparsed.
+Rules: fixed 320-byte total — `24 + 20 + 2 + 1 + 1 + 1 + 15 + 256`, asserted at compile time by `F1.EV.03`; no pointers; strings as inline fixed arrays in the kernel struct, interned to `StrId(u32)` at ingest; **every payload struct is exactly 256 B of integer fields with a `reserved` tail** — any bit pattern is a valid value, so kernel-written bytes are read without a validation pass, and a new field consumes the tail rather than moving an offset; **`EventKind` is append-only and versioned** — a wire-format version byte gates the WAL and the shared section so a driver/daemon version skew is detected, not misparsed.
 
 | ID | Task | Notes |
 |---|---|---|

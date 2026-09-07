@@ -17,3 +17,5 @@ publish = false
 # Pinned exactly, not by caret: the toolchain in rust-toolchain.toml was validated
 # against this version and a silent minor bump would revalidate nothing.
 aya-ebpf = "=0.2.1"
+# L0 → kernel side: the same repr(C) wire types user space reads (H-04).
+aisme-ebpf-common = { path = "../aisme-ebpf-common" }

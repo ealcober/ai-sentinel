@@ -6,8 +6,13 @@ version = 4
 name = "aisme-ebpf"
 version = "0.1.0"
 dependencies = [
+ "aisme-ebpf-common",
  "aya-ebpf",
 ]
+
+[[package]]
+name = "aisme-ebpf-common"
+version = "0.1.0"
 
 [[package]]
 name = "anyhow"

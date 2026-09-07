@@ -26,6 +26,10 @@ const _: () = {
     let _helper_return: Option<aya_ebpf::cty::c_long> = None;
 };
 
+/// Compile-time proof that the wire types build for `bpfel-unknown-none` with
+/// the layout user space expects (`F1.EV.01`): the BPF side of `H-04`.
+const _: () = assert!(core::mem::size_of::<aisme_ebpf_common::RawEvent>() == aisme_ebpf_common::RAW_EVENT_SIZE);
+
 /// The licence string the verifier reads when the object is loaded.
 #[unsafe(link_section = "license")]
 #[used]

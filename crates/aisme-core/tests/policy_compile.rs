@@ -1,0 +1,273 @@
+// SPDX-License-Identifier: Apache-2.0
+//! `F1.PL.02`: the compiler's static validation, on Annex B's own text and
+//! on the cases §B.10–§B.12 name.
+
+use aisme_core::policy::{compile, parse, Bindings, CompileErrorKind, Term};
+use aisme_ebpf_common::Verdict;
+
+const SKETCH: &str = include_str!("fixtures/sketch.toml");
+
+fn bindings() -> Bindings {
+    Bindings::new().with("workspace", "/home/u/proj").with_list(
+        "session.network_allow",
+        &["registry.npmjs.org", "api.anthropic.com"],
+    )
+}
+
+fn compile_src(
+    src: &str,
+) -> Result<aisme_core::policy::CompiledPolicy, Vec<aisme_core::policy::CompileError>> {
+    let policy = parse(src).unwrap_or_else(|e| panic!("{e:#?}"));
+    compile(&policy, &bindings())
+}
+
+fn rule(id: &str, group: &str, m: &str, verdict: &str, extra: &str) -> String {
+    format!("[[rule]]\nid = \"{id}\"\ngroup = \"{group}\"\nmatch = {m}\nverdict = \"{verdict}\"\n{extra}\n")
+}
+
+#[test]
+fn the_sketch_compiles_resolved_and_canonical() {
+    let compiled = compile_src(SKETCH).unwrap_or_else(|e| panic!("{e:#?}"));
+    let ids: Vec<&str> = compiled.rules.iter().map(|r| r.id.as_str()).collect();
+    assert_eq!(
+        ids,
+        [
+            "credentials-ask",
+            "network-slam",
+            "persistence-config",
+            "system-config-deny",
+            "user-scope-install",
+            "workspace-free"
+        ],
+        "canonical order, by id"
+    );
+    let free = compiled
+        .rules
+        .iter()
+        .find(|r| r.id == "workspace-free")
+        .unwrap();
+    assert_eq!(
+        free.predicate.terms,
+        [Term::PathUnder(vec!["/home/u/proj".into()])],
+        "${{workspace}} resolved"
+    );
+    let slam = compiled
+        .rules
+        .iter()
+        .find(|r| r.id == "network-slam")
+        .unwrap();
+    assert_eq!(
+        slam.predicate.terms[0],
+        Term::DestNotIn(vec![
+            "api.anthropic.com".into(),
+            "registry.npmjs.org".into()
+        ]),
+        "the list variable expanded and sorted; terms sorted by key"
+    );
+    let sysconf = compiled
+        .rules
+        .iter()
+        .find(|r| r.id == "system-config-deny")
+        .unwrap();
+    assert_eq!(
+        sysconf.predicate.terms,
+        [Term::PathUnder(vec![
+            "/boot".into(),
+            "/etc".into(),
+            "/usr/lib/systemd".into()
+        ])]
+    );
+    assert_eq!(
+        sysconf.except.as_ref().unwrap().terms,
+        [Term::PathGlob(vec!["/etc/hosts".into()])]
+    );
+    assert_eq!(sysconf.verdict, Verdict::Deny);
+}
+
+#[test]
+fn an_allow_wholly_shadowed_by_a_broader_deny_is_unreachable() {
+    // The AppArmor case §B.10 names: the narrower allow contributes nothing.
+    let src = rule(
+        "etc-deny",
+        "SYSTEM_CONFIG",
+        "{ path_under = \"/etc\" }",
+        "deny",
+        "",
+    ) + &rule(
+        "hosts-allow",
+        "SYSTEM_CONFIG",
+        "{ path_under = \"/etc/hosts\" }",
+        "allow",
+        "",
+    );
+    let errs = compile_src(&src).unwrap_err();
+    assert_eq!(errs.len(), 1, "{errs:#?}");
+    assert_eq!(errs[0].rule_id.as_deref(), Some("hosts-allow"));
+    assert_eq!(
+        errs[0].kind,
+        CompileErrorKind::Unreachable {
+            shadowed_by: "etc-deny".into()
+        }
+    );
+    assert!(errs[0].to_string().contains("§B.10"));
+    // Written with `except`, the same intent compiles: the deny no longer
+    // covers /etc/hosts, so nothing is shadowed.
+    let fixed = rule(
+        "etc-deny",
+        "SYSTEM_CONFIG",
+        "{ path_under = \"/etc\" }",
+        "deny",
+        "except = { path_glob = [\"/etc/hosts\"] }",
+    ) + &rule(
+        "hosts-allow",
+        "SYSTEM_CONFIG",
+        "{ path_under = \"/etc/hosts\" }",
+        "allow",
+        "",
+    );
+    compile_src(&fixed).unwrap_or_else(|e| panic!("{e:#?}"));
+}
+
+#[test]
+fn doubt_resolves_to_reachable() {
+    // A glob against a prefix in the other direction, an incomparable taint
+    // rule, an equal verdict: none of these is refused.
+    let src = rule(
+        "a",
+        "CREDENTIALS",
+        "{ path_glob = \"**/.env\" }",
+        "escalate",
+        "",
+    ) + &rule("b", "CREDENTIALS", "{ path_under = \"/home\" }", "deny", "")
+        + &rule(
+            "c",
+            "NETWORK_EGRESS",
+            "{ taint_any = [\"SECRET_MATERIAL\"] }",
+            "deny",
+            "",
+        )
+        + &rule(
+            "d",
+            "SYSTEM_CONFIG",
+            "{ path_under = \"/etc/x\" }",
+            "deny",
+            "",
+        )
+        + &rule(
+            "e",
+            "SYSTEM_CONFIG",
+            "{ path_under = \"/etc\" }",
+            "deny",
+            "",
+        );
+    compile_src(&src).unwrap_or_else(|e| panic!("{e:#?}"));
+    // But a glob whose literal head lies under a prefix is certain.
+    let shadowed = rule(
+        "wide",
+        "SYSTEM_CONFIG",
+        "{ path_under = \"/etc\" }",
+        "deny",
+        "",
+    ) + &rule(
+        "narrow",
+        "SYSTEM_CONFIG",
+        "{ path_glob = \"/etc/cron.d/*\" }",
+        "warn",
+        "",
+    );
+    let errs = compile_src(&shadowed).unwrap_err();
+    assert_eq!(errs[0].rule_id.as_deref(), Some("narrow"));
+}
+
+#[test]
+fn except_must_narrow_a_dimension_the_match_has() {
+    let src = rule(
+        "x",
+        "SYSTEM_CONFIG",
+        "{ path_under = \"/etc\" }",
+        "deny",
+        "except = { proto = \"tcp\" }",
+    );
+    let errs = compile_src(&src).unwrap_err();
+    assert_eq!(
+        errs[0].kind,
+        CompileErrorKind::ExceptDimension { key: "proto" }
+    );
+    assert!(errs[0].to_string().contains("§B.11"));
+}
+
+#[test]
+fn a_guardrail_is_a_compile_error() {
+    let src =
+        "[[assert]]\nnever = { group = \"SELF_PROTECTION\", verdict = [\"allow\", \"warn\"] }\n"
+            .to_owned()
+            + &rule(
+                "oops",
+                "SELF_PROTECTION",
+                "{ path_under = \"/etc/aisme\" }",
+                "warn",
+                "",
+            );
+    let errs = compile_src(&src).unwrap_err();
+    assert_eq!(errs[0].rule_id.as_deref(), Some("oops"));
+    assert_eq!(
+        errs[0].kind,
+        CompileErrorKind::AssertViolated { assert_index: 0 }
+    );
+    assert!(errs[0].to_string().contains("§B.12"));
+    // The same rule with `deny` passes the guardrail.
+    let ok =
+        "[[assert]]\nnever = { group = \"SELF_PROTECTION\", verdict = [\"allow\", \"warn\"] }\n"
+            .to_owned()
+            + &rule(
+                "fine",
+                "SELF_PROTECTION",
+                "{ path_under = \"/etc/aisme\" }",
+                "deny",
+                "",
+            );
+    compile_src(&ok).unwrap_or_else(|e| panic!("{e:#?}"));
+}
+
+#[test]
+fn globs_past_the_budget_and_unbound_variables_do_not_compile() {
+    let glob = rule(
+        "g",
+        "CREDENTIALS",
+        "{ path_glob = \"**/**/.env\" }",
+        "escalate",
+        "",
+    );
+    let errs = compile_src(&glob).unwrap_err();
+    assert!(
+        matches!(&errs[0].kind, CompileErrorKind::GlobBudget { pattern } if pattern == "**/**/.env")
+    );
+    let unbound = rule(
+        "u",
+        "FILES_OUTSIDE_WORKSPACE",
+        "{ path_under = \"${project}\" }",
+        "allow",
+        "",
+    );
+    let errs = compile_src(&unbound).unwrap_err();
+    assert_eq!(
+        errs[0].kind,
+        CompileErrorKind::UnboundVariable {
+            name: "project".into()
+        }
+    );
+    let list_in_text = rule(
+        "l",
+        "NETWORK_EGRESS",
+        "{ dest_in = \"${session.network_allow}:443\" }",
+        "allow",
+        "",
+    );
+    let errs = compile_src(&list_in_text).unwrap_err();
+    assert_eq!(
+        errs[0].kind,
+        CompileErrorKind::ListVariableInText {
+            name: "session.network_allow".into()
+        }
+    );
+}

@@ -10,7 +10,12 @@
 //! policy you cannot trust.
 
 pub mod ast;
+pub mod compile;
 pub mod parse;
 
 pub use ast::{Assert, Match, MatchKey, Policy, Rule, SessionDefaults, Suppression, Text};
+pub use compile::{
+    compile, Bindings, CompileError, CompileErrorKind, CompiledPolicy, CompiledRule, Predicate,
+    Term,
+};
 pub use parse::{parse, ParseError};

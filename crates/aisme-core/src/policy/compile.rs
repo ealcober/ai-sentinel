@@ -1,0 +1,628 @@
+// SPDX-License-Identifier: Apache-2.0
+//! The compiler: [`Policy`] → [`CompiledPolicy`], with static validation
+//! (`F1.PL.02`). Fails at compile, never at runtime.
+//!
+//! Four checks, each a compile error with the rule it names:
+//!
+//! - **Unreachable rules, as §B.10 defines them**: a rule that can never be
+//!   the strictest for any input. Decided by *provable* subsumption — `R` is
+//!   unreachable when some `S` has `match(R) ⊆ match(S)` and a stricter
+//!   verdict. The inclusion is decided key by key and claimed only when it
+//!   is certain (a literal prefix under a literal prefix, a set inside a
+//!   set); refusing a reachable rule would block a valid policy, while
+//!   missing an unreachable one loses a diagnostic, so doubt resolves to
+//!   "reachable".
+//! - **`except` well-formedness** (§B.11): each `except` key narrows a
+//!   dimension the rule's own `match` has; nesting cannot be written in
+//!   TOML and no key can name another rule, so those two are the parser's.
+//! - **`assert never` guardrails** (§B.12): a rule on the asserted group with
+//!   a forbidden verdict does not compile.
+//! - **Unbounded globs**: a pattern the kernel's bounded loop could not
+//!   walk. The budget below is a declared proxy — at most one `**`, at most
+//!   eight wildcard segments — until `F3.PT.03` measures the verifier; the
+//!   constant is one place to change.
+//!
+//! `${…}` variables resolve here, against [`Bindings`] the session supplies:
+//! an unbound variable is an error, never an empty string.
+
+use aisme_ebpf_common::Verdict;
+
+use super::ast::{Assert, Dimension, Match, MatchKey, Policy, Rule, Segment, Span, Text};
+use crate::ontology::{PermissionGroup, Severity};
+use crate::taint::Taint;
+
+/// The glob budget: a declared proxy for the verifier's loop budget until
+/// `F3.PT.03` measures it.
+pub const MAX_DOUBLE_STAR: usize = 1;
+/// See [`MAX_DOUBLE_STAR`].
+pub const MAX_WILDCARD_SEGMENTS: usize = 8;
+
+/// What `${…}` variables resolve to for one session.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Bindings {
+    vars: Vec<(String, Vec<String>)>,
+}
+
+impl Bindings {
+    /// No variables bound.
+    #[must_use]
+    pub fn new() -> Bindings {
+        Bindings::default()
+    }
+
+    /// Bind `name` to one value.
+    #[must_use]
+    pub fn with(mut self, name: &str, value: &str) -> Bindings {
+        self.vars.push((name.to_owned(), vec![value.to_owned()]));
+        self
+    }
+
+    /// Bind `name` to a list; a `Text` that is exactly `${name}` expands to
+    /// every element.
+    #[must_use]
+    pub fn with_list(mut self, name: &str, values: &[&str]) -> Bindings {
+        self.vars.push((
+            name.to_owned(),
+            values.iter().map(|v| (*v).to_owned()).collect(),
+        ));
+        self
+    }
+
+    fn get(&self, name: &str) -> Option<&[String]> {
+        self.vars
+            .iter()
+            .find(|(n, _)| n == name)
+            .map(|(_, v)| v.as_slice())
+    }
+}
+
+/// Why a policy did not compile.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct CompileError {
+    /// The rule (or suppression) at fault, when one is.
+    pub rule_id: Option<String>,
+    /// Where it was written.
+    pub span: Span,
+    /// What went wrong.
+    pub kind: CompileErrorKind,
+}
+
+/// The kinds of compile error.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum CompileErrorKind {
+    /// §B.10: the rule can never be the strictest for any input.
+    Unreachable {
+        /// The rule whose match includes this one's, with a stricter verdict.
+        shadowed_by: String,
+    },
+    /// §B.11: an `except` key on a dimension the match does not have.
+    ExceptDimension {
+        /// The offending key.
+        key: &'static str,
+    },
+    /// §B.12: a guardrail the rule violates.
+    AssertViolated {
+        /// Which assert, by position.
+        assert_index: usize,
+    },
+    /// A glob past the budget.
+    GlobBudget {
+        /// The pattern.
+        pattern: String,
+    },
+    /// A `${…}` the session did not bind.
+    UnboundVariable {
+        /// Its name.
+        name: String,
+    },
+    /// A list variable used inside a longer string.
+    ListVariableInText {
+        /// Its name.
+        name: String,
+    },
+}
+
+impl core::fmt::Display for CompileError {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        if let Some(id) = &self.rule_id {
+            write!(f, "rule \"{id}\": ")?;
+        }
+        match &self.kind {
+            CompileErrorKind::Unreachable { shadowed_by } => write!(
+                f,
+                "unreachable — every input it matches is already decided at least as strictly by \"{shadowed_by}\" (§B.10)"
+            ),
+            CompileErrorKind::ExceptDimension { key } => write!(
+                f,
+                "`except` key `{key}` narrows a dimension the rule's `match` does not have (§B.11)"
+            ),
+            CompileErrorKind::AssertViolated { assert_index } => {
+                write!(f, "violates [[assert]] #{} (§B.12)", assert_index + 1)
+            }
+            CompileErrorKind::GlobBudget { pattern } => write!(
+                f,
+                "glob \"{pattern}\" exceeds the budget ({MAX_DOUBLE_STAR} `**`, {MAX_WILDCARD_SEGMENTS} wildcard segments)"
+            ),
+            CompileErrorKind::UnboundVariable { name } => write!(f, "`${{{name}}}` is not bound for this session"),
+            CompileErrorKind::ListVariableInText { name } => {
+                write!(f, "`${{{name}}}` is a list and cannot sit inside a longer string")
+            }
+        }
+    }
+}
+
+impl core::error::Error for CompileError {}
+
+/// A compiled policy: resolved, validated, canonical.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct CompiledPolicy {
+    /// Rules in canonical order (by id), each with a resolved predicate.
+    pub rules: Vec<CompiledRule>,
+}
+
+/// One compiled rule.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct CompiledRule {
+    /// The source id — `decided_by` names this.
+    pub id: String,
+    /// The group.
+    pub group: PermissionGroup,
+    /// The verdict.
+    pub verdict: Verdict,
+    /// The predicate, resolved and canonical.
+    pub predicate: Predicate,
+    /// The `except` predicate, resolved and canonical.
+    pub except: Option<Predicate>,
+    /// Categories a match confers.
+    pub taint: Taint,
+    /// The floor.
+    pub severity_floor: Option<Severity>,
+    /// `promptable`, as written; `F1.PL.04` decides the default and the
+    /// `I-05` refusal.
+    pub promptable: Option<bool>,
+    /// `suppressible`, as written; `F1.PL.07`.
+    pub suppressible: Option<bool>,
+    /// The event a hit emits.
+    pub event: Option<String>,
+}
+
+/// A conjunction of resolved terms, canonical: sorted by key name, values
+/// sorted and deduplicated, so equal meaning is equal bytes (`PL-03`).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Predicate {
+    /// The terms.
+    pub terms: Vec<Term>,
+}
+
+/// One resolved term. Same shape as [`MatchKey`], with every `Text` resolved
+/// to strings.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Term {
+    /// Prefixes, canonical.
+    PathUnder(Vec<String>),
+    /// Globs.
+    PathGlob(Vec<String>),
+    /// Path classes, as their discriminants.
+    PathClass(Vec<u8>),
+    /// Executable classes.
+    ExecClass(Vec<String>),
+    /// Executable paths.
+    ExecPath(Vec<String>),
+    /// Destinations inside.
+    DestIn(Vec<String>),
+    /// Destinations outside.
+    DestNotIn(Vec<String>),
+    /// Ports.
+    PortIn(Vec<u16>),
+    /// Transports, as `Proto` debug names.
+    Proto(Vec<String>),
+    /// Any of.
+    TaintAny(Taint),
+    /// All of.
+    TaintAll(Taint),
+    /// No declassification.
+    NotDeclassified(bool),
+    /// Tool names.
+    ToolName(Vec<String>),
+    /// Origins, as discriminants.
+    Origin(Vec<u8>),
+    /// Instruction-bearing.
+    InstructionBearing(bool),
+    /// Scope relative to the session.
+    ScopeRel(Vec<String>),
+    /// Younger than, seconds.
+    AgeLt(u64),
+    /// First of its kind.
+    FirstOfKind(bool),
+}
+
+impl Term {
+    /// The key name, for ordering and messages.
+    #[must_use]
+    pub const fn name(&self) -> &'static str {
+        match self {
+            Term::PathUnder(_) => "path_under",
+            Term::PathGlob(_) => "path_glob",
+            Term::PathClass(_) => "path_class",
+            Term::ExecClass(_) => "exec_class",
+            Term::ExecPath(_) => "exec_path",
+            Term::DestIn(_) => "dest_in",
+            Term::DestNotIn(_) => "dest_not_in",
+            Term::PortIn(_) => "port_in",
+            Term::Proto(_) => "proto",
+            Term::TaintAny(_) => "taint_any",
+            Term::TaintAll(_) => "taint_all",
+            Term::NotDeclassified(_) => "not_declassified",
+            Term::ToolName(_) => "tool_name",
+            Term::Origin(_) => "origin",
+            Term::InstructionBearing(_) => "instruction_bearing",
+            Term::ScopeRel(_) => "scope_rel",
+            Term::AgeLt(_) => "age_lt",
+            Term::FirstOfKind(_) => "first_of_kind",
+        }
+    }
+
+    /// Whether every input this term admits, the `other` term (same key)
+    /// admits too — claimed only when certain.
+    fn included_in(&self, other: &Term) -> bool {
+        match (self, other) {
+            (Term::PathUnder(mine), Term::PathUnder(theirs)) => {
+                mine.iter().all(|m| theirs.iter().any(|t| path_under(m, t)))
+            }
+            // A glob whose literal head lies under a prefix is inside it.
+            (Term::PathGlob(mine), Term::PathGlob(theirs)) => subset(mine, theirs),
+            (Term::PathClass(m), Term::PathClass(t)) | (Term::Origin(m), Term::Origin(t)) => {
+                subset(m, t)
+            }
+            (Term::ExecClass(m), Term::ExecClass(t))
+            | (Term::ExecPath(m), Term::ExecPath(t))
+            | (Term::DestIn(m), Term::DestIn(t))
+            | (Term::Proto(m), Term::Proto(t))
+            | (Term::ToolName(m), Term::ToolName(t))
+            | (Term::ScopeRel(m), Term::ScopeRel(t)) => subset(m, t),
+            (Term::PortIn(m), Term::PortIn(t)) => subset(m, t),
+            // Excluding more is narrower: mine ⊇ theirs.
+            (Term::DestNotIn(m), Term::DestNotIn(t)) => subset(t, m),
+            // any-of: fewer categories is narrower; all-of: more is narrower.
+            (Term::TaintAny(m), Term::TaintAny(t)) => t.contains(*m),
+            (Term::TaintAll(m), Term::TaintAll(t)) => m.contains(*t),
+            (Term::NotDeclassified(m), Term::NotDeclassified(t))
+            | (Term::InstructionBearing(m), Term::InstructionBearing(t))
+            | (Term::FirstOfKind(m), Term::FirstOfKind(t)) => m == t,
+            (Term::AgeLt(m), Term::AgeLt(t)) => m <= t,
+            _ => false,
+        }
+    }
+}
+
+impl Predicate {
+    /// Whether every input this predicate admits, `other` admits too: every
+    /// term of `other` is matched by an included term of the same key here
+    /// (a term here that `other` lacks only narrows this side). Cross-key
+    /// inclusion is claimed in one case that is certain: a glob whose
+    /// literal head lies under `other`'s `path_under` prefix.
+    #[must_use]
+    pub fn included_in(&self, other: &Predicate) -> bool {
+        other.terms.iter().all(|theirs| {
+            self.terms.iter().any(|mine| mine.included_in(theirs))
+                || matches!((theirs, self.term("path_glob")),
+                    (Term::PathUnder(prefixes), Some(Term::PathGlob(globs)))
+                        if globs.iter().all(|g| prefixes.iter().any(|p| path_under(glob_head(g), p))))
+        })
+    }
+
+    fn term(&self, name: &str) -> Option<&Term> {
+        self.terms.iter().find(|t| t.name() == name)
+    }
+}
+
+/// Compile a parsed policy for one session.
+///
+/// # Errors
+///
+/// Every error found, each naming its rule.
+pub fn compile(policy: &Policy, bindings: &Bindings) -> Result<CompiledPolicy, Vec<CompileError>> {
+    let mut errors = Vec::new();
+    let mut rules = Vec::with_capacity(policy.rules.len());
+    for rule in &policy.rules {
+        if let Some(compiled) = compile_rule(rule, bindings, &mut errors) {
+            rules.push(compiled);
+        }
+    }
+    check_asserts(&policy.rules, &policy.asserts, &mut errors);
+    check_reachability(&rules, &policy.rules, &mut errors);
+    rules.sort_by(|a, b| a.id.cmp(&b.id));
+    if errors.is_empty() {
+        Ok(CompiledPolicy { rules })
+    } else {
+        errors.sort_by_key(|e| e.span.start);
+        Err(errors)
+    }
+}
+
+fn compile_rule(
+    rule: &Rule,
+    bindings: &Bindings,
+    errors: &mut Vec<CompileError>,
+) -> Option<CompiledRule> {
+    let before = errors.len();
+    if let Some(except) = &rule.except {
+        for key in &except.keys {
+            if rule.r#match.get(key.dimension()).is_none() {
+                errors.push(CompileError {
+                    rule_id: Some(rule.id.clone()),
+                    span: except.span,
+                    kind: CompileErrorKind::ExceptDimension { key: key.name() },
+                });
+            }
+        }
+    }
+    let predicate = resolve(&rule.r#match, &rule.id, bindings, errors);
+    let except = rule
+        .except
+        .as_ref()
+        .map(|e| resolve(e, &rule.id, bindings, errors));
+    if errors.len() > before {
+        return None;
+    }
+    Some(CompiledRule {
+        id: rule.id.clone(),
+        group: rule.group,
+        verdict: rule.verdict,
+        predicate,
+        except,
+        taint: rule.taint.unwrap_or(Taint::EMPTY),
+        severity_floor: rule.severity_floor,
+        promptable: rule.promptable,
+        suppressible: rule.suppressible,
+        event: rule.event.clone(),
+    })
+}
+
+fn resolve(
+    m: &Match,
+    rule_id: &str,
+    bindings: &Bindings,
+    errors: &mut Vec<CompileError>,
+) -> Predicate {
+    let mut terms = Vec::with_capacity(m.keys.len());
+    for key in &m.keys {
+        let err = |kind| CompileError {
+            rule_id: Some(rule_id.to_owned()),
+            span: m.span,
+            kind,
+        };
+        let term = match key {
+            MatchKey::PathUnder(texts) => {
+                Term::PathUnder(canon(texts_to_strings(texts, bindings, &err, errors)))
+            }
+            MatchKey::PathGlob(texts) => {
+                let globs = canon(texts_to_strings(texts, bindings, &err, errors));
+                for g in &globs {
+                    if !glob_within_budget(g) {
+                        errors.push(err(CompileErrorKind::GlobBudget { pattern: g.clone() }));
+                    }
+                }
+                Term::PathGlob(globs)
+            }
+            MatchKey::PathClass(classes) => {
+                Term::PathClass(canon(classes.iter().map(|c| *c as u8).collect()))
+            }
+            MatchKey::ExecClass(v) => Term::ExecClass(canon(v.clone())),
+            MatchKey::ExecPath(texts) => {
+                Term::ExecPath(canon(texts_to_strings(texts, bindings, &err, errors)))
+            }
+            MatchKey::DestIn(texts) => {
+                Term::DestIn(canon(texts_to_strings(texts, bindings, &err, errors)))
+            }
+            MatchKey::DestNotIn(texts) => {
+                Term::DestNotIn(canon(texts_to_strings(texts, bindings, &err, errors)))
+            }
+            MatchKey::PortIn(ports) => Term::PortIn(canon(ports.clone())),
+            MatchKey::Proto(protos) => {
+                Term::Proto(canon(protos.iter().map(|p| format!("{p:?}")).collect()))
+            }
+            MatchKey::TaintAny(t) => Term::TaintAny(*t),
+            MatchKey::TaintAll(t) => Term::TaintAll(*t),
+            MatchKey::NotDeclassified(b) => Term::NotDeclassified(*b),
+            MatchKey::ToolName(v) => Term::ToolName(canon(v.clone())),
+            MatchKey::Origin(o) => Term::Origin(canon(o.iter().map(|o| *o as u8).collect())),
+            MatchKey::InstructionBearing(b) => Term::InstructionBearing(*b),
+            MatchKey::ScopeRel(v) => Term::ScopeRel(canon(v.clone())),
+            MatchKey::AgeLt(n) => Term::AgeLt(*n),
+            MatchKey::FirstOfKind(b) => Term::FirstOfKind(*b),
+        };
+        terms.push(term);
+    }
+    terms.sort_by_key(Term::name);
+    Predicate { terms }
+}
+
+fn texts_to_strings(
+    texts: &[Text],
+    bindings: &Bindings,
+    err: &dyn Fn(CompileErrorKind) -> CompileError,
+    errors: &mut Vec<CompileError>,
+) -> Vec<String> {
+    let mut out = Vec::with_capacity(texts.len());
+    for text in texts {
+        // Exactly `${name}` may expand to a list; anywhere else a variable
+        // must be a single value.
+        if let [Segment::Var(name)] = text.segments.as_slice() {
+            match bindings.get(name) {
+                Some(values) => out.extend(values.iter().cloned()),
+                None => errors.push(err(CompileErrorKind::UnboundVariable {
+                    name: name.clone(),
+                })),
+            }
+            continue;
+        }
+        let mut s = String::new();
+        let mut ok = true;
+        for segment in &text.segments {
+            match segment {
+                Segment::Lit(l) => s.push_str(l),
+                Segment::Var(name) => match bindings.get(name) {
+                    Some([one]) => s.push_str(one),
+                    Some(_) => {
+                        errors.push(err(CompileErrorKind::ListVariableInText {
+                            name: name.clone(),
+                        }));
+                        ok = false;
+                    }
+                    None => {
+                        errors.push(err(CompileErrorKind::UnboundVariable {
+                            name: name.clone(),
+                        }));
+                        ok = false;
+                    }
+                },
+            }
+        }
+        if ok {
+            out.push(s);
+        }
+    }
+    out
+}
+
+fn canon<T: Ord>(mut v: Vec<T>) -> Vec<T> {
+    v.sort();
+    v.dedup();
+    v
+}
+
+fn subset<T: PartialEq>(mine: &[T], theirs: &[T]) -> bool {
+    mine.iter().all(|m| theirs.contains(m))
+}
+
+/// `path` is `prefix` or lies under it, by components.
+fn path_under(path: &str, prefix: &str) -> bool {
+    let prefix = prefix.trim_end_matches('/');
+    if prefix.is_empty() {
+        return path.starts_with('/');
+    }
+    path.strip_prefix(prefix)
+        .is_some_and(|rest| rest.is_empty() || rest.starts_with('/'))
+}
+
+/// The literal head of a glob: everything before the first wildcard
+/// character, cut back to a component boundary.
+fn glob_head(glob: &str) -> &str {
+    let end = glob.find(['*', '?', '[']).unwrap_or(glob.len());
+    let head = &glob[..end];
+    match head.rfind('/') {
+        Some(0) => "/",
+        Some(i) => &head[..i],
+        None => "",
+    }
+}
+
+fn glob_within_budget(glob: &str) -> bool {
+    let double = glob.matches("**").count();
+    let wildcard_segments = glob
+        .split('/')
+        .filter(|seg| seg.contains(['*', '?', '[']))
+        .count();
+    double <= MAX_DOUBLE_STAR && wildcard_segments <= MAX_WILDCARD_SEGMENTS
+}
+
+fn check_asserts(rules: &[Rule], asserts: &[Assert], errors: &mut Vec<CompileError>) {
+    for (i, assert) in asserts.iter().enumerate() {
+        for rule in rules {
+            if rule.group == assert.never_group && assert.never_verdicts.contains(&rule.verdict) {
+                errors.push(CompileError {
+                    rule_id: Some(rule.id.clone()),
+                    span: rule.span,
+                    kind: CompileErrorKind::AssertViolated { assert_index: i },
+                });
+            }
+        }
+    }
+}
+
+fn check_reachability(compiled: &[CompiledRule], source: &[Rule], errors: &mut Vec<CompileError>) {
+    for r in compiled {
+        let shadow = compiled.iter().find(|s| {
+            s.id != r.id
+                && s.verdict > r.verdict
+                && r.predicate.included_in(&s.predicate)
+                // S's except must not carve anything out of R that R does
+                // not carve out itself; certain only when S has none, or R's
+                // except includes S's.
+                && match (&s.except, &r.except) {
+                    (None, _) => true,
+                    (Some(se), Some(re)) => se.included_in(re),
+                    (Some(_), None) => false,
+                }
+        });
+        if let Some(s) = shadow {
+            let span = source
+                .iter()
+                .find(|x| x.id == r.id)
+                .map_or(Span::default(), |x| x.span);
+            errors.push(CompileError {
+                rule_id: Some(r.id.clone()),
+                span,
+                kind: CompileErrorKind::Unreachable {
+                    shadowed_by: s.id.clone(),
+                },
+            });
+        }
+    }
+}
+
+/// The dimension of a term name, for callers that reason about `except`.
+#[must_use]
+pub fn dimension_of(name: &str) -> Option<Dimension> {
+    Some(match name {
+        "path_under" | "path_glob" | "path_class" => Dimension::Path,
+        "exec_class" | "exec_path" => Dimension::Exec,
+        "dest_in" | "dest_not_in" | "port_in" | "proto" => Dimension::Network,
+        "taint_any" | "taint_all" | "not_declassified" => Dimension::Taint,
+        "tool_name" | "origin" | "instruction_bearing" => Dimension::Tool,
+        "scope_rel" | "age_lt" | "first_of_kind" => Dimension::Session,
+        _ => return None,
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn path_under_is_by_component() {
+        assert!(path_under("/etc/hosts", "/etc"));
+        assert!(path_under("/etc", "/etc/"));
+        assert!(!path_under("/etcetera", "/etc"));
+        assert!(path_under("/x", "/"));
+    }
+
+    #[test]
+    fn glob_heads_and_budget() {
+        assert_eq!(glob_head("/etc/**/*.conf"), "/etc");
+        assert_eq!(glob_head("**/.env"), "");
+        assert_eq!(glob_head("/a/b*"), "/a");
+        assert_eq!(glob_head("/*"), "/");
+        assert!(glob_within_budget("**/.env"));
+        assert!(!glob_within_budget("**/**/x"));
+        assert!(!glob_within_budget("/*/*/*/*/*/*/*/*/*/x"));
+    }
+
+    #[test]
+    fn term_inclusion_goes_the_right_way_for_negative_keys() {
+        let narrow = Term::DestNotIn(vec!["a".into(), "b".into()]);
+        let wide = Term::DestNotIn(vec!["a".into()]);
+        assert!(narrow.included_in(&wide), "excluding more is narrower");
+        assert!(!wide.included_in(&narrow));
+        let any_one = Term::TaintAny(Taint::SECRET_MATERIAL);
+        let any_two = Term::TaintAny(Taint::SECRET_MATERIAL | Taint::CREDENTIAL_ACCESS);
+        assert!(any_one.included_in(&any_two));
+        assert!(!any_two.included_in(&any_one));
+        let all_two = Term::TaintAll(Taint::SECRET_MATERIAL | Taint::CREDENTIAL_ACCESS);
+        let all_one = Term::TaintAll(Taint::SECRET_MATERIAL);
+        assert!(all_two.included_in(&all_one), "requiring more is narrower");
+        assert!(Term::AgeLt(5).included_in(&Term::AgeLt(10)));
+        assert!(!Term::PathUnder(vec!["/a".into()]).included_in(&Term::ExecPath(vec!["/a".into()])));
+    }
+}

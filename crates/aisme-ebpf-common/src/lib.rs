@@ -10,8 +10,10 @@ pub mod event;
 pub mod kind;
 pub mod payload;
 pub mod verdict;
+pub mod version;
 
 pub use event::{Outcome, OutcomeCode, RawEvent, FLAG_TRUNCATED, RAW_EVENT_SIZE, WIRE_VERSION};
 pub use kind::{EventKind, KindCode, Range};
 pub use payload::{EventPayload, Payload, PAYLOAD_SIZE};
 pub use verdict::Verdict;
+pub use version::{check_event, Handshake, WireVersionMismatch, SCHEMA_HASH};

@@ -129,6 +129,12 @@ pub struct Declarations {
     window: std::time::Instant,
     /// Accepted in this window.
     count: u32,
+    /// Where an accepted declaration goes: the hot loop, through the same
+    /// `Sensor` interface the kernel's events arrive on. `None` when no loop
+    /// is running — the answer is still `accepted`, because the bound and the
+    /// validation are what the caller asked about, and a daemon serving the
+    /// control plane without a loop is a real state (`--serve-ipc` alone).
+    out: Option<crate::declare::Declared>,
 }
 
 impl Declarations {
@@ -138,6 +144,16 @@ impl Declarations {
         Declarations {
             window: std::time::Instant::now(),
             count: 0,
+            out: None,
+        }
+    }
+
+    /// A counter that delivers accepted declarations into the hot loop.
+    #[must_use]
+    pub fn feeding(out: crate::declare::Declared) -> Declarations {
+        Declarations {
+            out: Some(out),
+            ..Declarations::new()
         }
     }
 
@@ -229,13 +245,45 @@ pub fn serve_line(
                 _ => None,
             });
             match toolcall_id {
-                Some(id) => rpc::response(
-                    request.id,
-                    Value::object([
-                        ("outcome", Value::string("accepted")),
-                        ("toolcall_id", Value::Int(id)),
-                    ]),
-                ),
+                Some(id) => {
+                    // Delivered as an event on the same stream as everything
+                    // else, so correlation can check the claim against the
+                    // actions instead of believing it (`DT-04`).
+                    if let Some(out) = &declarations.out {
+                        let name = request
+                            .params
+                            .get("tool_name")
+                            .and_then(Value::as_str)
+                            .unwrap_or("");
+                        let ts_ns = std::time::SystemTime::now()
+                            .duration_since(std::time::UNIX_EPOCH)
+                            .map_or(0, |d| u64::try_from(d.as_nanos()).unwrap_or(u64::MAX));
+                        let event = crate::declare::declaration_event(
+                            u64::try_from(id).unwrap_or(0),
+                            name,
+                            ts_ns,
+                        );
+                        // A closed receiver means the loop stopped. The caller
+                        // is not told the declaration was recorded when it was
+                        // not, so the answer becomes the honest one.
+                        if out.send(event).is_err() {
+                            return rpc::response(
+                                request.id,
+                                Value::object([
+                                    ("outcome", Value::string("not_recorded")),
+                                    ("reason", Value::string("the engine is not running")),
+                                ]),
+                            );
+                        }
+                    }
+                    rpc::response(
+                        request.id,
+                        Value::object([
+                            ("outcome", Value::string("accepted")),
+                            ("toolcall_id", Value::Int(id)),
+                        ]),
+                    )
+                }
                 // A declaration with no id cannot be joined to anything, so
                 // accepting it would record a fact nobody can use.
                 None => rpc::error(
@@ -263,7 +311,35 @@ pub fn serve_line(
 /// # Errors
 ///
 /// Binding or accepting.
-pub fn serve(path: &Path, owner_uid: u32, mut until: impl FnMut() -> bool) -> std::io::Result<()> {
+pub fn serve(path: &Path, owner_uid: u32, until: impl FnMut() -> bool) -> std::io::Result<()> {
+    serve_with(path, owner_uid, Declarations::new, until)
+}
+
+/// `serve`, delivering accepted declarations into a running hot loop.
+///
+/// # Errors
+///
+/// Binding or accepting.
+pub fn serve_feeding(
+    path: &Path,
+    owner_uid: u32,
+    declared: crate::declare::Declared,
+    until: impl FnMut() -> bool,
+) -> std::io::Result<()> {
+    serve_with(
+        path,
+        owner_uid,
+        move || Declarations::feeding(declared.clone()),
+        until,
+    )
+}
+
+fn serve_with(
+    path: &Path,
+    owner_uid: u32,
+    mut counter: impl FnMut() -> Declarations,
+    mut until: impl FnMut() -> bool,
+) -> std::io::Result<()> {
     if path.exists() {
         std::fs::remove_file(path)?;
     }
@@ -277,7 +353,7 @@ pub fn serve(path: &Path, owner_uid: u32, mut until: impl FnMut() -> bool) -> st
         // done the expensive part of the attack — a new connection, a new
         // SO_PEERCRED check — for a new window, which is a far worse trade than
         // sending declarations down one socket. F2.WS.08 keys it by session.
-        let mut declarations = Declarations::new();
+        let mut declarations = counter();
         for line in reader.lines() {
             let line = line?;
             if line.trim().is_empty() {
@@ -366,6 +442,72 @@ mod tests {
         assert!(
             over.get("error").is_none(),
             "a bound is not a protocol error"
+        );
+    }
+
+    /// The connection, end to end: a declaration on the socket becomes an
+    /// event on the hot loop's stream. Without this the method would be a
+    /// validated answer that recorded nothing, which is the kind of seam that
+    /// looks finished and is not.
+    #[test]
+    fn an_accepted_declaration_reaches_the_engine_as_a_toolcall_event() {
+        use aisme_core::sensor::{EventBatch, Sensor as _};
+        use aisme_ebpf_common::{EventKind, Payload};
+
+        let (mut sensor, tx) = crate::declare::DeclarationSensor::new();
+        let mut d = Declarations::feeding(tx);
+        let response = call_with(
+            "declareToolCall",
+            r#"{"toolcall_id":5,"tool_name":"Bash"}"#,
+            &agent(),
+            &mut d,
+        );
+        assert_eq!(
+            response
+                .get("result")
+                .and_then(|r| r.get("outcome"))
+                .and_then(json::Value::as_str),
+            Some("accepted")
+        );
+
+        let mut batch = EventBatch::with_capacity(4);
+        assert_eq!(
+            sensor
+                .poll(&mut batch, std::time::Duration::ZERO)
+                .expect("poll"),
+            1,
+            "the declaration arrived on the sensor stream"
+        );
+        let event = batch.as_slice()[0];
+        assert_eq!(event.kind.decode(), Ok(EventKind::ToolCall));
+        match event.payload() {
+            Some(Payload::Semantic(s)) => {
+                assert_eq!(s.toolcall_id, 5);
+                assert_eq!(&s.tool_name[..s.name_len as usize], b"Bash");
+            }
+            other => panic!("wrong view: {other:?}"),
+        }
+    }
+
+    /// When the loop is gone the caller is told so, rather than being told the
+    /// declaration was recorded when nothing recorded it.
+    #[test]
+    fn a_declaration_with_no_engine_behind_it_says_not_recorded() {
+        let (sensor, tx) = crate::declare::DeclarationSensor::new();
+        let mut d = Declarations::feeding(tx);
+        drop(sensor);
+        let response = call_with(
+            "declareToolCall",
+            r#"{"toolcall_id":1,"tool_name":"Bash"}"#,
+            &agent(),
+            &mut d,
+        );
+        assert_eq!(
+            response
+                .get("result")
+                .and_then(|r| r.get("outcome"))
+                .and_then(json::Value::as_str),
+            Some("not_recorded")
         );
     }
 

@@ -12,10 +12,12 @@
 // it makes it legible after the fact.
 #![deny(clippy::unwrap_used, clippy::expect_used)]
 
+mod declare;
 mod ipc;
 mod platform;
 mod runtime;
 mod selfobs;
+mod wal;
 
 /// `H-03`: RSS is a budget, not an outcome. mimalloc's purge returns freed
 /// pages to the OS instead of holding an arena that only ever grows; the
@@ -23,6 +25,100 @@ mod selfobs;
 /// read when the allocator initialises.
 #[global_allocator]
 static ALLOCATOR: mimalloc::MiMalloc = mimalloc::MiMalloc;
+
+/// Compose the whole slice and drive it (`F2.WS.02`).
+///
+/// Everything is the real thing except what the platform cannot supply: the
+/// sensors are whatever `platform::sensors` composed, the resolver is the
+/// platform's, and the sink is the file-backed WAL. Declarations arrive as a
+/// `Sensor` like any other producer, so the engine sees one stream.
+fn run_slice(dir: &std::path::Path, rest: &[String]) -> std::io::Result<()> {
+    use aisme_core::detect::DetectorSet;
+    use aisme_core::engine::Engine;
+    use aisme_core::policy::PolicyGeneration;
+    use aisme_core::sensor::{Sensor, SensorConfig};
+    use std::time::Duration;
+
+    let mut ticks: u64 = 1_000;
+    let mut socket: Option<String> = None;
+    let mut it = rest.iter();
+    while let Some(arg) = it.next() {
+        match arg.as_str() {
+            "--ticks" => {
+                let Some(raw) = it.next() else {
+                    return Err(std::io::Error::other("--ticks needs a value"));
+                };
+                ticks = raw
+                    .parse()
+                    .map_err(|_| std::io::Error::other(format!("--ticks {raw} is not a number")))?;
+            }
+            "--serve-ipc" => socket = it.next().cloned(),
+            other => return Err(std::io::Error::other(format!("unknown argument `{other}`"))),
+        }
+    }
+
+    let caps = platform::probe();
+    let mut sensors: Vec<Box<dyn Sensor>> = platform::sensors(&caps);
+    let (declarations, declared) = declare::DeclarationSensor::new();
+    sensors.push(Box::new(declarations));
+
+    let sink = wal::WalSink::create(dir, PolicyGeneration(0))
+        .map_err(|e| std::io::Error::other(e.detail))?;
+    let segment = sink.current_segment();
+    let mut engine = Engine::new(sensors, Box::new(sink), DetectorSet::new(), 512);
+    engine
+        .start(&SensorConfig::default())
+        .map_err(|e| std::io::Error::other(e.detail))?;
+    let mut resolver = platform::resolver();
+
+    // The socket runs on its own thread; the loop never blocks on it, and a
+    // declaration crosses by channel rather than by sharing the engine.
+    if let Some(path) = socket {
+        let owner = ipc::Peer::from_current_uid();
+        println!("ipc: serving {path} for uid {}", owner.uid);
+        std::thread::spawn(move || {
+            if let Err(e) =
+                ipc::serve_feeding(std::path::Path::new(&path), owner.uid, declared, || false)
+            {
+                eprintln!("ipc: {e}");
+            }
+        });
+    }
+
+    println!("run: wal {}, {ticks} tick(s)", segment.display());
+    // The tick budget, and the pace. Nothing in the loop blocks — a sensor with
+    // no events returns immediately — so without this the loop spins a core
+    // flat out, burns the §2.22 CPU budget on nothing, and drains no more
+    // events for having tried. An idle tick sleeps what it did not spend; a
+    // busy one does not sleep at all, so throughput under load is unaffected.
+    let budget = Duration::from_millis(1);
+    let mut totals = aisme_core::engine::TickReport::default();
+    for tick in 0..ticks {
+        let started = std::time::Instant::now();
+        match engine.tick(resolver.as_mut(), budget, tick) {
+            Ok(report) => {
+                if report.drained == 0 {
+                    if let Some(left) = budget.checked_sub(started.elapsed()) {
+                        std::thread::sleep(left);
+                    }
+                }
+                totals.drained += report.drained;
+                totals.resolved += report.resolved;
+                totals.unresolved += report.unresolved;
+                totals.findings += report.findings;
+            }
+            // A sink that cannot write is the one failure the loop must not
+            // continue through: events would be observed and lost, which is
+            // worse than stopping and saying so.
+            Err(e) => return Err(std::io::Error::other(e.detail)),
+        }
+    }
+    println!(
+        "run: {} event(s) drained, {} path(s) resolved, {} unresolved, {} finding(s)",
+        totals.drained, totals.resolved, totals.unresolved, totals.findings
+    );
+    Ok(())
+}
 
 fn main() {
     // 10 ms: purge soon after a burst, not on every free. The plan's value
@@ -110,11 +206,23 @@ fn main() {
         }
         return;
     }
-    // F1.IPC.01: the control socket. `--serve-ipc <path>` runs it; without
-    // the flag the daemon reports that it can, because F1 has no hot loop to
-    // serve alongside it yet (that is F2's walking skeleton).
+    // `--run <wal-dir> [--serve-ipc <socket>] [--ticks N]` is F2's walking
+    // skeleton, composed: the platform's sensors and resolver at one end, the
+    // real WAL at the other, and — when a socket is given — declarations
+    // arriving on the same stream as everything the kernel reports.
     let mut args = std::env::args().skip(1);
     if let Some(flag) = args.next() {
+        if flag == "--run" {
+            let Some(dir) = args.next() else {
+                eprintln!("--run needs a directory for the WAL");
+                return;
+            };
+            let rest: Vec<String> = args.collect();
+            if let Err(e) = run_slice(std::path::Path::new(&dir), &rest) {
+                eprintln!("run: {e}");
+            }
+            return;
+        }
         if flag == "--serve-ipc" {
             let Some(path) = args.next() else {
                 eprintln!("--serve-ipc needs a socket path");
@@ -211,4 +319,115 @@ fn measure_idle() -> std::io::Result<String> {
         engine.totals().drained
     );
     Ok(path.display().to_string())
+}
+
+#[cfg(test)]
+// A panic is the failure report in a test; the daemon's code stays denied.
+#[allow(clippy::unwrap_used, clippy::expect_used)]
+mod slice_tests {
+    use aisme_core::detect::DetectorSet;
+    use aisme_core::engine::Engine;
+    use aisme_core::policy::PolicyGeneration;
+    use aisme_core::sensor::{Sensor, SensorConfig};
+    use aisme_core::wal;
+    use aisme_ebpf_common::{EventKind, Payload};
+    use std::io::{BufRead as _, BufReader, Write as _};
+    use std::os::unix::net::UnixStream;
+    use std::time::Duration;
+
+    /// The whole slice, over a real socket and onto a real file: a declaration
+    /// crosses the control plane, becomes an event on the sensor stream, goes
+    /// through the engine with the platform's resolver, and lands in the WAL
+    /// where the core's own replayer reads it back.
+    ///
+    /// It is one test rather than four because the seams are what it exists to
+    /// check. Each piece already has its own unit tests; this is the one that
+    /// fails when they stop being connected to each other.
+    #[test]
+    fn a_declaration_crosses_the_socket_and_lands_in_the_wal() {
+        let dir = std::env::temp_dir().join(format!("aisme-slice-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let socket_path = dir.join("sock");
+
+        let (declarations, declared) = crate::declare::DeclarationSensor::new();
+        let sensors: Vec<Box<dyn Sensor>> = vec![Box::new(declarations)];
+
+        let sink = crate::wal::WalSink::create(&dir, PolicyGeneration(4)).unwrap();
+        let segment = sink.current_segment();
+        let mut engine = Engine::new(sensors, Box::new(sink), DetectorSet::new(), 16);
+        engine.start(&SensorConfig::default()).unwrap();
+        let mut resolver = crate::platform::resolver();
+
+        // The server runs where it runs in production: its own thread, with the
+        // hot loop never blocking on it.
+        let uid = crate::ipc::Peer::from_current_uid().uid;
+        let path = socket_path.clone();
+        let server = std::thread::spawn(move || {
+            let mut served = 0;
+            let _ = crate::ipc::serve_feeding(&path, uid, declared, move || {
+                served += 1;
+                served >= 1
+            });
+        });
+
+        // Connect, declare, read the answer.
+        let mut stream = None;
+        for _ in 0..100 {
+            match UnixStream::connect(&socket_path) {
+                Ok(s) => {
+                    stream = Some(s);
+                    break;
+                }
+                Err(_) => std::thread::sleep(Duration::from_millis(20)),
+            }
+        }
+        let mut stream = stream.expect("the server binds its socket");
+        writeln!(
+            stream,
+            r#"{{"jsonrpc":"2.0","id":1,"method":"declareToolCall","params":{{"toolcall_id":77,"tool_name":"Bash"}}}}"#
+        )
+        .unwrap();
+        let mut answer = String::new();
+        BufReader::new(stream.try_clone().unwrap())
+            .read_line(&mut answer)
+            .unwrap();
+        assert!(answer.contains(r#""outcome":"accepted""#), "{answer}");
+        drop(stream);
+
+        // Drive the loop until the declaration has been through it.
+        let mut drained = 0;
+        for tick in 0..200u64 {
+            let report = engine
+                .tick(resolver.as_mut(), Duration::from_millis(1), tick)
+                .unwrap();
+            drained += report.drained;
+            if drained > 0 {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        assert_eq!(drained, 1, "the declaration reached the engine");
+
+        // And it is on disk, readable by the core's own replayer.
+        let bytes = std::fs::read(&segment).unwrap();
+        let header = wal::SegmentHeader::decode(&bytes).unwrap();
+        header
+            .readable()
+            .expect("this binary can read what it wrote");
+        let mut events = Vec::new();
+        wal::replay(&bytes, wal::SEGMENT_HEADER_SIZE, &mut events).unwrap();
+        assert_eq!(events.len(), 1, "one declaration, one record");
+        assert_eq!(events[0].kind.decode(), Ok(EventKind::ToolCall));
+        match events[0].payload() {
+            Some(Payload::Semantic(s)) => {
+                assert_eq!(s.toolcall_id, 77);
+                assert_eq!(&s.tool_name[..usize::from(s.name_len)], b"Bash");
+            }
+            other => panic!("wrong view: {other:?}"),
+        }
+
+        let _ = server.join();
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 }

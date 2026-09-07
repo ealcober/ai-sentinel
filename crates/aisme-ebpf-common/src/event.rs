@@ -182,6 +182,26 @@ impl RawEvent {
         Some((&mut file.path, &mut file.path_len))
     }
 
+    /// The semantic payload, mutably, for a kind in the Semantic range;
+    /// `None` for any other range.
+    ///
+    /// The counterpart of [`RawEvent::file_path_mut`], and here for the same
+    /// reason: writing a union member needs `unsafe`, which §3.1 permits in L0
+    /// and forbids above it. A declaration arriving over the control plane
+    /// (`F2.WS.03`) is built through this, so the one place that knows the
+    /// layout is the one place that writes it.
+    #[must_use]
+    pub fn semantic_mut(&mut self) -> Option<&mut crate::payload::SemanticPayload> {
+        if self.kind.range()? != crate::kind::Range::Semantic {
+            return None;
+        }
+        // SAFETY: every member of the payload union is a `repr(C)` all-integer
+        // struct of the same size, so any bit pattern is a valid value of any
+        // member; `kind.range()` just said this event's range is Semantic,
+        // which is what makes `semantic` the member that means something here.
+        Some(unsafe { &mut self.payload.semantic })
+    }
+
     /// Whether `flags` carries [`FLAG_PATH_UNRESOLVED`] — the payload's path
     /// is the caller's string, not the kernel's resolution.
     #[must_use]
@@ -366,6 +386,32 @@ mod tests {
             Some(Payload::File(file)) => assert_eq!(&file.path[..9], b"/etc/host"),
             other => panic!("wrong view: {other:?}"),
         }
+    }
+
+    #[test]
+    fn the_semantic_payload_is_writable_only_for_a_semantic_kind() {
+        let mut event = RawEvent::ZERO;
+        event.kind = EventKind::FileOpen.into();
+        assert!(
+            event.semantic_mut().is_none(),
+            "a File event has no semantic payload to write"
+        );
+
+        event.kind = EventKind::ToolCall.into();
+        let semantic = event.semantic_mut().expect("Semantic range");
+        semantic.toolcall_id = 99;
+        semantic.tool_name[..4].copy_from_slice(b"Bash");
+        semantic.name_len = 4;
+        match event.payload() {
+            Some(Payload::Semantic(s)) => {
+                assert_eq!(s.toolcall_id, 99);
+                assert_eq!(&s.tool_name[..4], b"Bash");
+            }
+            other => panic!("wrong view: {other:?}"),
+        }
+        // And the two accessors do not overlap: a Semantic event offers no
+        // path, so nothing can write a path where a tool name lives.
+        assert!(event.file_path_mut().is_none());
     }
 
     #[test]

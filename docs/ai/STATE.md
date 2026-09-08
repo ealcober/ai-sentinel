@@ -187,6 +187,9 @@ All ten owner questions are answered (`docs/02_…` §Owner answers). Each decis
 
 ## Notes for whoever picks this up
 
+**Start at `docs/ai/handoff/02_f2-walking-skeleton.md`.** It is the mid-flight handoff for F2, written at commit `34ba389`: what to read and in what order, the rules that were paid for by defects rather than chosen, the measured state of all eleven `F2.WS.*` tasks, the one unimplemented half and its cause, the next four steps in order, and the four decisions waiting for the owner.
+
+
 - **Read Plan §3.1–3.2 before writing any code.** The layering rules (`A-01`…`A-06`) and the trait catalogue are the architecture. `aisme-core` must never learn what OS it is on — that single rule is what makes one engine serve Linux, WSL2, Android, iOS and the SDK.
 - **F2 is a walking skeleton, not a feature phase.** Its out-of-scope list is as binding as its task list. If it grows features it becomes F3 with extra steps and the whole risk-transfer benefit is lost.
 - **Plan Part II is the most valuable artefact here.** It exists specifically to stop the research's rejected designs from being re-implemented by a well-meaning contributor. Read it before writing kernel code. The precedence rule is in Plan §7.6.

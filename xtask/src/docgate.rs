@@ -1040,6 +1040,46 @@ fn phases_of(body: &str) -> Vec<String> {
     out
 }
 
+/// No build artefact is tracked.
+///
+/// `.gitignore` listed target directories one by one, so every crate added
+/// outside the workspace was one somebody had to remember. Two were added and
+/// two were forgotten, and 890 files followed them into the index.
+///
+/// The cost that matters is not the 631 MB. It is that `cargo xtask build-ebpf`
+/// rewrites them, so a routine build produces a diff of over 150 files in which
+/// **a real change to a tracked file would be invisible** — the review that
+/// would catch a mistake cannot see past the noise.
+pub(crate) fn no_build_artefacts_are_tracked() -> Result<(), String> {
+    let out = Command::new("git")
+        .args(["ls-files"])
+        .output()
+        .map_err(|e| format!("git ls-files: {e}"))?;
+    if !out.status.success() {
+        return Err("git ls-files failed; not a repository?".to_owned());
+    }
+    let listing = String::from_utf8_lossy(&out.stdout).into_owned();
+    tracked_artefacts(&listing)
+}
+
+/// The check itself, over a listing, so it is testable without a repository.
+fn tracked_artefacts(listing: &str) -> Result<(), String> {
+    let bad: Vec<&str> = listing
+        .lines()
+        .filter(|p| p.split('/').any(|seg| seg == "target"))
+        .collect();
+    if bad.is_empty() {
+        return Ok(());
+    }
+    // The count without an example is not actionable, and the example without
+    // the count hides the scale.
+    let sample: Vec<&&str> = bad.iter().take(3).collect();
+    Err(format!(
+        "{} build artefact(s) are tracked, e.g. {sample:?}",
+        bad.len()
+    ))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1075,6 +1115,19 @@ mod tests {
         let unstarted = "## Done\n\n| `F1.RT.07` | x |\n\n\
                          ## Next up\n\nNothing in F3 is started.\n\n## Blocked\n";
         assert!(next_up_agrees(unstarted).is_ok());
+    }
+
+    #[test]
+    fn a_tracked_build_artefact_is_refused() {
+        assert!(tracked_artefacts("src/main.rs\nCargo.toml\n").is_ok());
+        // A directory named `target` at any depth, which is what the general
+        // ignore pattern covers and what the specific entries missed.
+        let err =
+            tracked_artefacts("src/main.rs\ncrates/x/target/release/libx.rlib\n").unwrap_err();
+        assert!(err.contains("1 build artefact"), "{err}");
+        // Not a substring match: a source file may legitimately be called
+        // `targets.rs` or live under `retarget/`.
+        assert!(tracked_artefacts("src/targets.rs\nsrc/retarget/mod.rs\n").is_ok());
     }
 
     #[test]

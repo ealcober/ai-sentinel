@@ -519,6 +519,10 @@ fn cross_document_checks(r: &mut Report, plan: &str) {
             "STATE.md's Next up does not contradict its own Done table",
             g::state_next_up_agrees_with_done(),
         ),
+        (
+            "no build artefact is tracked",
+            g::no_build_artefacts_are_tracked(),
+        ),
         ("ADR numbers are contiguous", g::adrs_contiguous()),
         (
             "the §7.4 seed memories exist and cite a source",

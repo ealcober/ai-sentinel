@@ -50,7 +50,8 @@ design, and point 8 is a typographical slip.
 8. `STATE.md:148` repeats a sentence verbatim.
 9. **890 build artefacts are tracked in git, 631 MB of them.** Found while implementing points 1–8
    and **recorded rather than fixed**, per the implementation algorithm: what appears on the way
-   and is not in a point becomes a new numbered point. Not yet amplified.
+   and is not in a point becomes a new numbered point. **Amplified as `docs/08` and its first two
+   points are implemented**; the third — the 75 MB already in history — is the owner's.
 
 ---
 

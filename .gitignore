@@ -1,7 +1,9 @@
-/target
-# crates/aisme-ebpf is outside the workspace and builds with its own nightly, so
-# it has a target/ of its own that /target does not cover.
-/crates/aisme-ebpf/target
+# Any directory named target/, at any depth. Naming them one by one is what put
+# 890 build artefacts in the index: every crate outside the workspace has a
+# target/ of its own, and each one was something a person had to remember. Two
+# were added and two were forgotten. A crate that genuinely must ship a
+# prebuilt artefact takes `git add -f`, with the reason in the commit.
+target/
 **/*.rs.bk
 # Cargo.lock IS committed: this workspace ships binaries, and reproducible release
 # builds (plan DEP.BLD.05, DEP.SUP.07) and cargo-auditable manifests are meaningless

@@ -41,7 +41,10 @@ const CHECKS: &[Check] = &[
     Check {
         group: "toolchains",
         label: "bpf-linker",
-        remedy: "cargo +nightly install bpf-linker --no-default-features --features llvm-21",
+        // Printed only when the pin cannot be resolved; `bpf_linker_remedy`
+        // composes the real line. A floating `+nightly` and a missing
+        // `--version` are both wrong here, which is why neither survives.
+        remedy: "cargo +<the channel in crates/aisme-ebpf/rust-toolchain.toml> install bpf-linker --version <the validated version> --no-default-features --features llvm-<the pinned major>",
         unblocks: "build-ebpf, F0.REPO.02's Aya pin, F0.VER.16, F0.VER.19",
     },
     Check {
@@ -142,7 +145,7 @@ pub(crate) fn run() -> u8 {
 
     println!("\ndoctor never installs. Run these:\n");
     for c in &missing {
-        println!("  {}", c.remedy);
+        println!("  {}", remedy_for(c));
         if c.label == "/dev/kvm readable and writable" {
             if let Some(observed) = kvm_observed() {
                 println!("      observed: {observed}");
@@ -286,6 +289,89 @@ fn has_rust_src(toolchain: &str) -> bool {
     .is_some_and(|s| s.lines().any(|l| l.trim().starts_with("rust-src")))
 }
 
+/// The remedy as printed.
+///
+/// Static for every check but one. `bpf-linker` needs the pinned nightly by
+/// name, the version `F0.REPO.02` validated and an LLVM prefix, and three of
+/// those are knowable at run time — so the line is composed rather than
+/// written down and left to drift from the pin it serves.
+fn remedy_for(c: &Check) -> String {
+    if c.label == "bpf-linker" {
+        return bpf_linker_remedy();
+    }
+    c.remedy.to_owned()
+}
+
+/// Resolve what the host can answer, then compose.
+fn bpf_linker_remedy() -> String {
+    let channel = pinned_channel()
+        .unwrap_or_else(|| "<the channel in crates/aisme-ebpf/rust-toolchain.toml>".to_owned());
+    let major = pinned_nightly_llvm();
+    let prefix = major
+        .map(|m| format!("/usr/lib/llvm-{m}"))
+        .filter(|p| Path::new(p).is_dir())
+        .unwrap_or_else(|| "<the prefix of the LLVM the pin needs>".to_owned());
+    let version =
+        pinned_bpf_linker_version().unwrap_or_else(|| "<the validated version>".to_owned());
+    bpf_linker_remedy_line(&channel, major, &prefix, &version)
+}
+
+/// The line itself, with every input passed in so it is testable off-host.
+///
+/// Three things this fixes, each measured rather than assumed:
+///
+/// * **`+nightly` selects the wrong toolchain.** The pin's own comment says any
+///   nightly but the pinned one is the wrong one, and the remedy one line above
+///   already names the pinned channel.
+/// * **`llvm-config` is not on `PATH` under that name.** `bpf-linker`'s build
+///   script searches `PATH` for a file called exactly `llvm-config` when
+///   `LLVM_PREFIX` is unset, and Debian-family packages install
+///   `/usr/bin/llvm-config-21`. The build then reports "could not find
+///   llvm-config" with a correct LLVM present and working.
+/// * **`llvm-sys` reads a different variable.** `--features llvm-21` pulls in
+///   `llvm-sys 211.0.0`, which reads `LLVM_SYS_211_PREFIX`. Setting one of the
+///   two is a coin flip on which crate fails first, so both go on the line.
+///
+/// The `LLVM_SYS_<major>1_PREFIX` shape is `llvm-sys`'s own convention, observed
+/// at 211 for LLVM 21. If the pin moves, check the variable name against the
+/// `llvm-sys` version the new feature selects rather than trusting the formula.
+fn bpf_linker_remedy_line(
+    channel: &str,
+    major: Option<u32>,
+    prefix: &str,
+    version: &str,
+) -> String {
+    let (sys_var, feature) = major.map_or_else(
+        || {
+            (
+                "LLVM_SYS_<major>1_PREFIX".to_owned(),
+                "<the pinned major>".to_owned(),
+            )
+        },
+        |m| (format!("LLVM_SYS_{m}1_PREFIX"), m.to_string()),
+    );
+    format!(
+        "LLVM_PREFIX={prefix} {sys_var}={prefix} cargo +{channel} install bpf-linker \
+--version {version} --no-default-features --features llvm-{feature}"
+    )
+}
+
+/// The `bpf-linker` version `F0.REPO.02` validated, from the pin's comment.
+///
+/// The version has no machine-readable home: `rust-toolchain.toml` is rustup's
+/// schema and will not carry a field of ours. It lives in the comment that
+/// records the validation, and that comment is load-bearing for this function —
+/// which is why the comment says so.
+fn pinned_bpf_linker_version() -> Option<String> {
+    let pin = std::fs::read_to_string("crates/aisme-ebpf/rust-toolchain.toml").ok()?;
+    let after = pin.split("bpf-linker ").nth(1)?;
+    let v: String = after
+        .chars()
+        .take_while(|c| c.is_ascii_digit() || *c == '.')
+        .collect();
+    (v.split('.').count() == 3).then_some(v)
+}
+
 /// The channel `crates/aisme-ebpf/rust-toolchain.toml` pins.
 ///
 /// Checking for "a nightly" would pass while the pinned one is absent or lacks
@@ -300,7 +386,10 @@ fn pinned_channel() -> Option<String> {
 
 #[cfg(test)]
 mod tests {
-    use super::{on_path, probe, rustc_matches_pin, CHECKS};
+    use super::{
+        bpf_linker_remedy_line, on_path, pinned_bpf_linker_version, probe, rustc_matches_pin,
+        CHECKS,
+    };
 
     /// Commands read the repository by relative path, so a test must stand where
     /// `main` puts itself.
@@ -334,6 +423,39 @@ mod tests {
             "rustc does not match rust-toolchain.toml"
         );
         assert!(!probe("no such check"));
+    }
+
+    #[test]
+    fn the_bpf_linker_remedy_carries_the_pin_and_both_prefixes() {
+        let line =
+            bpf_linker_remedy_line("nightly-2026-01-01", Some(21), "/usr/lib/llvm-21", "0.11.0");
+        assert!(line.contains("cargo +nightly-2026-01-01 install"), "{line}");
+        assert!(line.contains("--version 0.11.0"), "{line}");
+        assert!(line.contains("LLVM_PREFIX=/usr/lib/llvm-21"), "{line}");
+        assert!(
+            line.contains("LLVM_SYS_211_PREFIX=/usr/lib/llvm-21"),
+            "{line}"
+        );
+        assert!(line.contains("--features llvm-21"), "{line}");
+
+        // A host that cannot answer gets placeholders, never a path that does
+        // not exist: a remedy that looks exact and is wrong is the defect this
+        // replaced.
+        let unknown = bpf_linker_remedy_line(
+            "<the pinned channel>",
+            None,
+            "<the LLVM prefix>",
+            "<the validated version>",
+        );
+        assert!(!unknown.contains("/usr/lib"), "{unknown}");
+        assert!(unknown.contains("LLVM_SYS_<major>1_PREFIX"), "{unknown}");
+    }
+
+    #[test]
+    fn the_pinned_bpf_linker_version_is_readable_from_the_pin() {
+        // The comment in crates/aisme-ebpf/rust-toolchain.toml is the source.
+        let v = pinned_bpf_linker_version().expect("the pin names a bpf-linker version");
+        assert_eq!(v.split('.').count(), 3, "{v}");
     }
 
     #[test]

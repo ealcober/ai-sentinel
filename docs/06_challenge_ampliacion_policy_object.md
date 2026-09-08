@@ -316,9 +316,9 @@ when one exists — until then it is a bound with a refusal, not a bound with ev
 ### 1. Challenge
 
 *Is this the best solution?* The tension is real and worth stating plainly. `F1.RT.07` splits
-privilege: `aisme-loaderd` holds `CAP_BPF` (`deploy/systemd/aisme-loaderd.service:21`) and
+privilege: `aisme-loaderd` holds `CAP_BPF` (`deploy/systemd/aisme-loaderd.service:29`) and
 `aisme-agentd` holds **none** (`CapabilityBoundingSet=` at
-`deploy/systemd/aisme-agentd.service:27`). A BPF map is owned by an fd; when the last fd closes,
+`deploy/systemd/aisme-agentd.service:32`). A BPF map is owned by an fd; when the last fd closes,
 the map is destroyed. So a loader that creates the maps and exits destroys them, and a loader that
 stays alive to hold them is a privileged process that never drops.
 
@@ -352,8 +352,9 @@ Safe, clear and compliant, with the boundary stated where someone will look for 
   path would hand the authority back to anyone on the machine, which is the same defect as (3) by
   another route.
 - **The loader is not resident.** It will create, pin, publish and exit. `bpffs` holding the
-  reference is what makes that possible, and the unit will gain `Type=oneshot` with
-  `RemainAfterExit=yes` so systemd's model matches what the process does.
+  reference is what makes that possible, and the unit already carries `Type=oneshot` and
+  `RemainAfterExit=yes` so systemd's model matches what the process does. `units.rs` enforces
+  both, so a unit that quietly loses either one fails a test rather than a machine.
 - **`agentd` is proven unable to write.** Not asserted — tested. The negative in point 6 will have
   `agentd` attempt an update on the pinned map and require `EPERM`, which is the test that
   `CapabilityBoundingSet=` is real rather than written.
@@ -373,9 +374,11 @@ Safe, clear and compliant, with the boundary stated where someone will look for 
   `aisme_core::policy::{parse, compile}`, lower it with `BpfTrieBackend`, load the sensor's object,
   pin the three maps, publish, and print the resulting `PolicyGeneration`. Compilation failure will
   print every `CompileError` with its position and exit non-zero **before** any map is touched.
-- `deploy/systemd/aisme-loaderd.service` will gain `Type=oneshot`, `RemainAfterExit=yes` and the
-  `--publish` invocation, and `units.rs`'s checker will gain those two directives to its list, so
-  a unit that silently loses them fails the gate the way the capability directives already do.
+- `deploy/systemd/aisme-loaderd.service` will gain the `--publish` invocation — `Type=oneshot`
+  and `RemainAfterExit=yes` are already there and already checked. `--publish` joins the flag list
+  in `units.rs`'s `check_loaderd` in **this same change**: that list is empty today because the
+  binary parses no arguments, and a unit passing a flag the binary does not parse is refused by a
+  test (`check_exec_start`).
 
 ### 4. Tests
 
@@ -402,8 +405,8 @@ test gains the two new ways.
   between two processes and interfaces belong in writing.
 - `deploy/systemd/aisme-loaderd.service`'s own comments: why `oneshot` is correct here.
 
-**Closing.** Verified against `deploy/systemd/aisme-loaderd.service:21` (`CAP_BPF`),
-`deploy/systemd/aisme-agentd.service:27` (the empty bounding set), `crates/aisme-loaderd/src/units.rs`
+**Closing.** Verified against `deploy/systemd/aisme-loaderd.service:29` (`CAP_BPF`),
+`deploy/systemd/aisme-agentd.service:32` (the empty bounding set), `crates/aisme-loaderd/src/units.rs`
 as implemented, and `xtask/src/rules.rs`'s `A-05` check as extended on 2026-09-07 to every L3
 engine. **One design was considered and rejected on a specification, not a preference**: passing
 the map fd to `agentd` with `SCM_RIGHTS` would leave `CapabilityBoundingSet=` decorative — the

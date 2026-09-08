@@ -141,16 +141,46 @@ fn walk(dir: &Path, out: &mut Vec<String>) {
 /// Two files both claiming to be canonical is how a session ends up following
 /// neither.
 pub(crate) fn read_order_agrees() -> Result<(), String> {
-    let a = ordered_paths(&section(&read("CLAUDE.md"), "## Read order"));
-    let b = ordered_paths(&section(&read("docs/ai/AGENTS.md"), "### On start"));
+    let claude = section(&read("CLAUDE.md"), "## Read order");
+    let agents = section(&read("docs/ai/AGENTS.md"), "### On start");
+    let a = ordered_paths(&claude);
+    let b = ordered_paths(&agents);
     if a.is_empty() {
         return Err("no read order found in CLAUDE.md".into());
     }
-    if a == b {
+    if a != b {
+        return Err(format!("CLAUDE.md lists {a:?}, AGENTS.md lists {b:?}"));
+    }
+    let missing: Vec<&str> = [("CLAUDE.md", &claude), ("docs/ai/AGENTS.md", &agents)]
+        .into_iter()
+        .filter(|(_, body)| !has_step_zero(body))
+        .map(|(name, _)| name)
+        .collect();
+    if missing.is_empty() {
         Ok(())
     } else {
-        Err(format!("CLAUDE.md lists {a:?}, AGENTS.md lists {b:?}"))
+        Err(format!(
+            "{missing:?} carry no step 0 running `cargo xtask doctor` — the host is read instead of measured"
+        ))
     }
+}
+
+/// A read-order step numbered 0 that names `cargo xtask doctor`.
+///
+/// `ordered_paths` keeps a token only when it starts with `docs/` or is
+/// `CLAUDE.md`, so a step that is a *command* contributes nothing to the
+/// comparison above: without this the two files could lose or reword step 0
+/// independently and the gate would still report agreement.
+///
+/// Presence and the command, not identical wording. `CLAUDE.md` writes the list
+/// as prose with bold entries and `AGENTS.md` as a fenced code block, so no
+/// entry is textually identical between the two — which is why `ordered_paths`
+/// normalises `**This file**` to `CLAUDE.md` in the first place.
+fn has_step_zero(body: &str) -> bool {
+    body.lines().any(|l| {
+        let t = l.trim_start();
+        t.starts_with("0.") && t.contains("cargo xtask doctor")
+    })
 }
 
 /// The text under a heading, up to the next heading of the same or higher level.
@@ -880,4 +910,190 @@ pub(crate) fn part_vi_tree(plan: &str) -> Result<(), String> {
         }
     }
     fail(&bad)
+}
+
+/// `STATE.md`'s header date is not older than the file's own last commit.
+///
+/// The header carries `Last updated: **YYYY-MM-DD**`, and it is the first line
+/// of the first file a session is told to trust over its own assumptions. A
+/// session that edits the file and leaves the date behind publishes a claim
+/// that decays in silence. Git knows when the file last changed, so the two
+/// dates are comparable exactly rather than by judgement.
+pub(crate) fn state_last_updated_is_recent() -> Result<(), String> {
+    let out = Command::new("git")
+        .args(["log", "-1", "--format=%aI", "--", "docs/ai/STATE.md"])
+        .output()
+        .map_err(|e| format!("git log: {e}"))?;
+    if !out.status.success() {
+        return Err("git log failed; not a repository?".to_owned());
+    }
+    let committed = String::from_utf8_lossy(&out.stdout).trim().to_owned();
+    state_header_is_not_older(&read("docs/ai/STATE.md"), &committed)
+}
+
+/// The comparison, with git's answer passed in so it is testable without a
+/// repository.
+///
+/// An empty commit date means git answered nothing — untracked file, or no
+/// commit yet. That is an error and not a pass: `changelog_covers_commits`
+/// treats a git that cannot answer the same way, and an absence read as
+/// success is the failure mode this project refuses everywhere else.
+fn state_header_is_not_older(body: &str, committed: &str) -> Result<(), String> {
+    let Some(header) = body.lines().find(|l| l.contains("Last updated:")) else {
+        return Err("STATE.md carries no `Last updated:` field".to_owned());
+    };
+    let Some(stated) = header
+        .split("Last updated:")
+        .nth(1)
+        .and_then(|rest| rest.split("**").nth(1))
+        .map(str::trim)
+    else {
+        return Err(format!("`Last updated:` carries no **date**: {header}"));
+    };
+    // ISO dates compare correctly as text, which is why the header is asked to
+    // carry one. Anything shorter than a whole day is noise for this check.
+    let Some(day) = committed.get(..10) else {
+        return Err("git named no commit for docs/ai/STATE.md".to_owned());
+    };
+    if stated < day {
+        return Err(format!(
+            "STATE.md says `Last updated: {stated}` and its last commit is {day} — \
+             the header outlived the edit"
+        ));
+    }
+    Ok(())
+}
+
+/// `STATE.md`'s `## Next up` does not call a phase unstarted while `## Done`
+/// records one of that phase's tasks.
+///
+/// The two sections drift by construction: `## Done` is appended to as work
+/// closes, and `## Next up` is prose revised when someone remembers. On
+/// 2026-09-08 the file recorded four F2 tasks with their measurements and,
+/// fourteen lines lower, that nothing in F2 had started.
+///
+/// A task ID is a token, so the disagreement is comparable exactly — and the
+/// check claims no more than that. Whether a task listed under `## Done` is
+/// *actually* done is not knowable from this file, and this does not pretend
+/// to know it.
+pub(crate) fn state_next_up_agrees_with_done() -> Result<(), String> {
+    next_up_agrees(&read("docs/ai/STATE.md"))
+}
+
+fn next_up_agrees(body: &str) -> Result<(), String> {
+    let done = section(body, "## Done");
+    let next_up = section(body, "## Next up");
+    if done.is_empty() || next_up.is_empty() {
+        return Err("STATE.md is missing `## Done` or `## Next up`".to_owned());
+    }
+    let line_of = |needle: &str| -> usize {
+        body.lines()
+            .position(|l| l.contains(needle))
+            .map_or(0, |i| i + 1)
+    };
+    let mut problems = Vec::new();
+    for phase in phases_of(&done) {
+        // Both spellings, because the file writes task IDs in backticks and
+        // prose phases without them.
+        for claim in [
+            format!("Nothing in {phase} is started"),
+            format!("Nothing in `{phase}` is started"),
+        ] {
+            if next_up.contains(&claim) {
+                problems.push(format!(
+                    "`## Next up` (:{}) says \"{claim}\" while `## Done` (:{}) records a {phase} task",
+                    line_of(&claim),
+                    line_of(&format!("{phase}.")),
+                ));
+            }
+        }
+    }
+    if problems.is_empty() {
+        Ok(())
+    } else {
+        Err(problems.join("; "))
+    }
+}
+
+/// The phase prefixes (`F2`) of every `F<n>.<block>.<task>` ID in a section.
+fn phases_of(body: &str) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    for tok in body.split(|c: char| !(c.is_ascii_alphanumeric() || c == '.')) {
+        let mut parts = tok.split('.');
+        let (Some(phase), Some(block), Some(task), None) =
+            (parts.next(), parts.next(), parts.next(), parts.next())
+        else {
+            continue;
+        };
+        let phase_ok = phase.len() > 1
+            && phase.starts_with('F')
+            && phase[1..].chars().all(|c| c.is_ascii_digit());
+        let block_ok = !block.is_empty()
+            && block
+                .chars()
+                .all(|c| c.is_ascii_uppercase() || c.is_ascii_digit());
+        let task_ok = !task.is_empty() && task.chars().all(|c| c.is_ascii_digit());
+        if phase_ok && block_ok && task_ok && !out.contains(&phase.to_owned()) {
+            out.push(phase.to_owned());
+        }
+    }
+    out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const HEADER: &str = "> Last updated: **2026-09-07** · Phase: **F2**\n";
+
+    #[test]
+    fn a_state_header_older_than_its_last_commit_is_refused() {
+        assert!(state_header_is_not_older(HEADER, "2026-09-08T21:15:45+02:00").is_err());
+        assert!(state_header_is_not_older(HEADER, "2026-09-07T09:00:00+02:00").is_ok());
+        assert!(state_header_is_not_older(HEADER, "2026-09-06T09:00:00+02:00").is_ok());
+    }
+
+    #[test]
+    fn a_git_that_cannot_answer_is_an_error_and_not_a_pass() {
+        // The whole point of the check: an absent answer is never a success.
+        assert!(state_header_is_not_older(HEADER, "").is_err());
+        assert!(state_header_is_not_older("# STATE\n", "2026-09-08T00:00:00+02:00").is_err());
+    }
+
+    #[test]
+    fn next_up_may_not_call_a_phase_unstarted_that_done_records() {
+        let bad = "## Done\n\n| `F2.WS.01` — the kernel accepted it | x |\n\n\
+                   ## Next up\n\nNothing in F2 is started; `F2.WS.01` is next.\n\n## Blocked\n";
+        let err = next_up_agrees(bad).unwrap_err();
+        assert!(err.contains("F2"), "{err}");
+
+        let good = "## Done\n\n| `F2.WS.01` — the kernel accepted it | x |\n\n\
+                    ## Next up\n\n`F2.WS.04`'s publication is next.\n\n## Blocked\n";
+        assert!(next_up_agrees(good).is_ok());
+
+        // A phase with nothing in Done may still be called unstarted.
+        let unstarted = "## Done\n\n| `F1.RT.07` | x |\n\n\
+                         ## Next up\n\nNothing in F3 is started.\n\n## Blocked\n";
+        assert!(next_up_agrees(unstarted).is_ok());
+    }
+
+    #[test]
+    fn a_read_order_without_step_zero_is_refused() {
+        assert!(has_step_zero(
+            "0. cargo xtask doctor           <- the host, measured"
+        ));
+        assert!(has_step_zero(
+            "0. **Run `cargo xtask doctor`** - the host, measured"
+        ));
+        // The two ways it rots: the step goes, or the command is reworded away.
+        assert!(!has_step_zero("1. CLAUDE.md\n2. docs/ai/AGENTS.md"));
+        assert!(!has_step_zero("0. check the host prerequisites first"));
+    }
+
+    #[test]
+    fn phases_of_reads_task_ids_and_not_prose() {
+        assert_eq!(phases_of("`F2.WS.01` and `F0.VER.12`"), ["F2", "F0"]);
+        assert!(phases_of("F2 is the walking skeleton, see §3.7.1").is_empty());
+        assert!(phases_of("version 1.2.3").is_empty());
+    }
 }

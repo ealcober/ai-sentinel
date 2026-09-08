@@ -1,9 +1,17 @@
 # SPDX-License-Identifier: Apache-2.0
 #
 # The privileged half of the split (F1.RT.07). It holds CAP_BPF and
-# CAP_NET_ADMIN long enough to load the programs and attach them, hands the
-# resulting file descriptors to agentd over the socket, and exits. Nothing
-# long-running holds those capabilities.
+# CAP_NET_ADMIN long enough to load the programs, attach them and pin what must
+# outlive it under /sys/fs/bpf/aisme/, then exits. Nothing long-running holds
+# those capabilities.
+#
+# The pin is what lets it exit: a BPF map dies with its last fd, and bpffs holds
+# one. agentd is handed no descriptor at all — passing it a writable policy-map
+# fd over SCM_RIGHTS would leave its empty CapabilityBoundingSet= decorative,
+# the capability gone and the authority kept (docs/06 point 3).
+#
+# The --publish invocation arrives with that point; today the binary takes no
+# arguments and verifies the split it belongs to.
 [Unit]
 Description=AISME privileged loader
 Documentation=https://github.com/ealcober/aisme
@@ -13,7 +21,7 @@ RequiresMountsFor=/sys/fs/bpf
 [Service]
 Type=oneshot
 RemainAfterExit=yes
-ExecStart=/usr/lib/aisme/aisme-loaderd --handoff /run/aisme/loader.sock
+ExecStart=/usr/lib/aisme/aisme-loaderd
 
 # The whole point: these two capabilities, and nothing else. CAP_SYS_ADMIN is
 # deliberately absent — a loader that could do anything would make the split

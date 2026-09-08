@@ -12,8 +12,13 @@ After=aisme-loaderd.service
 Requires=aisme-loaderd.service
 
 [Service]
-Type=notify
-ExecStart=/usr/lib/aisme/aisme-agentd --handoff /run/aisme/loader.sock
+# Type=exec, not notify: the daemon sends no READY=1, and a notify unit whose
+# process never does is held in `activating` until TimeoutStartSec and then
+# failed — taking aisme-loaderd's Requires= with it. notify becomes correct once
+# the hot loop has a readiness point to report, which is a task and not a side
+# effect of writing this line.
+Type=exec
+ExecStart=/usr/lib/aisme/aisme-agentd --run /var/lib/aisme/wal --serve-ipc /run/aisme/agentd.sock
 User=aisme
 Group=aisme
 

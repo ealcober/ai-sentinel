@@ -6,6 +6,7 @@ You are working on **AISME**, a Ring-0 security engine for AI agents. This file 
 
 This list is canonical. `docs/ai/AGENTS.md` §1 repeats it verbatim and plan Part 0 rule 5 points to it; a gate checks the two path lists agree.
 
+0. **Run `cargo xtask doctor`** — the host, measured rather than read. A `FAIL` names each missing prerequisite and what it unblocks: documentation and host-only Rust work may proceed on one; anything that builds the eBPF objects, benchmarks, or boots a VM may not.
 1. **This file** — rules and forbidden patterns.
 2. `docs/ai/AGENTS.md` — session protocol and the **definition of done**.
 3. `docs/ai/STATE.md` — what is actually done and what is next. Trust this over your assumptions.

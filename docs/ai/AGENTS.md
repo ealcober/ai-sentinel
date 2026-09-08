@@ -9,6 +9,7 @@ This is the operational protocol. `CLAUDE.md` at the repository root is the shor
 The canonical list lives in `CLAUDE.md`; it is repeated here verbatim and a gate checks the two agree.
 
 ```
+0. cargo xtask doctor           ← the host, measured rather than read
 1. CLAUDE.md                    ← rules and forbidden patterns
 2. docs/ai/AGENTS.md            ← you are here; the definition of done is §2 below
 3. docs/ai/STATE.md             ← what is actually done; trust it over assumptions
@@ -18,6 +19,10 @@ The canonical list lives in `CLAUDE.md`; it is repeated here verbatim and a gate
 7. docs/ai/memory/ (skim)       ← durable non-obvious facts
 ```
 
+Step 0 is a measurement, not a gate. A `FAIL` names every missing prerequisite and what it
+unblocks: documentation and host-only Rust work may proceed on one; anything that builds the eBPF
+objects, benchmarks, or boots a VM may not.
+
 ### During
 - Work one task ID at a time. Announce which one.
 - If you discover the plan is wrong, say so and fix the plan. It is a living document, not scripture — except for Part II findings, which need an ADR.
@@ -25,7 +30,7 @@ The canonical list lives in `CLAUDE.md`; it is repeated here verbatim and a gate
 
 ### On finish (non-optional)
 ```
-1. Update docs/ai/STATE.md      ← statuses, learnings, blockers
+1. Update docs/ai/STATE.md      ← statuses, learnings, blockers, and the header's own date
 2. Add a line to docs/CHANGELOG.md for every task closed
 3. Append docs/ai/memory/*.md   ← only durable, non-obvious discoveries
 4. Write an ADR if you decided something architectural

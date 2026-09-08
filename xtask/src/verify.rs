@@ -511,6 +511,14 @@ fn cross_document_checks(r: &mut Report, plan: &str) {
             "STATE.md carries its §7.3 headings, in order",
             g::state_headings(),
         ),
+        (
+            "STATE.md's header date is not older than its last commit",
+            g::state_last_updated_is_recent(),
+        ),
+        (
+            "STATE.md's Next up does not contradict its own Done table",
+            g::state_next_up_agrees_with_done(),
+        ),
         ("ADR numbers are contiguous", g::adrs_contiguous()),
         (
             "the §7.4 seed memories exist and cite a source",

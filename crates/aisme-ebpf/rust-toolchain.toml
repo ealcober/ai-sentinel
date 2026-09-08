@@ -6,6 +6,11 @@
 # Validated by F0.REPO.02 on 2026-09-06 against **aya-ebpf 0.2.1** and
 # **bpf-linker 0.11.0 built for LLVM 21**.
 #
+# That version is load-bearing, not decoration: `cargo xtask doctor` reads it
+# out of this line to compose the install command it prints, because
+# rust-toolchain.toml is rustup's schema and will not carry a field of ours.
+# Keep the shape `bpf-linker <x.y.z>` if you edit the sentence.
+#
 # The pin is old on purpose, and the rule behind it is the durable part:
 # **rustc's LLVM major must equal the LLVM bpf-linker was built against.**
 # bpf-linker reads the bitcode rustc emits, so a mismatch fails at link time with

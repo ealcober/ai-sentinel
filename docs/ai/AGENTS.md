@@ -57,6 +57,17 @@ A phase is done when its `GATE F<n>` block passes in full. Code that works but w
 - **Never claim a measurement you did not take.** Budget numbers come from `cargo xtask verify-budgets`, not from estimation.
 - **Do not report completion for partial work.** Report what is done, what is not, and why.
 
+## 2-bis. Push every commit
+
+**A commit that is not pushed does not exist.** Push immediately after
+committing, every time, without being asked. The owner's machine is the only
+place this work lives until it reaches `origin`, and a local-only commit is an
+outage waiting for a disk.
+
+This is not a preference about workflow: `CLAUDE.md` §"How to execute the plan"
+says "do not push unless asked", and the owner has asked, standing, for every
+commit. Where the two disagree, this line wins.
+
 ## 3-bis. Verification rules
 
 Each of these was paid for by a defect that reached a commit or a VM. They are

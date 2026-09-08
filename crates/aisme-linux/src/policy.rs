@@ -19,6 +19,16 @@ use aisme_ebpf_common::Verdict;
 /// cannot be a key could not have been an event either.
 pub const TRIE_PATH_BYTES: usize = 200;
 
+/// Entries each policy trie holds.
+///
+/// Matches `AISME_POLICY_A` and `AISME_POLICY_B` in `crates/aisme-ebpf`, which
+/// declare `with_max_entries(1024, 0)`. The two numbers are the same fact in
+/// two crates that cannot see each other, so a policy that would not fit is
+/// **refused at lowering** with both numbers rather than truncated: a truncated
+/// policy denies less than the one the operator wrote, which is the dangerous
+/// direction.
+pub const POLICY_TRIE_ENTRIES: usize = 1024;
+
 /// One entry: an LPM trie key and the verdict it carries.
 ///
 /// `repr(C)` and in this order because that is the layout the kernel reads —
@@ -133,6 +143,17 @@ impl PolicyBackend for BpfTrieBackend {
                 }
             }
         }
+        if image.entries.len() > POLICY_TRIE_ENTRIES {
+            return Err(LowerError {
+                backend: BackendKind::BpfTrie,
+                rule_id: None,
+                message: format!(
+                    "{} prefixes exceed the {POLICY_TRIE_ENTRIES}-entry policy trie; publishing \
+                     part of a policy would deny less than the one written",
+                    image.entries.len()
+                ),
+            });
+        }
         Ok(image)
     }
 }
@@ -224,6 +245,10 @@ mod tests {
         // glob rule contributes no trie key, which is the point of only
         // lowering prefixes.
         assert_eq!(image.entries.len(), 2, "{image:?}");
+        assert!(
+            image.entries.len() <= POLICY_TRIE_ENTRIES,
+            "the shipped policy is publishable, not merely lowerable"
+        );
 
         let shadow = image
             .entries
@@ -241,6 +266,56 @@ mod tests {
         assert_eq!(key.len(), 4 + TRIE_PATH_BYTES);
         assert_eq!(&key[..4], &shadow.prefix_len.to_ne_bytes());
         assert_eq!(&key[4..15], b"/etc/shadow");
+    }
+
+    /// The key this backend produces is the key the kernel reads. `aya_ebpf`'s
+    /// `Key<K>` is `#[repr(C)] { prefix_len: u32, data: K }`
+    /// (`aya-ebpf-0.2.1/src/maps/lpm_trie.rs:24`), and `TrieEntry` is that
+    /// followed by the verdict byte. Pinned here because the two live in crates
+    /// that cannot see each other, and nothing else would notice them drifting.
+    #[test]
+    fn the_entry_layout_is_the_kernels_lpm_key_followed_by_the_verdict() {
+        use std::mem::{align_of, offset_of, size_of};
+        assert_eq!(offset_of!(TrieEntry, prefix_len), 0);
+        assert_eq!(offset_of!(TrieEntry, path), 4);
+        assert_eq!(offset_of!(TrieEntry, verdict), 4 + TRIE_PATH_BYTES);
+        assert_eq!(align_of::<TrieEntry>(), 4, "a u32 first, then bytes");
+        assert!(size_of::<TrieEntry>() > 4 + TRIE_PATH_BYTES);
+
+        let entry = entry_for("/etc", Verdict::Deny).expect("short enough");
+        let key = entry.key_bytes();
+        assert_eq!(key.len(), 4 + TRIE_PATH_BYTES, "prefix_len then data");
+        assert_eq!(&key[..4], &32u32.to_ne_bytes(), "four bytes is 32 bits");
+        assert_eq!(&key[4..8], b"/etc");
+    }
+
+    /// A policy that does not fit the trie is refused, with both numbers.
+    /// Publishing part of it would enforce less than the operator wrote.
+    #[test]
+    fn a_policy_larger_than_the_trie_is_refused_with_both_numbers() {
+        let mut compiled = skeleton();
+        let prefixes: Vec<String> = (0..=POLICY_TRIE_ENTRIES)
+            .map(|i| format!("/p{i}"))
+            .collect();
+        let mut oversized = compiled
+            .rules
+            .first()
+            .cloned()
+            .expect("the policy has rules");
+        oversized.predicate.terms = vec![Term::PathUnder(prefixes)];
+        compiled.rules = vec![oversized];
+
+        let err = BpfTrieBackend
+            .lower(&compiled)
+            .expect_err("it must not publish a partial policy");
+        assert!(
+            err.message.contains(&POLICY_TRIE_ENTRIES.to_string()),
+            "{err}"
+        );
+        assert!(
+            err.message.contains(&(POLICY_TRIE_ENTRIES + 1).to_string()),
+            "the message names what was asked for too: {err}"
+        );
     }
 
     /// A prefix longer than the key is refused, not truncated: a truncated key

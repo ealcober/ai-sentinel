@@ -21,7 +21,7 @@ use aya_ebpf::helpers::{
     bpf_probe_read_user_str_bytes,
 };
 use aya_ebpf::macros::{map, tracepoint};
-use aya_ebpf::maps::{HashMap, PerCpuArray, RingBuf};
+use aya_ebpf::maps::{Array, HashMap, LpmTrie, PerCpuArray, RingBuf};
 use aya_ebpf::programs::TracePointContext;
 use aisme_ebpf_common::{EventKind, Outcome, RawEvent, FLAG_PATH_UNRESOLVED, FLAG_TRUNCATED};
 
@@ -51,6 +51,38 @@ static AISME_SEQ: PerCpuArray<u64> = PerCpuArray::with_max_entries(1, 0);
 /// a value.
 #[map]
 static AISME_DROPS: PerCpuArray<u64> = PerCpuArray::with_max_entries(1, 0);
+
+/// The policy double buffer (`F2.WS.04`), side A.
+///
+/// Two named tries and an index, not `BPF_MAP_TYPE_ARRAY_OF_MAPS`, and the
+/// reason is measured rather than chosen: that type exists at the pinned
+/// `aya-ebpf 0.2.1` only as a **BTF** map, and BTF is what this toolchain's
+/// pairing cannot produce readably — `unexpected BTF type id 45`, measured on
+/// 6.8 and 5.4 (`docs/06` point 1). The legacy `#[map]` style below is the one
+/// proven to load on every kernel in the matrix.
+///
+/// **Nothing in this object reads them.** Kernel-side evaluation is F3's; the
+/// seam F2 proves is compile → artefact → atomic publish, and the key layout,
+/// the value size and the update semantics are where a compiler's output meets
+/// reality. A lookup here would make the map look load-bearing when it is not.
+#[map]
+static AISME_POLICY_A: LpmTrie<[u8; 200], u8> = LpmTrie::with_max_entries(1024, 0);
+
+/// Side B. Publication fills whichever of the two is **idle** — the one no
+/// reader is pointed at — and then swaps the index, so a reader never observes
+/// a partially filled trie. Filling one shared trie in place is the torn read
+/// this pair exists to prevent.
+#[map]
+static AISME_POLICY_B: LpmTrie<[u8; 200], u8> = LpmTrie::with_max_entries(1024, 0);
+
+/// `[generation, active_index]`.
+///
+/// The publisher writes the generation first and the index **last**, so the
+/// index write is the publication: everything before it is invisible. A reader
+/// that wants both consistently reads the index, then the generation, then the
+/// index again, and retries when it moved.
+#[map]
+static AISME_POLICY_META: Array<u64> = Array::with_max_entries(2, 0);
 
 /// Byte offset of `filename` in the `sys_enter_openat` trace-event record.
 ///

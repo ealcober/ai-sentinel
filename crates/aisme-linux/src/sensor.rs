@@ -55,10 +55,18 @@ const OBJECT: &[u8] = &[];
 /// established (`AGENTS.md` §3-bis).
 pub(crate) fn error_chain(error: &dyn std::error::Error) -> String {
     let mut text = error.to_string();
+    let mut last = text.clone();
     let mut source = error.source();
     while let Some(link) = source {
-        text.push_str(": ");
-        text.push_str(&link.to_string());
+        let next = link.to_string();
+        // aya repeats a link verbatim in some chains ("failed to create map X:
+        // failed to create map X"); a diagnostic that says the same thing twice
+        // reads as two problems.
+        if next != last {
+            text.push_str(": ");
+            text.push_str(&next);
+            last = next;
+        }
         source = link.source();
     }
     text
@@ -303,6 +311,19 @@ mod tests {
         use std::fmt;
 
         #[derive(Debug)]
+        struct Echo(std::io::Error);
+        impl fmt::Display for Echo {
+            fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+                f.write_str("failed to create map X")
+            }
+        }
+        impl std::error::Error for Echo {
+            fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+                Some(&self.0)
+            }
+        }
+
+        #[derive(Debug)]
         struct Wrapper(std::io::Error);
         impl fmt::Display for Wrapper {
             fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -329,6 +350,12 @@ mod tests {
         // An error with no source is itself, with nothing appended.
         let plain = std::io::Error::other("nothing under this");
         assert_eq!(error_chain(&plain), "nothing under this");
+
+        // A chain that repeats a link says it once: aya produces
+        // "failed to create map X: failed to create map X", and a diagnostic
+        // that says the same thing twice reads as two problems.
+        let echoed = Echo(std::io::Error::other("failed to create map X"));
+        assert_eq!(error_chain(&echoed), "failed to create map X");
     }
 
     #[test]

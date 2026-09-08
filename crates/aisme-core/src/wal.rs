@@ -24,7 +24,16 @@ use crate::policy::PolicyGeneration;
 /// A segment starts with this.
 pub const SEGMENT_MAGIC: [u8; 8] = *b"AISMEWAL";
 
-/// Header: magic (8) · wire version (1) · pad (3) · schema hash (8) ·
+/// The flag byte's bit 0: **this segment does not know its policy generation**.
+///
+/// It lives in what the layout below calls pad, which has been three zero bytes
+/// since the header was defined. A sentinel value in the generation field would
+/// work too and was refused: every sentinel is a number some future generation
+/// counter can legitimately reach, and a reader has no way to tell the two
+/// apart. A flag says "unknown" and cannot be confused with a count.
+pub const FLAG_GENERATION_UNKNOWN: u8 = 1;
+
+/// Header: magic (8) · wire version (1) · flags (1) · pad (2) · schema hash (8) ·
 /// segment number (8) · first sequence (8) · policy generation (8) = 44,
 /// rounded to 48 so records stay 8-aligned.
 pub const SEGMENT_HEADER_SIZE: usize = 48;
@@ -50,14 +59,24 @@ pub struct SegmentHeader {
     pub segment: u64,
     /// The sequence number of its first record.
     pub first_seq: u64,
-    /// The policy generation in force when it opened.
-    pub generation: PolicyGeneration,
+    /// The policy generation in force when it opened, or `None` when the
+    /// daemon had not been told one.
+    ///
+    /// `None` is not zero. A segment opened before the first publication
+    /// records that it does not know, because a reader with no way to tell a
+    /// placeholder from a real first generation is answered wrongly rather
+    /// than not at all — which is worse.
+    pub generation: Option<PolicyGeneration>,
 }
 
 impl SegmentHeader {
     /// A header for this binary's wire.
     #[must_use]
-    pub fn local(segment: u64, first_seq: u64, generation: PolicyGeneration) -> SegmentHeader {
+    pub fn local(
+        segment: u64,
+        first_seq: u64,
+        generation: Option<PolicyGeneration>,
+    ) -> SegmentHeader {
         SegmentHeader {
             wire_version: WIRE_VERSION,
             schema_hash: aisme_ebpf_common::SCHEMA_HASH,
@@ -76,7 +95,12 @@ impl SegmentHeader {
         out[12..20].copy_from_slice(&self.schema_hash.to_le_bytes());
         out[20..28].copy_from_slice(&self.segment.to_le_bytes());
         out[28..36].copy_from_slice(&self.first_seq.to_le_bytes());
-        out[36..44].copy_from_slice(&self.generation.0.to_le_bytes());
+        match self.generation {
+            Some(PolicyGeneration(g)) => out[36..44].copy_from_slice(&g.to_le_bytes()),
+            // The field stays zero and the flag carries the meaning, so an old
+            // reader sees 0 and a current one sees "unknown".
+            None => out[9] |= FLAG_GENERATION_UNKNOWN,
+        }
         out
     }
 
@@ -114,7 +138,7 @@ impl SegmentHeader {
             schema_hash: at(12),
             segment: at(20),
             first_seq: at(28),
-            generation: PolicyGeneration(at(36)),
+            generation: (bytes[9] & FLAG_GENERATION_UNKNOWN == 0).then(|| PolicyGeneration(at(36))),
         })
     }
 
@@ -260,7 +284,7 @@ mod tests {
     use aisme_ebpf_common::EventKind;
 
     fn segment(events: usize) -> Vec<u8> {
-        let mut bytes = SegmentHeader::local(3, 100, PolicyGeneration(7))
+        let mut bytes = SegmentHeader::local(3, 100, Some(PolicyGeneration(7)))
             .encode()
             .to_vec();
         for i in 0..events {
@@ -282,7 +306,7 @@ mod tests {
         assert_eq!(out[4].seq, 104);
         assert_eq!(resume.header.segment, 3);
         assert_eq!(resume.header.first_seq, 100);
-        assert_eq!(resume.header.generation, PolicyGeneration(7));
+        assert_eq!(resume.header.generation, Some(PolicyGeneration(7)));
         assert_eq!(resume.next_offset, SEGMENT_HEADER_SIZE + 5 * RAW_EVENT_SIZE);
         assert_eq!(resume.torn, None);
         // Resuming from that offset reads nothing new, which is what makes

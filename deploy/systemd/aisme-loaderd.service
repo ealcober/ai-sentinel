@@ -10,8 +10,9 @@
 # fd over SCM_RIGHTS would leave its empty CapabilityBoundingSet= decorative,
 # the capability gone and the authority kept (docs/06 point 3).
 #
-# The --publish invocation arrives with that point; today the binary takes no
-# arguments and verifies the split it belongs to.
+# --publish compiles the policy file, pins the three maps under /sys/fs/bpf/aisme/
+# and writes the active index last, then exits. Run with no arguments it verifies
+# the split it belongs to instead.
 [Unit]
 Description=AISME privileged loader
 Documentation=https://github.com/ealcober/aisme
@@ -21,7 +22,7 @@ RequiresMountsFor=/sys/fs/bpf
 [Service]
 Type=oneshot
 RemainAfterExit=yes
-ExecStart=/usr/lib/aisme/aisme-loaderd
+ExecStart=/usr/lib/aisme/aisme-loaderd --publish /etc/aisme/policy.aisme
 
 # The whole point: these two capabilities, and nothing else. CAP_SYS_ADMIN is
 # deliberately absent — a loader that could do anything would make the split

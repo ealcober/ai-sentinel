@@ -8,6 +8,14 @@ rust-version.workspace = true
 publish = false
 
 [dependencies]
+# The compiler and the error type: the loader parses and compiles the policy
+# file itself, so a syntax error is refused before any map is touched.
+aisme-core = { path = "../aisme-core" }
+
+# DEP.SUP.06: the platform adapter, named only in src/platform.rs, which is
+# this crate's composition root (A-05).
+[target.'cfg(target_os = "linux")'.dependencies]
+aisme-linux = { path = "../aisme-linux" }
 
 [lints]
 workspace = true

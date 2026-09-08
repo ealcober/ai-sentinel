@@ -39,7 +39,7 @@ const SESSIONS_MAP: &str = "AISME_SESSIONS";
 /// requiring it at compile time would make `cargo check --workspace` depend on
 /// a nightly cross-build. See `build.rs`.
 #[cfg(bpf_object_present)]
-const OBJECT: &[u8] = include_bytes!(env!("AISME_BPF_OBJECT"));
+pub(crate) const OBJECT: &[u8] = include_bytes!(env!("AISME_BPF_OBJECT"));
 /// No object was built; `start` says so and names the command.
 #[cfg(not(bpf_object_present))]
 const OBJECT: &[u8] = &[];

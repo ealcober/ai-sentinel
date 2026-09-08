@@ -71,6 +71,10 @@ dependencies = [
 [[package]]
 name = "aisme-loaderd"
 version = "0.1.0"
+dependencies = [
+ "aisme-core",
+ "aisme-linux",
+]
 
 [[package]]
 name = "aisme-observer"

@@ -170,12 +170,10 @@ fn check_loaderd(directives: &[(String, String)]) -> Vec<String> {
             "aisme-loaderd: RemainAfterExit=yes — what it loads outlives it through its bpffs pin, so systemd must not read the exit as the unit going away".to_owned(),
         );
     }
-    // No flags yet: the binary takes none. `--publish` joins this list in the
-    // same change that implements it (docs/06 point 3), never before.
     problems.extend(check_exec_start(
         "aisme-loaderd",
         "/usr/lib/aisme/aisme-loaderd",
-        &[],
+        &["--publish"],
         directives,
     ));
     problems
@@ -199,7 +197,7 @@ mod tests {
         // rather than on how many there are keeps the cases independent: a new
         // check does not invalidate an old case.
         const AGENTD: &str = "[Service]\nUser=aisme\nType=exec\nExecStart=/usr/lib/aisme/aisme-agentd --run /var/lib/aisme/wal\nCapabilityBoundingSet=\nAmbientCapabilities=\nNoNewPrivileges=yes\nDelegate=yes\n";
-        const LOADERD: &str = "[Service]\nType=oneshot\nRemainAfterExit=yes\nExecStart=/usr/lib/aisme/aisme-loaderd\nNoNewPrivileges=yes\nCapabilityBoundingSet=CAP_BPF CAP_NET_ADMIN\n";
+        const LOADERD: &str = "[Service]\nType=oneshot\nRemainAfterExit=yes\nExecStart=/usr/lib/aisme/aisme-loaderd --publish /etc/aisme/policy.aisme\nNoNewPrivileges=yes\nCapabilityBoundingSet=CAP_BPF CAP_NET_ADMIN\n";
         assert!(check_agentd(&directives(AGENTD)).is_empty());
 
         let with_caps = directives(&AGENTD.replace(

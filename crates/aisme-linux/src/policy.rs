@@ -10,7 +10,9 @@
 //! produces bytes a BPF map accepts — and the key layout, the value size and
 //! the update semantics are exactly where a compiler's output meets reality.
 
-use aisme_core::policy::{BackendKind, CompiledPolicy, LowerError, PolicyBackend, Term};
+use aisme_core::policy::{
+    BackendKind, CompiledPolicy, LowerError, PolicyBackend, PolicyGeneration, Term,
+};
 use aisme_ebpf_common::Verdict;
 
 /// Bytes of path an LPM trie key carries.
@@ -183,6 +185,203 @@ fn entry_for(prefix: &str, verdict: Verdict) -> Result<TrieEntry, LowerError> {
         path,
         verdict: verdict.code(),
     })
+}
+
+// ---------------------------------------------------------------------------
+// Publication (`F2.WS.04`; `docs/06` points 3 and 4)
+// ---------------------------------------------------------------------------
+
+/// Where the maps are pinned so they outlive the loader.
+///
+/// A BPF map is owned by an fd and dies with the last one, so a loader that
+/// creates the maps and exits destroys them. `bpffs` holds a reference, which
+/// is what lets the privileged half be `Type=oneshot` instead of a process
+/// holding `CAP_BPF` for the machine's uptime.
+///
+/// `agentd` is handed no descriptor to these, readable or writable: passing one
+/// over `SCM_RIGHTS` would leave its empty `CapabilityBoundingSet=` decorative,
+/// the capability gone and the authority kept (`F1.RT.07`, `docs/06` point 3).
+pub const PIN_DIR: &str = "/sys/fs/bpf/aisme";
+
+/// The two tries and the meta array, by the names the object declares.
+pub const MAP_POLICY_A: &str = "AISME_POLICY_A";
+/// The idle half of the double buffer, whichever it is at the time.
+pub const MAP_POLICY_B: &str = "AISME_POLICY_B";
+/// `[generation, active_index]`.
+pub const MAP_POLICY_META: &str = "AISME_POLICY_META";
+
+/// `meta[0]` — the generation in force.
+pub const META_GENERATION: u32 = 0;
+/// `meta[1]` — which trie is active. **Written last; that write is the
+/// publication.**
+pub const META_ACTIVE_INDEX: u32 = 1;
+
+/// The three maps, opened from their pins.
+struct PolicyMaps {
+    a: aya::maps::LpmTrie<aya::maps::MapData, [u8; TRIE_PATH_BYTES], u8>,
+    b: aya::maps::LpmTrie<aya::maps::MapData, [u8; TRIE_PATH_BYTES], u8>,
+    meta: aya::maps::Array<aya::maps::MapData, u64>,
+}
+
+fn pin_path(name: &str) -> std::path::PathBuf {
+    std::path::Path::new(PIN_DIR).join(name)
+}
+
+/// Create the pin directory, or say why it could not be created.
+///
+/// A missing `bpffs` is **not** a reason to fall back to staying resident: that
+/// would turn the privilege split off on exactly the machines whose
+/// configuration is unusual. It is a named failure instead.
+fn ensure_pin_dir() -> aisme_core::error::Result<()> {
+    use aisme_core::error::Error;
+    use std::os::unix::fs::PermissionsExt as _;
+    let bpffs = std::path::Path::new("/sys/fs/bpf");
+    if !bpffs.is_dir() {
+        return Err(Error::unsupported(
+            "/sys/fs/bpf is not mounted; mount -t bpf bpffs /sys/fs/bpf (the loader will not stay resident instead)",
+        ));
+    }
+    let dir = std::path::Path::new(PIN_DIR);
+    if !dir.is_dir() {
+        std::fs::create_dir(dir)
+            .map_err(|e| Error::unsupported(format!("cannot create {PIN_DIR}: {e}")))?;
+    }
+    // 0700: a world-writable pin directory would hand the authority back to
+    // anyone on the machine, which is the same defect as passing agentd a
+    // writable fd, by another route.
+    std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o700))
+        .map_err(|e| Error::unsupported(format!("cannot set mode 0700 on {PIN_DIR}: {e}")))
+}
+
+/// Open the three maps, pinning them from the sensor's object the first time.
+///
+/// The maps live in the sensor's own object (`crates/aisme-ebpf`), in the
+/// legacy `maps` section: `BPF_MAP_TYPE_ARRAY_OF_MAPS` exists at the pinned
+/// `aya-ebpf 0.2.1` only as a BTF map, and this toolchain's BTF is unreadable
+/// to `aya-obj 0.3.0` (`docs/06` point 1, measured on 6.8 and 5.4).
+///
+/// Loading that object also loads its programs, so on a kernel that refuses one
+/// — 5.4 refuses `BPF_MAP_TYPE_RINGBUF` — the first publication fails with that
+/// kernel's own reason. That is the stated degradation, not a defect here:
+/// `docs/05` point 1 hands 5.4's perf-buffer path to `F3.PT.*`.
+fn open_maps() -> aisme_core::error::Result<PolicyMaps> {
+    use aisme_core::error::Error;
+    use aya::maps::{Array, LpmTrie, Map, MapData};
+
+    ensure_pin_dir()?;
+    if !pin_path(MAP_POLICY_META).exists() {
+        if crate::sensor::OBJECT.is_empty() {
+            return Err(Error::unsupported(
+                "no BPF object is embedded; run `cargo xtask build-ebpf` and rebuild",
+            ));
+        }
+        let mut ebpf = aya::EbpfLoader::new()
+            .load(crate::sensor::OBJECT)
+            .map_err(|e| Error::unsupported(crate::sensor::error_chain(&e)))?;
+        for name in [MAP_POLICY_A, MAP_POLICY_B, MAP_POLICY_META] {
+            let map = ebpf
+                .take_map(name)
+                .ok_or_else(|| Error::unsupported(format!("the object declares no {name}")))?;
+            map.pin(pin_path(name))
+                .map_err(|e| Error::unsupported(format!("cannot pin {name}: {e}")))?;
+        }
+    }
+    let open = |name: &str| -> aisme_core::error::Result<MapData> {
+        MapData::from_pin(pin_path(name))
+            .map_err(|e| Error::unsupported(format!("cannot open pinned {name}: {e}")))
+    };
+    let as_trie = |data: MapData, name: &str| {
+        // `try_from` takes the `Map` enum, not the bare data: the variant is
+        // what asserts the kind, and a pin opened as the wrong kind fails here
+        // rather than at the first lookup.
+        LpmTrie::try_from(Map::LpmTrie(data))
+            .map_err(|e| Error::unsupported(format!("{name} is not an LPM trie: {e}")))
+    };
+    Ok(PolicyMaps {
+        a: as_trie(open(MAP_POLICY_A)?, MAP_POLICY_A)?,
+        b: as_trie(open(MAP_POLICY_B)?, MAP_POLICY_B)?,
+        meta: Array::try_from(Map::Array(open(MAP_POLICY_META)?))
+            .map_err(|e| Error::unsupported(format!("{MAP_POLICY_META} is not an array: {e}")))?,
+    })
+}
+
+/// Publish a lowered policy, and return the generation it became.
+///
+/// **The order is the property, not a description of the code.** With two named
+/// tries and an index a reader takes two lookups — `meta[1]`, then the trie it
+/// names — and the publisher may swap between them. The argument that this is
+/// staleness and never tearing: the publisher only ever writes the **idle**
+/// trie, and only ever swaps **after** it is complete, so a reader that catches
+/// a swap reads a *complete* older policy. The window is one lookup, and it
+/// errs toward the previous policy — safe when a policy tightens, a late allow
+/// when it loosens. `ARRAY_OF_MAPS` gave this structurally and is unavailable
+/// here; the price is recorded rather than discovered in F3.
+///
+/// `meta[1]` is written **last**. Everything before it is invisible.
+///
+/// # Errors
+///
+/// Anything that stops the publication before step 5, in which case the active
+/// policy is untouched and its generation is unchanged.
+pub fn publish(image: &TrieImage) -> aisme_core::error::Result<PolicyGeneration> {
+    use aisme_core::error::Error;
+    use aya::maps::lpm_trie::Key;
+
+    if image.entries.len() > POLICY_TRIE_ENTRIES {
+        return Err(Error::unsupported(format!(
+            "policy has {} entries and the trie holds {POLICY_TRIE_ENTRIES}",
+            image.entries.len()
+        )));
+    }
+    let mut maps = open_maps()?;
+
+    // 1. Read the active index. A fresh map reads 0, and 0 is a valid index:
+    //    the meaning of "no publication yet" lives in the generation, which is
+    //    then 0 and becomes 1 below.
+    let active = maps
+        .meta
+        .get(&META_ACTIVE_INDEX, 0)
+        .map_err(|e| Error::unsupported(format!("cannot read the active index: {e}")))?;
+    let generation = maps
+        .meta
+        .get(&META_GENERATION, 0)
+        .map_err(|e| Error::unsupported(format!("cannot read the generation: {e}")))?;
+    let idle = u64::from(active == 0);
+
+    // 2. Clear and fill the *idle* trie. Clearing the active one is the torn
+    //    read this whole mechanism exists to avoid.
+    let trie = if idle == 0 { &mut maps.a } else { &mut maps.b };
+    let stale: Vec<Key<[u8; TRIE_PATH_BYTES]>> = trie
+        .keys()
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|e| Error::unsupported(format!("cannot read the idle trie: {e}")))?;
+    for key in stale {
+        trie.remove(&key)
+            .map_err(|e| Error::unsupported(format!("cannot clear the idle trie: {e}")))?;
+    }
+    for (n, entry) in image.entries.iter().enumerate() {
+        trie.insert(&Key::new(entry.prefix_len, entry.path), entry.verdict, 0)
+            .map_err(|e| {
+                // The generation that was NOT published, so an operator knows
+                // what is still in force rather than what was attempted.
+                Error::unsupported(format!(
+                    "entry {n} refused ({e}); generation {generation} is still in force"
+                ))
+            })?;
+    }
+
+    // 3. The generation, then the index. Monotonic and never reused: a
+    //    generation that went backwards would make a WAL segment header
+    //    ambiguous about which policy produced a decision.
+    let next = generation + 1;
+    maps.meta
+        .set(META_GENERATION, next, 0)
+        .map_err(|e| Error::unsupported(format!("cannot write the generation: {e}")))?;
+    // 4. THE PUBLICATION.
+    maps.meta
+        .set(META_ACTIVE_INDEX, idle, 0)
+        .map_err(|e| Error::unsupported(format!("cannot publish: {e}")))?;
+    Ok(PolicyGeneration(next))
 }
 
 #[cfg(test)]

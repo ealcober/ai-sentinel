@@ -33,7 +33,7 @@ pub struct WalSink {
     next_seq: u64,
     /// The policy generation the header records, so a reader knows which
     /// policy was in force for the events in it.
-    generation: PolicyGeneration,
+    generation: Option<PolicyGeneration>,
     /// Reused across batches: a sink that allocated per tick would break the
     /// hot loop's invariant (`I-22`) from the far end.
     buf: Vec<u8>,
@@ -51,7 +51,7 @@ impl WalSink {
     /// # Errors
     ///
     /// `Failed` with the path when the directory or the file cannot be made.
-    pub fn create(dir: &Path, generation: PolicyGeneration) -> Result<WalSink> {
+    pub fn create(dir: &Path, generation: Option<PolicyGeneration>) -> Result<WalSink> {
         std::fs::create_dir_all(dir)
             .map_err(|e| Error::failed(format!("wal dir {}: {e}", dir.display())))?;
         let mut sink = WalSink {
@@ -185,7 +185,7 @@ mod tests {
     #[test]
     fn what_the_sink_writes_the_replayer_reads_back() {
         let dir = tmpdir("roundtrip");
-        let mut sink = WalSink::create(&dir, PolicyGeneration(7)).unwrap();
+        let mut sink = WalSink::create(&dir, Some(PolicyGeneration(7))).unwrap();
         sink.append(&batch_of(&[1, 2, 3])).unwrap();
         sink.append(&batch_of(&[4, 5])).unwrap();
 
@@ -194,7 +194,15 @@ mod tests {
         header
             .readable()
             .expect("this binary can read what it wrote");
-        assert_eq!(header.generation, PolicyGeneration(7));
+        assert_eq!(header.generation, Some(PolicyGeneration(7)));
+
+        // A segment opened before any publication says it does not know, and
+        // decodes as unknown rather than as generation 0 — the two are
+        // different answers and a forensic reader needs them to stay different.
+        let unknown = aisme_core::wal::SegmentHeader::local(1, 0, None);
+        let decoded = aisme_core::wal::SegmentHeader::decode(&unknown.encode()).unwrap();
+        assert_eq!(decoded.generation, None);
+        assert_ne!(decoded.generation, Some(PolicyGeneration(0)));
 
         let mut out = Vec::new();
         let resume = wal::replay(&bytes, wal::SEGMENT_HEADER_SIZE, &mut out).unwrap();
@@ -222,7 +230,7 @@ mod tests {
     #[test]
     fn an_empty_batch_writes_nothing_and_does_not_fsync() {
         let dir = tmpdir("empty");
-        let mut sink = WalSink::create(&dir, PolicyGeneration(1)).unwrap();
+        let mut sink = WalSink::create(&dir, Some(PolicyGeneration(1))).unwrap();
         let before = std::fs::metadata(sink.current_segment()).unwrap().len();
         sink.append(&batch_of(&[])).unwrap();
         let after = std::fs::metadata(sink.current_segment()).unwrap().len();
@@ -237,7 +245,7 @@ mod tests {
     #[test]
     fn a_rolled_segment_starts_with_its_own_header_and_the_next_seq() {
         let dir = tmpdir("roll");
-        let mut sink = WalSink::create(&dir, PolicyGeneration(3)).unwrap();
+        let mut sink = WalSink::create(&dir, Some(PolicyGeneration(3))).unwrap();
         sink.append(&batch_of(&[10, 11])).unwrap();
         sink.roll().unwrap();
         sink.append(&batch_of(&[12])).unwrap();
@@ -254,7 +262,7 @@ mod tests {
         );
         assert_eq!(
             h1.generation,
-            PolicyGeneration(3),
+            Some(PolicyGeneration(3)),
             "the policy carries over"
         );
 

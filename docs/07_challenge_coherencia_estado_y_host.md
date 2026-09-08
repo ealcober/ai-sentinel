@@ -44,7 +44,7 @@ design, and point 8 is a typographical slip.
 4. **Both** units name a flag no binary implements, and `agentd` declares a startup protocol it
    does not speak. Grew from one unit to two plus `Type=notify` under measurement.
 5. `docs/06` point 3 writes in the future two directives the file already carries.
-6. `PolicyGeneration(0)` is alive and already specified; this point exists to stop a second spec.
+6. `PolicyGeneration(0)` was alive and already specified elsewhere; **closed** by `docs/06` point 5's WAL half, exactly as this point said it would be — without a second specification.
 7. `doctor`'s printed remedy for `bpf-linker` **does not work**. Written in the skeleton as a
    missing memory entry; the memory entry turned out to be the smaller half.
 8. `STATE.md:148` repeats a sentence verbatim.

@@ -61,7 +61,6 @@ fn parse_run_args(rest: &[String]) -> std::io::Result<(u64, Option<String>)> {
 fn run_slice(dir: &std::path::Path, rest: &[String]) -> std::io::Result<()> {
     use aisme_core::detect::DetectorSet;
     use aisme_core::engine::Engine;
-    use aisme_core::policy::PolicyGeneration;
     use aisme_core::sensor::{Sensor, SensorConfig};
     use std::time::Duration;
 
@@ -72,8 +71,10 @@ fn run_slice(dir: &std::path::Path, rest: &[String]) -> std::io::Result<()> {
     let (declarations, declared) = declare::DeclarationSensor::new();
     sensors.push(Box::new(declarations));
 
-    let sink = wal::WalSink::create(dir, PolicyGeneration(0))
-        .map_err(|e| std::io::Error::other(e.detail))?;
+    // `None`, not zero: nothing has published a policy to this daemon yet, and
+    // a segment claiming generation 0 answers a forensic reader wrongly rather
+    // than not at all. `aisme-loaderd --publish` tells it the real one.
+    let sink = wal::WalSink::create(dir, None).map_err(|e| std::io::Error::other(e.detail))?;
     let segment = sink.current_segment();
     let mut engine = Engine::new(sensors, Box::new(sink), DetectorSet::new(), 512);
     engine
@@ -380,7 +381,7 @@ mod slice_tests {
         let (declarations, declared) = crate::declare::DeclarationSensor::new();
         let sensors: Vec<Box<dyn Sensor>> = vec![Box::new(declarations)];
 
-        let sink = crate::wal::WalSink::create(&dir, PolicyGeneration(4)).unwrap();
+        let sink = crate::wal::WalSink::create(&dir, Some(PolicyGeneration(4))).unwrap();
         let segment = sink.current_segment();
         let mut engine = Engine::new(sensors, Box::new(sink), DetectorSet::new(), 16);
         engine.start(&SensorConfig::default()).unwrap();

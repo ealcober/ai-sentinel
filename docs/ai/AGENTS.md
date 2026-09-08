@@ -126,7 +126,7 @@ here rather than in a habit, because a habit is not a rule.
 | Add a GitHub workflow or action — any file, any trigger, including `workflow_dispatch` | `I-27` — this project incurs zero hosted-CI cost, permanently; `verify-docs` fails on existence, not on triggers |
 | Let a suppression rule remove evidence or weaken enforcement | `I-26` — suppression is notification-only |
 | Regenerate a file instead of editing it | A rewrite silently loses the reasoning nobody is looking at; ask the owner if one is genuinely needed |
-| Push without being asked | `CLAUDE.md` asks for one commit per task; pushing is the owner's call |
+| **Leave a commit unpushed** | §2-bis — a commit that is not pushed does not exist. This row said the opposite of §2-bis for two phases, and a session that read the table instead of the section asked for permission it already had |
 
 ## 5. Memory discipline
 

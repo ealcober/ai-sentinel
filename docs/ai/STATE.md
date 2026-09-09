@@ -173,8 +173,6 @@ or a new session in this distribution opened from Windows. A third option, the o
 
 ## Open decisions needing an ADR
 
-**What does `Enforcer::publish` mean?** (`docs/09` point 1, raised 2026-09-09.) The frozen trait documents it as *"atomically publish compiled policy to wherever decisions are made"*, and the only implementation is `NullEnforcer`. `F2.WS.04`'s real publication is a free function the privileged loader calls, because `docs/06` point 3 refused to give `agentd` a policy-map descriptor at all — so an `Enforcer` living in `agentd` **cannot** publish to the BPF maps. Two readings: **(a)** it means this enforcer's own decision point, so `SeccompEnforcer::publish` installs the seccomp filter and a doc comment is clarified; **(b)** it means the publication `PL-04` describes, in which case the signature is in the wrong place and needs an ADR against a frozen trait. `docs/09` point 3 implements (a) and marks it, so (b) costs one function body rather than a redesign.
-
 
 Three ADRs are owed **at implementation time, not before F0**, each with the task that implements the decision: scope narrow-only (`F7.PS.07`), per-machine grants (`F7.PS.02`), P-256 attestation (`F5.FO.02`). `Q-12` is **taken** (`F1.IPC.01`, 2026-09-07): a hand-written codec in `aisme-proto`, no dependency — the plan's row carries the reasoning. It was (the non-`serde_json` JSON-RPC codec for `F1.IPC.01`) is a task-level choice under `I-21`, taken at that task and recorded in its commit.
 

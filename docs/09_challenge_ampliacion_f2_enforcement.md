@@ -1,6 +1,6 @@
 # Challenge-amplification — the rest of the walking skeleton
 
-> **Status**: complete — five points. The first is a coherence review that found three defects,
+> **Status**: complete — five points. The first is a coherence review that found four defects,
 > one of which reordered the other four and one of which was found while reading for point 2
 > and sent the review back to be corrected
 > **Scope**: `F2.WS.05` (`SeccompEnforcer`), `F2.WS.06` (`TerminalAdjudicator`), `F2.WS.07`
@@ -20,8 +20,9 @@ tree as it is rather than as the plan describes it.
 
 **The points:**
 
-1. The coherence review. **Closed** — three findings, one of which reorders the work and one of
-   which was found while reading for point 2 and sent the review back.
+1. The coherence review. **Closed** — four findings. One reorders the work, one was found while
+   reading for point 2, and one is a question this review asked before reading the plan section
+   that answers it.
 2. `F2.WS.08` — `aisme run`, **first**, because two of the others install their machinery inside it.
    Four of the design note's nine steps; the other five named with their owners, not half-built.
 3. `F2.WS.05` — `SeccompEnforcer`: the syscall held, and the descriptor that answers it.
@@ -51,34 +52,49 @@ the tree. What follows is what the reading found.
 
 ### 2. Verification
 
-**Finding 1 — the frozen `Enforcer::publish` has no implementation that publishes, and the design
-`F2.WS.04` settled means `agentd`'s enforcer cannot have one.**
+**Finding 1 — `Enforcer::publish` is per-enforcer, and the plan says so. The question this review
+first asked was answered in §3.2 all along.**
 
-`aisme_core::enforce::Enforcer::publish` (`crates/aisme-core/src/enforce.rs:49`) is documented as
-*"Atomically publish compiled policy to wherever decisions are made; readers never see a torn
-policy"* — which is exactly what `aisme_linux::publish` does. But `grep -rn "impl Enforcer for"`
-returns **one** implementation, `NullEnforcer` (`crates/aisme-core/src/mock.rs:164`), and the real
-publication is a free function that `aisme-loaderd` calls.
+The first draft of this point asked the owner what `publish` means, because `enforce.rs:49` reads
+*"publish compiled policy to wherever decisions are made"* and the only implementation is
+`NullEnforcer`. That was a question this document had no business asking: the plan answers it
+twice, in the section the read order lists as item 5.
 
-That is not laziness, it is the design: `docs/06` point 3 refused to give `agentd` a policy-map
-descriptor of any kind, because `SCM_RIGHTS` would leave its empty `CapabilityBoundingSet=`
-decorative. An `Enforcer` living in `agentd` therefore **cannot** publish to the BPF maps, and a
-signature it can only answer with `Unsupported` is a signature the design has outgrown.
+`docs/01_phase5_implementation_plan.md:1129` composes **`Vec<Box<dyn Enforcer>>` — plural**, and
+`:1116` catalogues eight: `LsmEnforcer`, `LandlockEnforcer`, `CgroupConnectEnforcer`,
+`SeccompEnforcer`, `FreezerEnforcer`, `TunnelEnforcer`, `SdkEnforcer`, `NullEnforcer`. With many
+enforcers live at once, "wherever decisions are made" is **that enforcer's** decision point, and
+each renders the same `CompiledPolicy` into its own. The plan even shows one: `F3.EN.09` (`:1715`)
+reads *"compile a Landlock ruleset from `CompiledPolicy`, apply it in `aisme run` before `exec`"* —
+that is `LandlockEnforcer::publish`, described without being named.
 
-The trait is frozen (`ADR-03`, scoped by `ADR-08`), so this cannot be resolved by editing it here.
-**Two readings are possible and they lead to different code**, which is why this stops and asks
-rather than choosing:
+So `SeccompEnforcer::publish` installs the classic filter, and `aisme_linux::publish` writing the
+BPF maps is a different job belonging to a privileged loader, not a missing implementation. **The
+claim that fell is mine**: I grepped for implementations and read the trait, and did not open §3.2.
+Grepping the code and reading the interface is not the same as reading the design.
 
-* **(a) `publish` means "to this enforcer's own decision point".** `SeccompEnforcer::publish` then
-  installs the seccomp filter — the place *its* decisions are made — and the BPF maps are a
-  different publisher's business. Nothing changes but a doc comment that currently reads as though
-  there were one publication in the system.
-* **(b) `publish` means "the policy publication", the one `PL-04` describes.** Then the trait is
-  in the wrong place: the publisher is privileged and one-shot, the enforcer is unprivileged and
-  long-running, and `F2.WS.04` was right to bypass it. That needs an ADR, not an implementation.
+**Finding 4 — the seam `F2.WS.05` and `F2.WS.06` plug into does not exist, and the plan and the
+code disagree about where it should be.**
 
-**This point takes neither.** It is one line of an owner decision and the two branches are cheap
-to state; guessing would bury a frozen-interface question inside an enforcer.
+Found while confirming finding 1, and it is the one that mattered. `Engine::new`
+(`crates/aisme-core/src/engine.rs:72`) takes `(sensors, sink, detectors, batch_capacity)` — **no
+enforcers and no adjudicators**. The plan's §3.2 composition (`:1129`) shows
+`Engine::new(sensors, enforcers, adjudicators, sink).run()`. `platform::enforcers` (`:173`) and
+`platform::adjudicators` (`:195`) are implemented and are called in exactly one place that is not
+a test: `main.rs:160-161`, **to print how many there are**.
+
+They are constructed and nobody uses them.
+
+Which side is right is not open, and this point resolves it rather than asking: `docs/05` §5.3
+states that the notification loop *"runs on `agentd`'s control thread, never the hot loop: a
+human's answer takes seconds and the hot loop's budget is microseconds"*. An engine that owned the
+enforcers would put a human on the T0 path. **The code is right and the plan's composition line is
+the stale artefact** — and `CLAUDE.md` is explicit that when the plan is wrong, the plan is fixed,
+with an ADR reserved for `H-xx` findings and invariants. This is neither.
+
+What follows from it, and points 3 and 4 are written against it: the enforcers and the adjudicator
+ladder are held by **`agentd`'s control thread**, beside the IPC server that already runs there
+and already shares the generation cell with the WAL sink. `Engine` is not touched.
 
 **Finding 2 — `F2.WS.05` and `F2.WS.06` both install their machinery inside `F2.WS.08`, which the
 plan orders after them.**
@@ -128,9 +144,10 @@ row for it. Direction: it makes `F2.WS.05` look unowned and `F3.EN.12` look larg
 
 Nothing in the repository. This point produces two things and both are text:
 
-- **An owner question**, stated once and not decided here: does `Enforcer::publish` mean (a) this
-  enforcer's own decision point, or (b) the policy publication `PL-04` describes? Reading (a) costs
-  a doc comment; reading (b) costs an ADR against a frozen trait.
+- **A plan fix, not a question.** §3.2's composition line becomes the one the code implements and
+  `docs/05` §5.3 argues for: the engine takes sensors, a sink and detectors, and the enforcers and
+  the adjudicator ladder are held by `agentd`'s control thread. No ADR — `CLAUDE.md` reserves
+  those for `H-xx` findings and invariants, and this is a diagram that fell behind its code.
 - **A stated implementation order for the rest of F2**, which the following points assume:
   **`F2.WS.08` → `F2.WS.05` → `F2.WS.06`**, with `F2.WS.07` independent of all three and runnable
   whenever. The plan's task table will gain a Notes entry saying so, in the commit that implements
@@ -151,8 +168,8 @@ What the review *does* owe is the discipline the following points inherit: each 
   `.05` and `.06` install their machinery inside `.08`, so `.08` is built first.
 - `docs/05_challenge_ampliacion_f2.md` §5.3: the `CapabilitySet` bullet is marked done rather than
   future, with the date and the point that did it.
-- `docs/ai/STATE.md`: the owner question about `Enforcer::publish` joins *"Open decisions needing
-  an ADR"*, since branch (b) is exactly that.
+- `docs/01_phase5_implementation_plan.md` §3.2: the composition line, corrected to what the code
+  does and `docs/05` §5.3 requires — the human is not on the T0 path.
 - `docs/design/02_aisme-run.md`: step 4's task becomes `F2.WS.05`, `F3.EN.12` is named beside it as
   the widening rather than the owner, and `Feeds:` gains `F2.WS.05` and `F2.WS.06`.
 
@@ -162,9 +179,11 @@ What the review *does* owe is the discipline the following points inherit: each 
 `aisme run`), `docs/01_phase5_implementation_plan.md:1623` (the table order),
 `docs/design/01_permission-model.md:184-211` (§7.3 does specify the terminal prompt),
 `crates/aisme-core/src/wal.rs:223,245`, and `crates/aisme-core/src/capability.rs:52` with
-`tier.rs:70`. **One claim of the skeleton fell**: the skeleton said these four tasks would be
-amplified in the plan's order; two of them cannot be built in it. **Open, and the owner's**: what
-`Enforcer::publish` means, which decides whether `F2.WS.05` implements it or an ADR retires it.
+`tier.rs:70`. **Two claims fell, and one of them was mine.** The skeleton said these four
+tasks would be amplified in the plan's order; two of them cannot be built in it. And this review's
+own first draft asked the owner what `Enforcer::publish` means — a question §3.2 answers, in the
+section the read order lists as item 5. Grepping for implementations is not reading the design, and
+the lesson is cheaper written down than repeated. **Open: nothing.**
 
 ---
 
@@ -295,11 +314,10 @@ fail-closed, both from `Q-13`:
 2. **Only when the target's uid is the supervisor's.** Opening with credentials the target lacks
    would be a privilege escalation served by the guard itself. `F3.EN.12` widens this.
 
-*Can it be simplified?* One thing genuinely can, and point 1 asked the owner about it:
-`Enforcer::publish`. Under reading (a) `SeccompEnforcer::publish` installs the classic filter and
-returns the generation it was compiled from; under (b) it returns `Unsupported` and an ADR retires
-the signature. **This point implements (a) and marks it**, because (a) is the reading that leaves
-the frozen trait meaningful and costs nothing if the owner prefers (b) — one function body.
+*Can it be simplified?* `publish` is settled by point 1: with `Vec<Box<dyn Enforcer>>` live at
+once, it publishes to **this** enforcer's decision point. `SeccompEnforcer::publish` therefore
+installs the classic filter and returns the generation it was compiled from, and the BPF maps stay
+the privileged loader's business. Nothing here is open.
 
 ### 2. Verification
 
@@ -376,9 +394,9 @@ it will compose `SeccompEnforcer` behind `cfg(target_os = "linux")` when the cap
 methods), `docs/ai/invariants.md:92` (`I-28` as registered), `docs/05_challenge_ampliacion_f2.md:601-700`
 (the decision and its limits), `crates/aisme-core/src/capability.rs:52` and `tier.rs:70` (already
 implemented), and the plan's F2 scope table, whose Enforcement row names `seccomp_unotify` for the
-escalate class. **Nothing of the skeleton fell.** Open, and inherited from point 1: what
-`Enforcer::publish` means. This point implements reading (a) and says so, so branch (b) costs one
-function body rather than a redesign.
+escalate class. **Nothing of the skeleton fell.** Open: nothing — point 1
+settled `publish` against the plan, and the enforcer is held by the control thread, not the
+engine, so the human is never on the T0 path.
 
 ---
 
@@ -539,14 +557,16 @@ Parquet, Merkle and OTLP out of scope. **Nothing of the skeleton fell.** Open: n
 
 | Point | What it settled |
 |---|---|
-| 1 | Three coherence findings. The frozen `Enforcer::publish` has no publishing implementation and `agentd`'s enforcer cannot have one; `.05` and `.06` install inside `.08`, which the table orders last; and `02_aisme-run.md` still gives the seccomp filter to the task `Q-13` took it from |
+| 1 | Four coherence findings. `Enforcer::publish` is **per-enforcer** and the plan said so at `:1116`/`:1129` — a question this review asked before reading §3.2; `.05` and `.06` install inside `.08`, which the table orders last; `02_aisme-run.md` still gives the seccomp filter to the task `Q-13` took it from; and **the seam `.05` and `.06` plug into does not exist** — `platform::enforcers` is called once outside tests, to print how many there are |
 | 2 | `F2.WS.08` is built **first**, and covers four of the design note's nine steps — the other five are named with their owners rather than half-built |
-| 3 | `F2.WS.05` implements `Enforcer::publish` under reading (a), so the owner's answer costs one function body either way. `CONTINUE` never permits a path-bearing syscall; the allow path's order is the security |
+| 3 | `SeccompEnforcer::publish` installs the classic filter — that is what publishing to this enforcer's decision point means. `CONTINUE` never permits a path-bearing syscall; the allow path's order is the security, and the enforcer lives on the control thread so a human is never on the T0 path |
 | 4 | `F2.WS.06`'s unattended variable is read once in `aisme run` before `exec` and **never** from the adjudicator's environment — an adjudicator that read its own environment could be steered by the agent it adjudicates |
 | 5 | `F2.WS.07`'s cursor is written **after** the record is printed, so a crash costs a repeat and never a loss |
 
 **Implementation order**: `F2.WS.08` → `F2.WS.05` → `F2.WS.06`, with `F2.WS.07` independent and
 runnable at any point.
 
-**Still open for the owner:** what `Enforcer::publish` means — this enforcer's own decision point
-(a doc comment), or the policy publication `PL-04` describes (an ADR against a frozen trait).
+**Nothing is open for the owner.** The one question this review first raised was answered by the
+plan's own §3.2, which it had not read; the divergence that question was hiding — an engine with no
+enforcement seam — is a plan fix and not a decision, because `docs/05` §5.3 already requires the
+enforcers to live off the hot loop.

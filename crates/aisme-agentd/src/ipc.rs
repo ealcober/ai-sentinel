@@ -182,6 +182,37 @@ impl Default for Declarations {
     }
 }
 
+/// What `getCapabilities` answers.
+///
+/// `policy_generation` is present **only when known**: a daemon that answered 0
+/// before the first publication would be indistinguishable from one told
+/// generation 0, which is the absence-read-as-value this field exists to avoid.
+fn capabilities(generation: Option<aisme_core::policy::PolicyGeneration>) -> Value {
+    let mut fields = std::collections::BTreeMap::from([
+        (
+            "protocol_version".to_owned(),
+            Value::string(rpc::PROTOCOL_VERSION),
+        ),
+        (
+            "engine_version".to_owned(),
+            Value::string(env!("CARGO_PKG_VERSION")),
+        ),
+        // The tier and key_hw come from the composition; F8a fills the rest of
+        // Annex I's result in.
+        (
+            "tier".to_owned(),
+            Value::string(aisme_core::tier::tier_of(&crate::platform::probe()).as_str()),
+        ),
+    ]);
+    if let Some(g) = generation {
+        fields.insert(
+            "policy_generation".to_owned(),
+            Value::Int(i64::try_from(g.0).unwrap_or(i64::MAX)),
+        );
+    }
+    Value::Object(fields)
+}
+
 /// Serve one line-framed request from `line`, as `peer`.
 ///
 /// Framing is one JSON object per line: it is greppable in a capture, it
@@ -193,6 +224,7 @@ pub fn serve_line(
     peer: &Peer,
     owner_uid: u32,
     declarations: &mut Declarations,
+    generation: &mut Option<aisme_core::policy::PolicyGeneration>,
 ) -> String {
     let request = match rpc::parse_request(line) {
         Ok(request) => request,
@@ -208,19 +240,31 @@ pub fn serve_line(
         );
     }
     match request.method {
-        Method::GetCapabilities => rpc::response(
-            request.id,
-            Value::object([
-                ("protocol_version", Value::string(rpc::PROTOCOL_VERSION)),
-                ("engine_version", Value::string(env!("CARGO_PKG_VERSION"))),
-                // The tier and key_hw come from the composition; F8a fills
-                // the rest of Annex I's result in.
-                (
-                    "tier",
-                    Value::string(aisme_core::tier::tier_of(&crate::platform::probe()).as_str()),
+        Method::GetCapabilities => rpc::response(request.id, capabilities(*generation)),
+        // `F2.WS.04`. The loader publishes, then tells the daemon the number.        // It carries no descriptor: `agentd` holds no policy-map fd of any
+        // kind, because `SCM_RIGHTS` would leave its empty
+        // `CapabilityBoundingSet=` decorative (`F1.RT.07`).
+        Method::SetPolicyGeneration => {
+            match request.params.get("generation") {
+                Some(Value::Int(n)) if *n >= 0 => {
+                    *generation = Some(aisme_core::policy::PolicyGeneration(
+                        u64::try_from(*n).unwrap_or(0),
+                    ));
+                    rpc::response(
+                        request.id,
+                        Value::object([("outcome", Value::string("accepted"))]),
+                    )
+                }
+                // A generation that is absent, negative or not an integer is
+                // refused rather than defaulted: a default here would stamp a
+                // wrong number on every segment the daemon opens next.
+                _ => rpc::error(
+                    request.id,
+                    ErrorCode::InvalidParams,
+                    "generation must be a non-negative integer",
                 ),
-            ]),
-        ),
+            }
+        }
         // `F2.WS.03`. A declaration is an observation, never an authorization:
         // it creates no grant, changes no verdict and carries no scope, and
         // `DT-04` exists because a declaration may be a lie. The engine records
@@ -306,29 +350,51 @@ pub fn serve_line(
     }
 }
 
+/// The policy generation the daemon has been told, shared with whoever stamps
+/// it on a WAL segment.
+///
+/// One cell rather than a channel: the last number wins and there is no history
+/// to preserve, so a queue would add ordering nobody reads.
+pub type GenerationCell =
+    std::sync::Arc<std::sync::Mutex<Option<aisme_core::policy::PolicyGeneration>>>;
+
+/// A cell that has been told nothing.
+#[must_use]
+pub fn generation_cell() -> GenerationCell {
+    std::sync::Arc::new(std::sync::Mutex::new(None))
+}
+
 /// Listen on `path`, serving one connection at a time.
 ///
 /// # Errors
 ///
 /// Binding or accepting.
 pub fn serve(path: &Path, owner_uid: u32, until: impl FnMut() -> bool) -> std::io::Result<()> {
-    serve_with(path, owner_uid, Declarations::new, until)
+    serve_with(
+        path,
+        owner_uid,
+        &generation_cell(),
+        Declarations::new,
+        until,
+    )
 }
 
-/// `serve`, delivering accepted declarations into a running hot loop.
+/// `serve_feeding`, sharing the cell the WAL sink reads at each segment roll.
 ///
 /// # Errors
 ///
 /// Binding or accepting.
-pub fn serve_feeding(
+pub fn serve_feeding_sharing(
     path: &Path,
     owner_uid: u32,
     declared: crate::declare::Declared,
+    generation: &GenerationCell,
     until: impl FnMut() -> bool,
 ) -> std::io::Result<()> {
     serve_with(
         path,
         owner_uid,
+        generation,
         move || Declarations::feeding(declared.clone()),
         until,
     )
@@ -337,6 +403,7 @@ pub fn serve_feeding(
 fn serve_with(
     path: &Path,
     owner_uid: u32,
+    generation: &GenerationCell,
     mut counter: impl FnMut() -> Declarations,
     mut until: impl FnMut() -> bool,
 ) -> std::io::Result<()> {
@@ -359,11 +426,18 @@ fn serve_with(
             if line.trim().is_empty() {
                 continue;
             }
-            writeln!(
-                writer,
-                "{}",
-                serve_line(&line, &peer, owner_uid, &mut declarations)
-            )?;
+            writeln!(writer, "{}", {
+                // Held only across one request. A poisoned lock means a
+                // previous request panicked mid-write, and continuing with
+                // whatever was there would stamp an unknown number on a
+                // segment — so the value is taken either way and the caller
+                // sees the same answer.
+                let mut told = match generation.lock() {
+                    Ok(g) => g,
+                    Err(poisoned) => poisoned.into_inner(),
+                };
+                serve_line(&line, &peer, owner_uid, &mut declarations, &mut told)
+            })?;
         }
         if until() {
             break;
@@ -558,7 +632,89 @@ mod tests {
     /// several and watch the bound apply.
     fn call_with(method: &str, params: &str, peer: &Peer, d: &mut Declarations) -> json::Value {
         let line = format!(r#"{{"jsonrpc":"2.0","id":1,"method":"{method}","params":{params}}}"#);
-        json::parse(&serve_line(&line, peer, OWNER, d)).unwrap()
+        json::parse(&serve_line(&line, peer, OWNER, d, &mut None)).unwrap()
+    }
+
+    /// `setPolicyGeneration` is accepted from a local peer, refused from one
+    /// that is not, and the number reaches the next `getCapabilities`.
+    #[test]
+    fn the_generation_is_told_once_and_answered_thereafter() {
+        let mut told = None;
+        let send =
+            |peer: &Peer, params: &str, told: &mut Option<aisme_core::policy::PolicyGeneration>| {
+                let line = format!(
+                    r#"{{"jsonrpc":"2.0","id":1,"method":"setPolicyGeneration","params":{params}}}"#
+                );
+                json::parse(&serve_line(
+                    &line,
+                    peer,
+                    OWNER,
+                    &mut Declarations::new(),
+                    told,
+                ))
+                .unwrap()
+            };
+
+        // Before anyone says anything, the field is ABSENT — not zero. A
+        // daemon answering 0 would be indistinguishable from one told 0.
+        let caps = json::parse(&serve_line(
+            r#"{"jsonrpc":"2.0","id":1,"method":"getCapabilities","params":{}}"#,
+            &user(),
+            OWNER,
+            &mut Declarations::new(),
+            &mut told,
+        ))
+        .unwrap();
+        assert!(
+            caps.get("result")
+                .and_then(|r| r.get("policy_generation"))
+                .is_none(),
+            "an untold daemon must not claim a generation"
+        );
+
+        // A peer whose uid is not the owner's is refused by where it is.
+        let refused = send(&stranger(), r#"{"generation":7}"#, &mut told);
+        assert_eq!(
+            refused
+                .get("error")
+                .and_then(|e| e.get("code"))
+                .and_then(json::Value::as_int),
+            Some(-32001)
+        );
+        assert_eq!(told, None, "a refused call must not have written the cell");
+
+        let accepted = send(&user(), r#"{"generation":7}"#, &mut told);
+        assert_eq!(
+            accepted
+                .get("result")
+                .and_then(|r| r.get("outcome"))
+                .and_then(json::Value::as_str),
+            Some("accepted")
+        );
+        assert_eq!(told, Some(aisme_core::policy::PolicyGeneration(7)));
+
+        // A generation that is absent or negative is refused, never defaulted:
+        // a default would stamp a wrong number on every following segment.
+        for bad in ["{}", r#"{"generation":-1}"#, r#"{"generation":"7"}"#] {
+            let response = send(&user(), bad, &mut told);
+            assert!(response.get("error").is_some(), "{bad} must be refused");
+            assert_eq!(told, Some(aisme_core::policy::PolicyGeneration(7)), "{bad}");
+        }
+
+        let caps = json::parse(&serve_line(
+            r#"{"jsonrpc":"2.0","id":1,"method":"getCapabilities","params":{}}"#,
+            &user(),
+            OWNER,
+            &mut Declarations::new(),
+            &mut told,
+        ))
+        .unwrap();
+        assert_eq!(
+            caps.get("result")
+                .and_then(|r| r.get("policy_generation"))
+                .and_then(json::Value::as_int),
+            Some(7)
+        );
     }
 
     #[test]
@@ -617,8 +773,14 @@ mod tests {
 
     #[test]
     fn a_malformed_line_is_a_protocol_error_with_the_id_when_there_is_one() {
-        let response =
-            json::parse(&serve_line("{", &user(), OWNER, &mut Declarations::new())).unwrap();
+        let response = json::parse(&serve_line(
+            "{",
+            &user(),
+            OWNER,
+            &mut Declarations::new(),
+            &mut None,
+        ))
+        .unwrap();
         assert_eq!(
             response
                 .get("error")
@@ -631,6 +793,7 @@ mod tests {
             &user(),
             OWNER,
             &mut Declarations::new(),
+            &mut None,
         ))
         .unwrap();
         assert_eq!(response.get("id").and_then(json::Value::as_int), Some(42));

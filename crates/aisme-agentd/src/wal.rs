@@ -33,7 +33,11 @@ pub struct WalSink {
     next_seq: u64,
     /// The policy generation the header records, so a reader knows which
     /// policy was in force for the events in it.
-    generation: Option<PolicyGeneration>,
+    /// Shared with the control plane, and **read at each segment roll** rather
+    /// than captured once. The loader publishes and then tells the daemon; a
+    /// sink that had copied the value at startup would stamp `None` on every
+    /// segment for the life of the process.
+    generation: crate::ipc::GenerationCell,
     /// Reused across batches: a sink that allocated per tick would break the
     /// hot loop's invariant (`I-22`) from the far end.
     buf: Vec<u8>,
@@ -62,7 +66,7 @@ impl WalSink {
             index: 0,
             written: 0,
             next_seq: 0,
-            generation,
+            generation: std::sync::Arc::new(std::sync::Mutex::new(generation)),
             // One tick's worth of records, so a full batch is one `write_all`.
             buf: Vec::with_capacity(512 * RAW_EVENT_SIZE),
             batches: 0,
@@ -93,7 +97,14 @@ impl WalSink {
     /// reader that opens any file knows the wire version, the schema hash and
     /// the policy generation before it reads a record.
     fn write_header(&mut self) -> Result<()> {
-        let header = wal::SegmentHeader::local(self.index, self.next_seq, self.generation);
+        // A poisoned lock is taken anyway: the alternative is refusing to open
+        // a segment because a control-plane request panicked, which loses
+        // events over a number.
+        let told = match self.generation.lock() {
+            Ok(g) => *g,
+            Err(poisoned) => *poisoned.into_inner(),
+        };
+        let header = wal::SegmentHeader::local(self.index, self.next_seq, told);
         let bytes = header.encode();
         self.file
             .write_all(&bytes)
@@ -113,6 +124,12 @@ impl WalSink {
         self.rolls += 1;
         self.file = Self::open_file(&self.dir, self.index)?;
         self.write_header()
+    }
+
+    /// The cell the control plane writes when the loader publishes.
+    #[must_use]
+    pub fn generation_cell(&self) -> crate::ipc::GenerationCell {
+        std::sync::Arc::clone(&self.generation)
     }
 
     /// The segment file currently being appended to.

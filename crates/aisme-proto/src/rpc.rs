@@ -84,11 +84,21 @@ pub enum Method {
     /// engine could join on it and §4.6's precision and recall would measure
     /// the join instead of the correlator.
     DeclareToolCall,
+    /// The privileged loader tells the daemon which policy generation it just
+    /// published (`F2.WS.04`).
+    ///
+    /// **It carries a number, never a map.** `aisme-agentd` holds no policy-map
+    /// descriptor, readable or writable: handing it one over `SCM_RIGHTS` would
+    /// leave its empty `CapabilityBoundingSet=` decorative, the capability gone
+    /// and the authority kept (`F1.RT.07`). What it needs to stamp on a WAL
+    /// segment is a `u64`, and a `u64` travels over the socket it already
+    /// speaks.
+    SetPolicyGeneration,
 }
 
 impl Method {
     /// Every method, in Annex I.1's order.
-    pub const ALL: [Method; 13] = [
+    pub const ALL: [Method; 14] = [
         Method::GetCapabilities,
         Method::ListSessions,
         Method::GetSession,
@@ -102,6 +112,7 @@ impl Method {
         Method::RevokeDevice,
         Method::VerifySession,
         Method::DeclareToolCall,
+        Method::SetPolicyGeneration,
     ];
 
     /// The name on the wire.
@@ -109,6 +120,7 @@ impl Method {
     pub const fn as_str(self) -> &'static str {
         match self {
             Method::DeclareToolCall => "declareToolCall",
+            Method::SetPolicyGeneration => "setPolicyGeneration",
             Method::GetCapabilities => "getCapabilities",
             Method::ListSessions => "listSessions",
             Method::GetSession => "getSession",
@@ -148,7 +160,10 @@ impl Method {
             // and the declaration grants nothing that would need protecting.
             | Method::DeclareToolCall => AuthClass::AnyAuthenticated,
             Method::RespondEscalation | Method::RevokeDevice => AuthClass::RemotePeer,
-            Method::PairDevice => AuthClass::LocalPeer,
+            // The loader runs as root on this machine; the class that means
+            // "a process on this host, not a paired device" is the right one,
+            // and it is the same class `pairDevice` uses.
+            Method::PairDevice | Method::SetPolicyGeneration => AuthClass::LocalPeer,
             Method::SetPolicy | Method::ManageGrant | Method::ManageSuppression => {
                 AuthClass::HumanPrincipal
             }

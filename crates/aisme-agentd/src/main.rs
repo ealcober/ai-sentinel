@@ -76,6 +76,10 @@ fn run_slice(dir: &std::path::Path, rest: &[String]) -> std::io::Result<()> {
     // than not at all. `aisme-loaderd --publish` tells it the real one.
     let sink = wal::WalSink::create(dir, None).map_err(|e| std::io::Error::other(e.detail))?;
     let segment = sink.current_segment();
+    // Taken before the sink moves into the engine: the control plane writes
+    // this cell when `aisme-loaderd --publish` reports a generation, and the
+    // sink reads it at each segment roll.
+    let generation = sink.generation_cell();
     let mut engine = Engine::new(sensors, Box::new(sink), DetectorSet::new(), 512);
     engine
         .start(&SensorConfig::default())
@@ -88,9 +92,13 @@ fn run_slice(dir: &std::path::Path, rest: &[String]) -> std::io::Result<()> {
         let owner = ipc::Peer::from_current_uid();
         println!("ipc: serving {path} for uid {}", owner.uid);
         std::thread::spawn(move || {
-            if let Err(e) =
-                ipc::serve_feeding(std::path::Path::new(&path), owner.uid, declared, || false)
-            {
+            if let Err(e) = ipc::serve_feeding_sharing(
+                std::path::Path::new(&path),
+                owner.uid,
+                declared,
+                &generation,
+                || false,
+            ) {
                 eprintln!("ipc: {e}");
             }
         });
@@ -393,10 +401,16 @@ mod slice_tests {
         let path = socket_path.clone();
         let server = std::thread::spawn(move || {
             let mut served = 0;
-            let _ = crate::ipc::serve_feeding(&path, uid, declared, move || {
-                served += 1;
-                served >= 1
-            });
+            let _ = crate::ipc::serve_feeding_sharing(
+                &path,
+                uid,
+                declared,
+                &crate::ipc::generation_cell(),
+                move || {
+                    served += 1;
+                    served >= 1
+                },
+            );
         });
 
         // Connect, declare, read the answer.

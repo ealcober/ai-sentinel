@@ -11,6 +11,9 @@ publish = false
 # The compiler and the error type: the loader parses and compiles the policy
 # file itself, so a syntax error is refused before any map is touched.
 aisme-core = { path = "../aisme-core" }
+# Annex I method names and the codec, so the courtesy call to the daemon cannot
+# drift from the method the daemon serves.
+aisme-proto = { path = "../aisme-proto" }
 
 # DEP.SUP.06: the platform adapter, named only in src/platform.rs, which is
 # this crate's composition root (A-05).

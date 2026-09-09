@@ -48,6 +48,25 @@ pub struct TrieEntry {
 }
 
 impl TrieEntry {
+    /// A lookup key for `path`: every bit significant, so the kernel returns
+    /// the **longest stored prefix** that matches rather than an exact hit.
+    ///
+    /// A lookup whose `prefix_len` were the path's own length would ask for a
+    /// rule of exactly that shape and miss the broader rule that actually
+    /// covers it — which is the whole point of an LPM trie.
+    #[must_use]
+    pub fn lookup(path: &str) -> TrieEntry {
+        let mut bytes = [0u8; TRIE_PATH_BYTES];
+        let src = path.as_bytes();
+        let n = src.len().min(TRIE_PATH_BYTES);
+        bytes[..n].copy_from_slice(&src[..n]);
+        TrieEntry {
+            prefix_len: u32::try_from(TRIE_PATH_BYTES * 8).unwrap_or(u32::MAX),
+            path: bytes,
+            verdict: 0,
+        }
+    }
+
     /// The key half, as the kernel expects it: `prefixlen` then `data`.
     #[must_use]
     pub fn key_bytes(&self) -> [u8; 4 + TRIE_PATH_BYTES] {
@@ -303,6 +322,105 @@ fn open_maps() -> aisme_core::error::Result<PolicyMaps> {
         meta: Array::try_from(Map::Array(open(MAP_POLICY_META)?))
             .map_err(|e| Error::unsupported(format!("{MAP_POLICY_META} is not an array: {e}")))?,
     })
+}
+
+/// Open the three maps from their pins, creating nothing.
+///
+/// A reader must never create a map: doing so would hand it an empty policy it
+/// would then read as "nothing is denied". Absent pins are an error here.
+///
+/// # Errors
+///
+/// When the pins are not there, or are not the kinds they should be.
+fn open_pinned() -> aisme_core::error::Result<PolicyMaps> {
+    use aisme_core::error::Error;
+    use aya::maps::{Array, LpmTrie, Map, MapData};
+
+    let open = |name: &str| -> aisme_core::error::Result<MapData> {
+        MapData::from_pin(pin_path(name))
+            .map_err(|e| Error::unsupported(format!("cannot open pinned {name}: {e}")))
+    };
+    let as_trie = |data: MapData, name: &str| {
+        LpmTrie::try_from(Map::LpmTrie(data))
+            .map_err(|e| Error::unsupported(format!("{name} is not an LPM trie: {e}")))
+    };
+    Ok(PolicyMaps {
+        a: as_trie(open(MAP_POLICY_A)?, MAP_POLICY_A)?,
+        b: as_trie(open(MAP_POLICY_B)?, MAP_POLICY_B)?,
+        meta: Array::try_from(Map::Array(open(MAP_POLICY_META)?))
+            .map_err(|e| Error::unsupported(format!("{MAP_POLICY_META} is not an array: {e}")))?,
+    })
+}
+
+/// What one pass of a reader saw.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Sample {
+    /// `meta[0]` as read.
+    pub generation: u64,
+    /// `meta[1]` as read — the trie the verdict below came from.
+    pub index: u64,
+    /// The verdict byte the trie held for the key, or `None` if it held none.
+    pub verdict: Option<u8>,
+}
+
+/// A reader of the published policy, holding the maps open.
+///
+/// Reopening the pins per sample would measure `openat`, not the publisher.
+pub struct PolicyReader {
+    maps: PolicyMaps,
+}
+
+impl PolicyReader {
+    /// Open the pinned maps for reading.
+    ///
+    /// # Errors
+    ///
+    /// When the pins are absent or of the wrong kind.
+    pub fn open() -> aisme_core::error::Result<PolicyReader> {
+        Ok(PolicyReader {
+            maps: open_pinned()?,
+        })
+    }
+
+    /// One pass, in the order a kernel-side reader would take it.
+    ///
+    /// **Index first, then the trie it names, then the generation.** That order
+    /// is what the staleness argument is about: between the two lookups the
+    /// publisher may swap, and what the reader then sees is a *complete* older
+    /// policy, because the trie it is reading is the one the publisher has
+    /// stopped writing. It never sees a half-filled trie, because the
+    /// half-filled one is the one it is not reading.
+    ///
+    /// # Errors
+    ///
+    /// When a map read fails. A key that is simply absent is `verdict: None`,
+    /// not an error — that is a policy answer, not a failure.
+    pub fn read(&self, key: &TrieEntry) -> aisme_core::error::Result<Sample> {
+        use aisme_core::error::Error;
+        use aya::maps::lpm_trie::Key;
+
+        let index = self
+            .maps
+            .meta
+            .get(&META_ACTIVE_INDEX, 0)
+            .map_err(|e| Error::unsupported(format!("cannot read the active index: {e}")))?;
+        let trie = if index == 0 {
+            &self.maps.a
+        } else {
+            &self.maps.b
+        };
+        let verdict = trie.get(&Key::new(key.prefix_len, key.path), 0).ok();
+        let generation = self
+            .maps
+            .meta
+            .get(&META_GENERATION, 0)
+            .map_err(|e| Error::unsupported(format!("cannot read the generation: {e}")))?;
+        Ok(Sample {
+            generation,
+            index,
+            verdict,
+        })
+    }
 }
 
 /// Publish a lowered policy, and return the generation it became.

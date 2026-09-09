@@ -13,9 +13,9 @@ mod sensor;
 
 #[cfg(target_os = "linux")]
 pub use policy::{
-    load_policy_maps, publish, BpfTrieBackend, TrieEntry, TrieImage, MAP_POLICY_A, MAP_POLICY_B,
-    MAP_POLICY_META, META_ACTIVE_INDEX, META_GENERATION, PIN_DIR, POLICY_TRIE_ENTRIES,
-    TRIE_PATH_BYTES,
+    load_policy_maps, publish, BpfTrieBackend, PolicyReader, Sample, TrieEntry, TrieImage,
+    MAP_POLICY_A, MAP_POLICY_B, MAP_POLICY_META, META_ACTIVE_INDEX, META_GENERATION, PIN_DIR,
+    POLICY_TRIE_ENTRIES, TRIE_PATH_BYTES,
 };
 #[cfg(target_os = "linux")]
 pub use resolve::{RealpathResolver, ResolverCounts};

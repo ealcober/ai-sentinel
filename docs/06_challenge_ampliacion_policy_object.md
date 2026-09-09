@@ -1,12 +1,9 @@
 # Challenge-amplification — the policy BPF object
 
-> **Status**: six points written; **points 1 to 5 implemented and executed on a real kernel**.
-> Measured on 6.8 (2026-09-09): generations 1 then 2, `meta` reading `[2, 0]`, pins surviving
-> the loader's exit. Outstanding: point 6's **packaging** — `cargo xtask test-policy-publish`,
-> the torn-read run and the `EPERM` negative, so the run above is repeatable rather than a
-> command someone typed once
-> **Scope**: the half of `F2.WS.04` that `docs/05_challenge_ampliacion_f2.md` §4.6 left blocked:
-> atomic publication of a compiled policy into real BPF maps, with a generation counter.
+> **Status**: complete — six points, all implemented and all measured on a real kernel.
+> `cargo xtask test-policy-publish` runs the three properties in one guest boot; on
+> ubuntu-24.04 (6.8): generations 1 then 2, **200 000 samples with 493 swaps, none torn**,
+> and the daemon's user refused at `open` with `Permission denied` while root reads the map.
 > **Method**: `/challenge-ampliar` — five sections per point, written in the declared future so
 > whoever implements it decides nothing and only executes.
 
@@ -624,9 +621,20 @@ two can share one guest boot with it, which is the simplification taken.
 - **The torn-read run states its own weakness.** Sampling from user space cannot observe what a BPF
   program would; it measures the publisher's ordering, not the reader path F3 will have. The test's
   comment will say so, and `F3.PT.02` will own the kernel-side version.
-- **The privilege negative must fail for the right reason.** `agentd` attempting the update must
-  produce `EPERM`, not `ENOENT`: a test that passes because the map is missing proves nothing about
-  capabilities. It will assert on the errno, and it will first confirm the map exists by reading it.
+- **The privilege negative must fail for the right reason.** A test that passes because the map is
+  missing proves nothing about capabilities, so the map is read as root first and only then is the
+  refusal asserted.
+
+  **Measured, and it moved the test**: the `EPERM`-from-an-update this asked for is unobservable,
+  because point 3 made it unnecessary. The pin directory is `0700` root, so a process running as the
+  daemon's user never opens the map — the refusal arrives one step earlier, at `open`, as `EACCES`,
+  and there is no write left to refuse. That is stronger than a refused write, not weaker. What is
+  asserted is `cat` reporting `Permission denied` while root reads the same map.
+
+  **And the tool lies about it.** `bpftool` reports the same refusal as *"directory not in bpf file
+  system (bpffs)"* — the directory is bpffs and the process cannot traverse it. The first version of
+  this test failed on that message, correctly: accepting it would have been accepting a refusal
+  whose cause was never established. Both lines are printed, and the assertion is on the errno.
 - **A million samples is a number, not a ritual.** It will be reported with the elapsed time and the
   number of swaps observed, so a run where the publisher never swapped is visibly not a test.
 

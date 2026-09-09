@@ -10,6 +10,7 @@
 
 mod platform;
 mod policy;
+mod sample;
 mod units;
 
 fn main() {
@@ -28,6 +29,27 @@ fn main() {
             }
         };
         std::process::exit(i32::from(policy::publish(file, &bindings)));
+    }
+
+    // `--sample <count> <path> <verdict> [verdict …]` — the reader half of the
+    // torn-read run. Two invocations of this binary, so the thing under test is
+    // the shipped code (`docs/06` point 6).
+    if let Some(rest) = args.split_first().filter(|(f, _)| *f == "--sample") {
+        let (_, tail) = rest;
+        let [count, path, expected @ ..] = tail else {
+            eprintln!("--sample <count> <path> <verdict-byte> [verdict-byte …]");
+            std::process::exit(1);
+        };
+        let Ok(count) = count.parse::<u64>() else {
+            eprintln!("--sample: {count} is not a count");
+            std::process::exit(1);
+        };
+        let verdicts: Vec<u8> = expected.iter().filter_map(|v| v.parse().ok()).collect();
+        if verdicts.is_empty() {
+            eprintln!("--sample needs at least one verdict byte the publisher writes");
+            std::process::exit(1);
+        }
+        std::process::exit(i32::from(sample::run(count, path, &verdicts)));
     }
 
     println!("aisme-loaderd: the privileged half of the split (F1.RT.07)");

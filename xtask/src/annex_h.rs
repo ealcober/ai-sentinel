@@ -329,6 +329,12 @@ pub(crate) const COMMANDS: &[Command] = &[
         level: Some(Level::Pr),
     },
     Command {
+        name: "test-policy-publish",
+        owner: "F2.WS.04",
+        phase: "F2",
+        level: Some(Level::Pr),
+    },
+    Command {
         name: "test-prompt-budget",
         owner: "F7.CB.02",
         phase: "F7",

@@ -1619,7 +1619,7 @@ test $(grep -rn 'cfg(target_os' crates/aisme-core/src --include='*.rs' | grep -v
 | `F2.WS.01` | `BpfSensor` implementing `Sensor` with one tracepoint, real ringbuf | Events reach `agentd` with correct `RawEvent` layout |
 | `F2.WS.02` | Hot loop wired: `poll` → intern → canonicalize → correlate → WAL | Zero allocations in steady state, verified by `dhat` |
 | `F2.WS.03` | `agentsim` emits one synthetic ToolCall with a hidden correlation token, declared to `agentd` over Annex I's **`declareToolCall`** (`aisme-agentsim --declare <socket>`) — the token stays on the ground-truth stream and never crosses the socket | Ground-truth scoring possible from day one |
-| `F2.WS.04` | One AISME-PL rule compiled by the real F1 compiler and published to a real BPF map. **The mechanism**: two `LpmTrie` maps (`AISME_POLICY_A`/`_B`, 1024 entries each) and an `Array<u64,2>` of `[generation, active_index]`, all in the legacy `maps` section — **not** `BPF_MAP_TYPE_ARRAY_OF_MAPS`, which exists at the pinned `aya-ebpf 0.2.1` only as a BTF map that this toolchain pairing cannot produce readably (`docs/06` point 1, measured). Publication fills the idle trie and writes the index **last**; the cost of the substitution is a one-lookup staleness window, in the safe direction | Policy generation counter increments; no torn read |
+| `F2.WS.04` | One AISME-PL rule compiled by the real F1 compiler and published to a real BPF map. **The mechanism**: two `LpmTrie` maps (`AISME_POLICY_A`/`_B`, 1024 entries each) and an `Array<u64,2>` of `[generation, active_index]`, all in the legacy `maps` section — **not** `BPF_MAP_TYPE_ARRAY_OF_MAPS`, which exists at the pinned `aya-ebpf 0.2.1` only as a BTF map that this toolchain pairing cannot produce readably (`docs/06` point 1, measured). Publication fills the idle trie and writes the index **last**; the cost of the substitution is a one-lookup staleness window, in the safe direction | Policy generation counter increments; no torn read — both measured by `cargo xtask test-policy-publish` in one guest boot (6.8: 1 then 2, and 200 000 samples with 493 swaps, `absent=0 foreign=0`) |
 | `F2.WS.05` | `SeccompEnforcer` implementing `Enforcer`: suspend, ask, respond | A denied `openat` returns `-EACCES` to the caller |
 | `F2.WS.06` | `TerminalAdjudicator` implementing `Adjudicator`, with the terminal prompt specified in `docs/design/01_permission-model.md` §7.3 | A human answers in the terminal and the syscall obeys; `AISME_TERMINAL_ANSWER=<d\|1\|s\|a>` is accepted for unattended gates and recorded as such in the WAL |
 | `F2.WS.07` | `forensicd` tails the WAL by offset and prints the event | Kill `forensicd` mid-stream; it resumes with zero loss |
@@ -3775,6 +3775,7 @@ The consequence is worth stating: **the command surface becomes the plan's own p
 | `cargo xtask test-pairing` | `F11.CC.01` | F11 | `pr` |
 | `cargo xtask test-paths` | `F3.EN.08` | F3 | `pr` |
 | `cargo xtask test-policy-compiler` | `F1.PL.05` | F1 | `pr` |
+| `cargo xtask test-policy-publish` | `F2.WS.04` | F2 | `pr` |
 | `cargo xtask test-prompt-budget` | `F7.CB.02` | F7 | `pr` |
 | `cargo xtask test-protocol-contract` | `F8.API.02` | F8 | `pr` |
 | `cargo xtask test-redaction` | `F4.VAL.01` | F4 | `pr` |

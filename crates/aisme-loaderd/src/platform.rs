@@ -64,3 +64,65 @@ pub fn lower(_policy: &aisme_core::policy::CompiledPolicy) -> Result<Image> {
         "no policy backend on this platform",
     ))
 }
+
+/// A reader of the published policy.
+#[cfg(target_os = "linux")]
+pub type Reader = aisme_linux::PolicyReader;
+/// Off Linux there is nothing to read.
+#[cfg(not(target_os = "linux"))]
+pub type Reader = Unsupported;
+
+/// What one pass of the reader saw.
+#[cfg(target_os = "linux")]
+pub type Sample = aisme_linux::Sample;
+/// Off Linux nothing is sampled.
+#[cfg(not(target_os = "linux"))]
+pub type Sample = Unsupported;
+
+/// Open the published policy for reading, creating nothing.
+///
+/// # Errors
+///
+/// When nothing has been published, or this platform cannot read it.
+#[cfg(target_os = "linux")]
+pub fn reader() -> Result<Reader> {
+    aisme_linux::PolicyReader::open()
+}
+
+/// Off Linux there is no published policy.
+#[cfg(not(target_os = "linux"))]
+pub fn reader() -> Result<Reader> {
+    Err(aisme_core::error::Error::unsupported(
+        "reading a published policy needs a Linux kernel with bpffs",
+    ))
+}
+
+/// The lookup key for a path.
+#[cfg(target_os = "linux")]
+#[must_use]
+pub fn lookup_key(path: &str) -> aisme_linux::TrieEntry {
+    aisme_linux::TrieEntry::lookup(path)
+}
+
+/// Off Linux there is no key shape.
+#[cfg(not(target_os = "linux"))]
+#[must_use]
+pub fn lookup_key(_path: &str) -> Unsupported {
+    Unsupported
+}
+
+/// One pass of the reader.
+///
+/// # Errors
+///
+/// When a map read fails. An absent key is a verdict of `None`, not an error.
+#[cfg(target_os = "linux")]
+pub fn sample(reader: &Reader, key: &aisme_linux::TrieEntry) -> Result<Sample> {
+    reader.read(key)
+}
+
+/// Off Linux nothing samples.
+#[cfg(not(target_os = "linux"))]
+pub fn sample(_reader: &Reader, _key: &Unsupported) -> Result<Sample> {
+    Err(aisme_core::error::Error::unsupported("no policy to sample"))
+}

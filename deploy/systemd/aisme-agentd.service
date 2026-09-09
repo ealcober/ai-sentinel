@@ -12,12 +12,11 @@ After=aisme-loaderd.service
 Requires=aisme-loaderd.service
 
 [Service]
-# Type=exec, not notify: the daemon sends no READY=1, and a notify unit whose
-# process never does is held in `activating` until TimeoutStartSec and then
-# failed — taking aisme-loaderd's Requires= with it. notify becomes correct once
-# the hot loop has a readiness point to report, which is a task and not a side
-# effect of writing this line.
-Type=exec
+# The daemon sends READY=1 once its sensors are attached, its engine is running
+# and its control socket is listening, so `activating` means exactly that and
+# nothing ordered after this unit starts against a half-built daemon. `exec`
+# would report ready at exec(), before a single sensor existed.
+Type=notify
 ExecStart=/usr/lib/aisme/aisme-agentd --run /var/lib/aisme/wal --serve-ipc /run/aisme/agentd.sock
 User=aisme
 Group=aisme

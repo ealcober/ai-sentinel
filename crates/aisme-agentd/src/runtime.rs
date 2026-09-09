@@ -13,6 +13,7 @@
 //! owning it is both cheaper and easier to reason about (§3.4).
 
 use std::io;
+use std::os::unix::ffi::OsStringExt as _;
 
 use tokio::runtime::{Builder, Runtime};
 use tokio::task::LocalSet;
@@ -51,6 +52,50 @@ pub fn hot_loop_set() -> LocalSet {
     LocalSet::new()
 }
 
+/// Tell the service manager this daemon is up (`sd_notify(3)`, `Type=notify`).
+///
+/// The unit is `Type=notify` because that is what the state means: systemd
+/// holds it in `activating` until the sensors are attached, the engine is
+/// running and the control socket is listening — so `aisme-loaderd`'s
+/// `Requires=` and anything ordered `After=` this unit start against a daemon
+/// that is *ready*, not merely one that has been forked. `Type=exec` would
+/// report ready at `exec`, before a single sensor existed.
+///
+/// **No dependency for eleven lines of protocol.** `NOTIFY_SOCKET` names an
+/// `AF_UNIX` datagram socket; a leading `@` means the abstract namespace, where
+/// the first byte is `NUL`. Writing `READY=1` to it is the whole contract.
+///
+/// Outside systemd `NOTIFY_SOCKET` is unset and this does nothing, which is why
+/// it returns whether it notified rather than a `Result`: not being under a
+/// service manager is not a failure, and a daemon started by hand must not
+/// print an error about it.
+pub(crate) fn notify_ready() -> bool {
+    std::env::var_os("NOTIFY_SOCKET").is_some_and(|socket| notify_to(&socket, "READY=1"))
+}
+
+/// The send itself, with the socket passed in so a test can stand a real
+/// listener behind it.
+fn notify_to(socket: &std::ffi::OsStr, message: &str) -> bool {
+    use std::os::unix::ffi::OsStrExt as _;
+
+    let bytes = socket.as_bytes();
+    let path = if bytes.first() == Some(&b'@') {
+        // Abstract namespace: systemd writes a leading `@`, the kernel wants a
+        // leading NUL. A daemon that sent the `@` would create a *file* called
+        // `@…` in the current directory and report success.
+        let mut p = vec![0u8];
+        p.extend_from_slice(&bytes[1..]);
+        std::ffi::OsString::from_vec(p)
+    } else {
+        socket.to_owned()
+    };
+    let Ok(sock) = std::os::unix::net::UnixDatagram::unbound() else {
+        return false;
+    };
+    sock.send_to(message.as_bytes(), std::path::Path::new(&path))
+        .is_ok()
+}
+
 #[cfg(test)]
 // A panic *is* the failure report in a test, so the two lints the daemon
 // denies are allowed here — and only here, which is the point: the denial
@@ -84,5 +129,32 @@ mod tests {
         });
         assert_eq!(out, 1);
         assert_eq!(counted.get(), 1);
+    }
+
+    /// A real listener, a real datagram: the production function is what runs.
+    #[test]
+    fn ready_reaches_a_listening_socket() {
+        use std::os::unix::net::UnixDatagram;
+        let dir = std::env::temp_dir().join(format!("aisme-notify-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("notify");
+        let listener = UnixDatagram::bind(&path).unwrap();
+
+        assert!(notify_to(path.as_os_str(), "READY=1"));
+
+        let mut buf = [0u8; 32];
+        let n = listener.recv(&mut buf).unwrap();
+        assert_eq!(&buf[..n], b"READY=1");
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// Nothing listening is `false`, not a panic and not a silent `true`: the
+    /// caller decides whether that matters, and outside systemd it does not.
+    #[test]
+    fn a_socket_nobody_is_listening_to_is_reported_and_not_survived_silently() {
+        assert!(!notify_to(
+            std::ffi::OsStr::new("/nonexistent/aisme/notify"),
+            "READY=1"
+        ));
     }
 }

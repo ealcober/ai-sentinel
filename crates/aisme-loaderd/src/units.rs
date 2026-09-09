@@ -127,9 +127,9 @@ fn check_agentd(directives: &[(String, String)]) -> Vec<String> {
     if value(directives, "User").is_none() {
         problems.push("aisme-agentd: User= must name the unprivileged account".to_owned());
     }
-    if value(directives, "Type") != Some("exec") {
+    if value(directives, "Type") != Some("notify") {
         problems.push(
-            "aisme-agentd: Type=exec — the daemon sends no READY=1, and a notify unit whose process never does is held in activating until the timeout and then failed".to_owned(),
+            "aisme-agentd: Type=notify — the daemon reports readiness once its sensors, engine and socket are up, and a unit that claimed ready at exec() would let others start against a half-built daemon".to_owned(),
         );
     }
     problems.extend(check_exec_start(
@@ -196,7 +196,7 @@ mod tests {
         // one in exactly the way it is named for. Asserting on the problem
         // rather than on how many there are keeps the cases independent: a new
         // check does not invalidate an old case.
-        const AGENTD: &str = "[Service]\nUser=aisme\nType=exec\nExecStart=/usr/lib/aisme/aisme-agentd --run /var/lib/aisme/wal\nCapabilityBoundingSet=\nAmbientCapabilities=\nNoNewPrivileges=yes\nDelegate=yes\n";
+        const AGENTD: &str = "[Service]\nUser=aisme\nType=notify\nExecStart=/usr/lib/aisme/aisme-agentd --run /var/lib/aisme/wal\nCapabilityBoundingSet=\nAmbientCapabilities=\nNoNewPrivileges=yes\nDelegate=yes\n";
         const LOADERD: &str = "[Service]\nType=oneshot\nRemainAfterExit=yes\nExecStart=/usr/lib/aisme/aisme-loaderd --publish /etc/aisme/policy.aisme\nNoNewPrivileges=yes\nCapabilityBoundingSet=CAP_BPF CAP_NET_ADMIN\n";
         assert!(check_agentd(&directives(AGENTD)).is_empty());
 
@@ -217,11 +217,11 @@ mod tests {
             "{problems:?}"
         );
 
-        // The unit declares a startup protocol the binary does not speak.
-        let notify = directives(&AGENTD.replace("Type=exec", "Type=notify"));
-        let problems = check_agentd(&notify);
+        // The unit claims ready at exec(), before the daemon can answer.
+        let no_readiness = directives(&AGENTD.replace("Type=notify", "Type=exec"));
+        let problems = check_agentd(&no_readiness);
         assert!(
-            problems.iter().any(|p| p.contains("READY=1")),
+            problems.iter().any(|p| p.contains("Type=notify")),
             "{problems:?}"
         );
 

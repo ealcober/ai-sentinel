@@ -104,6 +104,13 @@ fn run_slice(dir: &std::path::Path, rest: &[String]) -> std::io::Result<()> {
         });
     }
 
+    // Ready means ready: the sensors are attached, the engine is running and the
+    // control socket is listening. Anything ordered after this unit starts
+    // against a daemon that can answer, not one that has merely been forked.
+    if runtime::notify_ready() {
+        println!("ready: notified the service manager");
+    }
+
     println!("run: wal {}, {ticks} tick(s)", segment.display());
     // The tick budget, and the pace. Nothing in the loop blocks — a sensor with
     // no events returns immediately — so without this the loop spins a core

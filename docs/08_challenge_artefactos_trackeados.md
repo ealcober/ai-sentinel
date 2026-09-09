@@ -1,8 +1,7 @@
 # Challenge-amplification — 890 build artefacts in the index
 
-> **Status**: three points written; **points 1 and 2 implemented**. Point 3 — whether to rewrite
-> history for the 75 MB already in it — is open and is the owner's, and points 1 and 2 were
-> written so they do not depend on the answer
+> **Status**: complete — three points, all closed. Points 1 and 2 are implemented; point 3 was the
+> owner's and is answered: **history stays**, and the 75 MB stays with it
 > **Scope**: `docs/07` point 9, which was recorded and deliberately not fixed while implementing
 > points 1–8. It is amplified here because removing 890 files from the index is a reorganisation
 > under `CLAUDE.md` rule 6, and because one of its three questions is the owner's and not mine.
@@ -16,7 +15,8 @@ separate, and conflating them is how a cleanup turns into a history rewrite nobo
 1. **Stop tracking them.** Mechanical, reversible, and the only part that has to happen.
 2. **Stop them coming back.** One `.gitignore` line, and the choice of which line matters more
    than it looks.
-3. **Reclaim the 75 MB, or not.** A history rewrite. **The owner's, and not decided here.**
+3. **Reclaim the 75 MB, or not.** A history rewrite. The owner's — **answered on 2026-09-09:
+   history stays.**
 
 **The measurement that reshaped the point**, and it refutes what `docs/07` implied: *three code
 paths read those directories.* `crates/aisme-linux/build.rs:27`, `xtask/src/vm.rs:54` and
@@ -278,9 +278,15 @@ test that asserts a repository is small.
 - If the answer is "keep": one line in *"Decisions taken, and where each is recorded"*, with the
   75 MB and the reason, so nobody re-opens it in six months without the number.
 
+**Answered, 2026-09-09: history stays.** The owner took the recommendation, and the reason is on
+the record rather than in a chat: 75 MB once per clone is a smaller price than every commit hash in
+`docs/05`, `docs/06`, `docs/07`, `STATE.md` and the CHANGELOG becoming a dangling reference. The
+decision is written in `docs/ai/STATE.md` under *Decisions taken*, and **no ADR is written** —
+declining to rewrite history is not an architectural decision, and §3 above said so before the
+answer arrived.
+
 **Closing.** Verified against `git count-objects -vH` (**`size-pack: 74.84 MiB`**), the five
 largest blobs in `git rev-list --objects --all` (all build artefacts, 42 MB and 39 MB at the top),
 and the hash citations in `docs/05`, `docs/06`, `docs/07` and `STATE.md`. **Nothing of the skeleton
-fell**; the skeleton already said this half was the owner's. **Open, and deliberately so: whether
-to rewrite history.** Points 1 and 2 are implementable without that answer, and are written so they
-do not depend on it.
+fell**; the skeleton already said this half was the owner's. Points 1 and 2 were implementable
+without the answer and did not wait for it. Open: nothing.

@@ -1,8 +1,10 @@
 # Challenge-amplification — the policy BPF object
 
-> **Status**: six points written; **points 1 to 5 implemented**. Outstanding: point 6 — the three
-> guest tests and `cargo xtask test-policy-publish`. The publication path has never executed:
-> `I-12` keeps it out of a host, so point 6 is what will prove it runs
+> **Status**: six points written; **points 1 to 5 implemented and executed on a real kernel**.
+> Measured on 6.8 (2026-09-09): generations 1 then 2, `meta` reading `[2, 0]`, pins surviving
+> the loader's exit. Outstanding: point 6's **packaging** — `cargo xtask test-policy-publish`,
+> the torn-read run and the `EPERM` negative, so the run above is repeatable rather than a
+> command someone typed once
 > **Scope**: the half of `F2.WS.04` that `docs/05_challenge_ampliacion_f2.md` §4.6 left blocked:
 > atomic publication of a compiled policy into real BPF maps, with a generation counter.
 > **Method**: `/challenge-ampliar` — five sections per point, written in the declared future so

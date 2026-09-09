@@ -4,6 +4,11 @@
 # were added and two were forgotten. A crate that genuinely must ship a
 # prebuilt artefact takes `git add -f`, with the reason in the commit.
 target/
+
+# Base images for `cargo xtask vm up`, hundreds of MB each and reproducible
+# from the catalogue URL in xtask/src/vm.rs. The overlays a run creates live
+# beside them and are disposable by design (I-12: snapshot VMs only).
+vm/images/
 **/*.rs.bk
 # Cargo.lock IS committed: this workspace ships binaries, and reproducible release
 # builds (plan DEP.BLD.05, DEP.SUP.07) and cargo-auditable manifests are meaningless

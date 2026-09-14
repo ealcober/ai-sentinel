@@ -1,7 +1,7 @@
 # Design Note — `aisme run`
 
 > **Status**: `SPEC` · **Owner**: architecture
-> **Feeds**: `F2.WS.08`, `F2.WS.11`, `F3.EN.09`, `F3.EN.12`, `F4.CO.04`, `F7.PS.07`, `F8.CLI.01`
+> **Feeds**: `F2.WS.05`, `F2.WS.06`, `F2.WS.08`, `F2.WS.11`, `F3.EN.09`, `F3.EN.12`, `F4.CO.04`, `F7.PS.07`, `F8.CLI.01`
 > **Why this note exists**: `aisme run` is defined across seven tasks in five phases and is the
 > documented default onboarding path. Without one specification it drifts.
 
@@ -35,7 +35,7 @@ It solves three problems that would otherwise need three mechanisms:
 
 The same socket carries **`declareToolCall`** (`F2.WS.03`): an agent volunteers that a tool call is starting, so correlation has something to match against while the actions happen. It authorizes nothing — no grant, no verdict, no scope — and the correlation token never travels on it, because an engine that could join on the token would make §4.6's precision and recall measure the join rather than the correlator. Beyond `DECLARATIONS_PER_MINUTE` per connection the answer is the result `rate_limited`, not an error.
 
-| 4 | Install the seccomp filter for the escalate class, passing everything else | `F3.EN.12` |
+| 4 | Install the seccomp filter for the escalate class, passing everything else | `F2.WS.05` (`Q-13`); `F3.EN.12` widens it |
 | 5 | Apply the Landlock ruleset compiled from the session policy — deny writes outside scope, deny the never-promptable classes, deny AISME's own files | `F2.WS.11`, `F3.EN.09`, `F3.EN.11` |
 | 6 | Set the environment: export the key-log variables for known runtimes pointing at the `agentd` socket; strip variables that would defeat observation | `F4.CO.04` |
 | 7 | `exec` the command. Landlock and the cgroup are inherited; nothing the child does can relax them | — |
@@ -43,6 +43,13 @@ The same socket carries **`declareToolCall`** (`F2.WS.03`): an agent volunteers 
 | 9 | On exit: close the session, release the cgroup, flush the WAL, print a one-line summary | — |
 
 Steps 4–6 happen **before** `exec`, so there is no window in which the child runs unsupervised.
+
+**F2 implements steps 1 (one scope, from `--scope` or the working directory), 2, 7 and the
+summary of 9 — printed before `exec`, because `exec` has no after.** The remaining steps belong
+to the tasks named beside them, and `crates/aisme-cli/src/run.rs` carries an empty `pre_exec`
+hook where steps 4 and 5 attach. Releasing the cgroup on exit is not F2's: the process that
+created it is the supervised command by then, so release belongs to whoever outlives the session
+(`docs/09` point 6).
 
 ## 4. Environment hygiene
 

@@ -1,6 +1,7 @@
 # Challenge-amplification — the rest of the walking skeleton
 
-> **Status**: complete — five points. The first is a coherence review that found four defects,
+> **Status**: five points amplified, **point 2 implemented** (`F2.WS.08`); a sixth recorded and not
+> amplified. The first is a coherence review that found four defects,
 > one of which reordered the other four and one of which was found while reading for point 2
 > and sent the review back to be corrected
 > **Scope**: `F2.WS.05` (`SeccompEnforcer`), `F2.WS.06` (`TerminalAdjudicator`), `F2.WS.07`
@@ -28,6 +29,9 @@ tree as it is rather than as the plan describes it.
 3. `F2.WS.05` — `SeccompEnforcer`: the syscall held, and the descriptor that answers it.
 4. `F2.WS.06` — `TerminalAdjudicator`: the human, in the terminal the session already owns.
 5. `F2.WS.07` — `forensicd` tails the WAL by offset and resumes without loss.
+6. **An empty session cgroup is left behind by every `aisme run`.** Found while measuring point 2
+   and **recorded rather than fixed**: what appears on the way and is not in a point becomes a new
+   numbered point. Not yet amplified.
 
 ---
 
@@ -249,8 +253,13 @@ kind of thing that later looks implemented.
 - A `pre_exec` hook point will be defined and left **empty**, with a comment naming `F2.WS.05` and
   `F2.WS.11` as its occupants and the reason it must run there: after the cgroup, before `exec`,
   no window.
-- On exit: print one line with the session id, the WAL segment and the exit status of the child,
-  and propagate that status as `aisme run`'s own.
+- **The summary is printed before `exec`, not after it**, and the exit status needs no
+  propagation. §2 requires `exec` rather than `fork`+`wait`, and `exec` has no "after": the
+  supervised command *is* this process from that moment, so its exit status is already
+  `aisme run`'s. A summary after the child exits would need the `fork` §2 refuses, and refusing
+  `exec` to gain a summary would trade the pid, the terminal and an unskippable chain for one line
+  of output. The line printed before `exec` carries the session id and the cgroup path; what the
+  session *did* is `forensicd`'s to report (point 5), which is where it belongs.
 
 ### 4. Tests
 
@@ -280,9 +289,10 @@ yet, and a test asserting an empty hook runs would pass for the wrong reason.
 the plan's F2 scope table (`:1600` onwards, whose out-of-scope column is binding),
 `deploy/systemd/aisme-agentd.service` (`Delegate=yes`, `DelegateSubgroup=sessions`, so the cgroup
 write is unprivileged), and `crates/aisme-cli/src/main.rs` (10 lines, no behaviour). **One claim of
-the skeleton fell**: the skeleton called this the fourth of four tasks; it is the first, and points
-3 and 4 depend on the seams named here. Open: nothing in this point — the scope-detection ladder is
-deferred to `F7.PS.07` deliberately and said so.
+the skeleton fell, and one of them is this point's own**. The skeleton called this the fourth of
+four tasks; it is the first, and points 3 and 4 depend on the seams named here. And its first
+draft asked for `exec` *and* an exit summary, which cannot coexist. Open: nothing in this point
+— the scope-detection ladder is deferred to `F7.PS.07` deliberately and said so.
 
 ---
 
@@ -553,6 +563,36 @@ Parquet, Merkle and OTLP out of scope. **Nothing of the skeleton fell.** Open: n
 
 ---
 
+## Point 6 — Every `aisme run` leaves an empty session cgroup — recorded, not amplified
+
+**Found on 2026-09-15**, running `aisme run -- cat /proc/self/cgroup` for the first time: the child
+reported `…/app-code-338215.scope/aisme-0284383fdfb8ca9c`, which is the done-condition of point 2
+observed — and after it exited, that directory was still there, empty.
+
+**Why it is nobody's yet.** `docs/design/02_aisme-run.md` step 9 reads *"On exit: close the session,
+release the cgroup, flush the WAL, print a one-line summary"*. Point 2 moved the summary before
+`exec` because `exec` has no after — and the same argument takes the release with it: the process
+that created the cgroup no longer exists as itself once the command runs. Whoever releases it must
+outlive the session, and in this architecture that is `agentd`, which in production owns the
+delegated subtree (`DelegateSubgroup=sessions`). Session close is `F8.CLI.01`'s registration
+counterpart and is not in F2.
+
+**Damage today:** one empty directory per run under the delegated subtree. Bounded by the `pids`
+and directory limits of the parent, so a long-lived developer session accumulates them. Direction:
+it does not bias any measurement, but an empty cgroup is state nobody asked for.
+
+**What would falsify it:** a kernel or systemd behaviour that garbage-collects empty child cgroups
+of a delegated scope. Not observed on this host — the directory survived the run — and not assumed.
+
+**In the meantime** the integration tests in `crates/aisme-cli/tests/session.rs` remove the cgroup
+their own runs created, parsed from the session line, so a test host does not accumulate them.
+That is test hygiene, not the fix.
+
+**What it needs:** its own amplification alongside `F8.CLI.01`, where the session is registered with
+`agentd` and can therefore be closed by it.
+
+---
+
 ## What this document changed
 
 | Point | What it settled |
@@ -562,6 +602,7 @@ Parquet, Merkle and OTLP out of scope. **Nothing of the skeleton fell.** Open: n
 | 3 | `SeccompEnforcer::publish` installs the classic filter — that is what publishing to this enforcer's decision point means. `CONTINUE` never permits a path-bearing syscall; the allow path's order is the security, and the enforcer lives on the control thread so a human is never on the T0 path |
 | 4 | `F2.WS.06`'s unattended variable is read once in `aisme run` before `exec` and **never** from the adjudicator's environment — an adjudicator that read its own environment could be steered by the agent it adjudicates |
 | 5 | `F2.WS.07`'s cursor is written **after** the record is printed, so a crash costs a repeat and never a loss |
+| 6 | **Recorded, not fixed**: every `aisme run` leaves an empty session cgroup, because `exec` has no after and release belongs to whoever outlives the session. Owed to `F8.CLI.01` |
 
 **Implementation order**: `F2.WS.08` → `F2.WS.05` → `F2.WS.06`, with `F2.WS.07` independent and
 runnable at any point.

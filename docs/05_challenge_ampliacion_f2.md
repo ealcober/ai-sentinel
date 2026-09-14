@@ -668,7 +668,7 @@ notifier (`SECCOMP_GET_NOTIF_SIZES`, present since 5.0) and reported `yes` on 5.
   reason if different) → obtain the target's cwd via `pidfd` → `openat2` with
   `RESOLVE_NO_MAGICLINKS` → evaluate the *opened* file against the compiled policy → `ADDFD`
   (with `SEND` where available) → respond.
-- `aisme-core::capability::CapabilitySet` gains `seccomp_addfd: bool`, and
+- **Done by point 13 on 2026-09-07** (`crates/aisme-core/src/capability.rs:52`, `tier.rs:70`): `aisme-core::capability::CapabilitySet` gains `seccomp_addfd: bool`, and
   `aisme-core::tier::degradations` gains its sentence: *no `SECCOMP_IOCTL_NOTIF_ADDFD`: an
   escalate-class allow cannot be delivered as a validated descriptor; the class degrades to deny
   (T1 allow lost)*.

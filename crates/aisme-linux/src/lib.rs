@@ -22,6 +22,9 @@ pub use policy::{
 #[cfg(target_os = "linux")]
 pub use resolve::{RealpathResolver, ResolverCounts};
 #[cfg(target_os = "linux")]
-pub use seccomp::{probe as probe_seccomp, SeccompSupport};
+pub use seccomp::{
+    id_valid, install_openat_filter, probe as probe_seccomp, recv, recv_fd, respond_deny, send_fd,
+    Notification, SeccompSupport,
+};
 #[cfg(target_os = "linux")]
 pub use sensor::BpfSensor;

@@ -328,6 +328,48 @@ pub struct Notification {
     pub args: [u64; 6],
 }
 
+impl Notification {
+    /// The directory descriptor argument of an `openat`, read as the kernel
+    /// stored it.
+    ///
+    /// **Truncate and reinterpret; never range-check.** A descriptor is a
+    /// 32-bit value and the kernel leaves it in a 64-bit argument slot without
+    /// sign-extending, so `AT_FDCWD` — which is `-100` — arrives as
+    /// `0x0000_0000_ffff_ff9c`. `i32::try_from` on that is an **error**, and a
+    /// caller that wrote `.unwrap_or(0)` would turn the commonest `openat` in
+    /// the system into one relative to file descriptor **0**: an absence read
+    /// as a value, in the conversion written to avoid one. Measured, not
+    /// reasoned: the first version of this code did exactly that and refused
+    /// every plain `open` as "relative to a descriptor".
+    #[must_use]
+    #[expect(
+        clippy::cast_possible_truncation,
+        clippy::cast_possible_wrap,
+        reason = "the argument slot holds a 32-bit descriptor; truncating is the correct read"
+    )]
+    pub const fn dirfd(&self) -> i32 {
+        self.args[0] as i64 as i32
+    }
+
+    /// The flags argument of an `openat`, read the same way and for the same
+    /// reason.
+    #[must_use]
+    #[expect(
+        clippy::cast_possible_truncation,
+        clippy::cast_possible_wrap,
+        reason = "the argument slot holds a 32-bit flag set; truncating is the correct read"
+    )]
+    pub const fn open_flags(&self) -> i32 {
+        self.args[2] as i64 as i32
+    }
+
+    /// The path argument: a **pointer** into the target's memory, never a path.
+    #[must_use]
+    pub const fn path_addr(&self) -> u64 {
+        self.args[1]
+    }
+}
+
 /// Wait for the next held syscall.
 ///
 /// # Errors
@@ -554,14 +596,258 @@ pub fn recv_fd(socket: BorrowedFd<'_>) -> aisme_core::error::Result<OwnedFd> {
     Ok(unsafe { OwnedFd::from_raw_fd(fd) })
 }
 
+// ---------------------------------------------------------------------------
+// The allow path: a descriptor the supervisor opened (`I-28`, `F2.WS.05`)
+// ---------------------------------------------------------------------------
+
+/// `RESOLVE_NO_MAGICLINKS` — refuse to traverse `/proc/*/fd/*` and friends,
+/// which are links whose target changes under the resolver.
+const RESOLVE_NO_MAGICLINKS: u64 = 0x02;
+
+/// `SECCOMP_ADDFD_FLAG_SEND` — install the descriptor **and** return it as the
+/// syscall's value, in one step. Kernel ≥ 5.14.
+const ADDFD_FLAG_SEND: u32 = 0x02;
+
+/// Why an `openat` cannot be permitted as asked.
+///
+/// Every variant names the thing that stopped it, because "unsupported" tells
+/// an operator nothing they can act on.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Unreproducible {
+    /// A flag outside the F2 subset, by the name the caller used.
+    Flag(&'static str),
+    /// The call named a directory descriptor rather than the cwd.
+    RelativeToDescriptor,
+}
+
+impl Unreproducible {
+    /// The operator's words.
+    #[must_use]
+    pub const fn reason(self) -> &'static str {
+        match self {
+            Unreproducible::Flag(name) => name,
+            Unreproducible::RelativeToDescriptor => {
+                "openat relative to a directory descriptor (F2 reproduces AT_FDCWD only)"
+            }
+        }
+    }
+}
+
+/// Whether F2 can reproduce this `openat` exactly.
+///
+/// **Limit one of `Q-13`.** F2 opens for reading, with `O_CLOEXEC`. Anything
+/// whose effect this subset cannot reproduce — a create, a truncate, an append,
+/// a directory open, a write mode — is **denied with the flag named**, never
+/// permitted: a descriptor that does not mean what the caller asked for is
+/// worse than a refusal, because the caller will use it believing it does.
+///
+/// # Errors
+///
+/// The first flag that puts the call outside the subset.
+pub fn reproducible(dirfd: i32, flags: i32) -> Result<(), Unreproducible> {
+    if dirfd != libc::AT_FDCWD {
+        return Err(Unreproducible::RelativeToDescriptor);
+    }
+    for (bit, name) in [
+        (libc::O_CREAT, "O_CREAT"),
+        (libc::O_TRUNC, "O_TRUNC"),
+        (libc::O_APPEND, "O_APPEND"),
+        (libc::O_DIRECTORY, "O_DIRECTORY"),
+        (libc::O_PATH, "O_PATH"),
+        (libc::O_TMPFILE, "O_TMPFILE"),
+    ] {
+        // `O_TMPFILE` carries `O_DIRECTORY` in its own bit pattern, so it is
+        // tested as a whole mask rather than as a single bit.
+        if flags & bit == bit {
+            return Err(Unreproducible::Flag(name));
+        }
+    }
+    match flags & libc::O_ACCMODE {
+        libc::O_RDONLY => Ok(()),
+        libc::O_WRONLY => Err(Unreproducible::Flag("O_WRONLY")),
+        _ => Err(Unreproducible::Flag("O_RDWR")),
+    }
+}
+
+/// Read the target's path argument out of its memory.
+///
+/// **Nothing decided from this may be delivered to the target as permission to
+/// re-resolve it.** The string is read to learn what to open; what the target
+/// receives is the descriptor this supervisor opened from it. If the target
+/// rewrites the buffer after this read, it changes nothing: the file was
+/// already chosen, opened and validated, and an fd names an inode rather than
+/// a name (`I-28`).
+///
+/// # Errors
+///
+/// `process_vm_readv`'s errno, or a path with no terminator inside the window
+/// read — which is refused rather than truncated into a shorter path that
+/// names a different file.
+pub fn read_target_path(pid: u32, addr: u64) -> aisme_core::error::Result<std::ffi::CString> {
+    use aisme_core::error::Error;
+
+    let mut buf = [0u8; libc::PATH_MAX as usize];
+    let local = libc::iovec {
+        iov_base: buf.as_mut_ptr().cast::<libc::c_void>(),
+        iov_len: buf.len(),
+    };
+    let remote = libc::iovec {
+        iov_base: usize::try_from(addr).unwrap_or(0) as *mut libc::c_void,
+        iov_len: buf.len(),
+    };
+    // SAFETY: both iovecs point at storage that outlives the call; the remote
+    // one is the target's and the kernel validates it, returning EFAULT rather
+    // than faulting us.
+    let got = unsafe {
+        libc::process_vm_readv(
+            libc::pid_t::try_from(pid).unwrap_or(-1),
+            std::ptr::addr_of!(local),
+            1,
+            std::ptr::addr_of!(remote),
+            1,
+            0,
+        )
+    };
+    if got < 0 {
+        // A short read at the end of a mapping is ordinary; retry the tail in
+        // one page so a path near a boundary is not lost. F2 keeps it simple
+        // and refuses, naming it, rather than reading a partial path.
+        return Err(Error::unsupported(format!(
+            "process_vm_readv from {pid}: {}",
+            std::io::Error::last_os_error()
+        )));
+    }
+    let len = usize::try_from(got).unwrap_or(0);
+    let end = buf[..len]
+        .iter()
+        .position(|b| *b == 0)
+        .ok_or_else(|| Error::unsupported("the path argument has no terminator"))?;
+    std::ffi::CString::new(&buf[..end])
+        .map_err(|e| Error::unsupported(format!("the path argument: {e}")))
+}
+
+/// Open `path` the way the target asked, from the target's own directory.
+///
+/// Resolved relative to `/proc/<pid>/cwd`, so a relative path means what it
+/// meant to the caller, and with `RESOLVE_NO_MAGICLINKS`, so the resolution
+/// cannot be steered through a link whose target moves.
+///
+/// # Errors
+///
+/// `openat2`'s errno — including the target's own `ENOENT`, which is the
+/// answer the caller would have got and is passed back unchanged.
+pub fn open_as_target(pid: u32, path: &std::ffi::CStr) -> aisme_core::error::Result<OwnedFd> {
+    use aisme_core::error::Error;
+
+    let cwd = std::ffi::CString::new(format!("/proc/{pid}/cwd"))
+        .map_err(|e| Error::unsupported(format!("cwd path: {e}")))?;
+    // SAFETY: `O_PATH|O_DIRECTORY` on a NUL-terminated path; the descriptor is
+    // owned below.
+    let dirfd = unsafe { libc::open(cwd.as_ptr(), libc::O_PATH | libc::O_DIRECTORY) };
+    if dirfd < 0 {
+        return Err(Error::unsupported(format!(
+            "/proc/{pid}/cwd: {}",
+            std::io::Error::last_os_error()
+        )));
+    }
+    // SAFETY: freshly opened, unowned elsewhere.
+    let dir = unsafe { OwnedFd::from_raw_fd(dirfd) };
+
+    // `open_how` is `#[non_exhaustive]` in libc, so it is zeroed and filled —
+    // which is also the kernel's own contract: unknown fields must be zero, and
+    // starting from zero is how that stays true when the struct grows.
+    // SAFETY: an all-zero `open_how` is the documented starting point.
+    let mut how: libc::open_how = unsafe { std::mem::zeroed() };
+    // The flags this subset reproduces, and only these: `reproducible` has
+    // already refused anything else (limit one of `Q-13`).
+    how.flags = u64::try_from(libc::O_RDONLY | libc::O_CLOEXEC).unwrap_or(0);
+    how.resolve = RESOLVE_NO_MAGICLINKS;
+    // SAFETY: `openat2` with a directory descriptor we own, a NUL-terminated
+    // path, and an `open_how` that outlives the call.
+    let fd = unsafe {
+        libc::syscall(
+            libc::SYS_openat2,
+            dir.as_raw_fd(),
+            path.as_ptr(),
+            std::ptr::addr_of!(how),
+            size_of::<libc::open_how>(),
+        )
+    };
+    let fd = RawFd::try_from(fd)
+        .map_err(|_| Error::unsupported("openat2 returned something that is not a descriptor"))?;
+    if fd < 0 {
+        return Err(Error::unsupported(format!(
+            "openat2 {}: {}",
+            path.to_string_lossy(),
+            std::io::Error::last_os_error()
+        )));
+    }
+    // SAFETY: the kernel just gave us this descriptor.
+    Ok(unsafe { OwnedFd::from_raw_fd(fd) })
+}
+
+/// Permit the held syscall by handing the target **our** descriptor.
+///
+/// This is the whole of `I-28` in one call. `SECCOMP_USER_NOTIF_FLAG_CONTINUE`
+/// would let the kernel re-run the syscall, re-resolving the path string after
+/// the decision — and a rename of any directory component, by any process on
+/// the machine, changes what that string names. The freezer does not close it
+/// either: the attack does not need the bytes to change. Only a descriptor the
+/// supervisor opened and validated survives, because a descriptor names an
+/// inode and not a name.
+///
+/// `SECCOMP_ADDFD_FLAG_SEND` installs the descriptor and returns it as the
+/// syscall's value in one step; it needs kernel ≥ 5.14.
+///
+/// # Errors
+///
+/// The ioctl's errno. A stale id is success: the syscall it named is gone.
+pub fn respond_with_fd(
+    listener: BorrowedFd<'_>,
+    id: u64,
+    fd: BorrowedFd<'_>,
+) -> aisme_core::error::Result<()> {
+    use aisme_core::error::Error;
+
+    if !id_valid(listener, id) {
+        return Ok(());
+    }
+    // SAFETY: a zeroed `seccomp_notif_addfd`, every field set below.
+    let mut addfd: libc::seccomp_notif_addfd = unsafe { std::mem::zeroed() };
+    addfd.id = id;
+    addfd.flags = ADDFD_FLAG_SEND;
+    addfd.srcfd = u32::try_from(fd.as_raw_fd()).unwrap_or(0);
+    addfd.newfd = 0;
+    addfd.newfd_flags = u32::try_from(libc::O_CLOEXEC).unwrap_or(0);
+
+    // SAFETY: the ioctl reads `addfd`, which we own and which outlives it.
+    let rc = unsafe {
+        libc::ioctl(
+            listener.as_raw_fd(),
+            libc::SECCOMP_IOCTL_NOTIF_ADDFD,
+            std::ptr::addr_of!(addfd),
+        )
+    };
+    if rc < 0 {
+        let e = std::io::Error::last_os_error();
+        if e.raw_os_error() == Some(libc::ENOENT) {
+            return Ok(());
+        }
+        return Err(Error::unsupported(format!("NOTIF_ADDFD: {e}")));
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 // A panic is the failure report in a test; the adapter's code stays denied.
 #[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
     use super::{
-        id_valid, install_openat_filter, probe, recv, recv_fd, respond_deny, send_fd, wexit_status,
-        wif_exited,
+        id_valid, install_openat_filter, open_as_target, probe, read_target_path, recv, recv_fd,
+        reproducible, respond_deny, respond_with_fd, send_fd, wexit_status, wif_exited,
+        Unreproducible,
     };
+    use std::os::fd::OwnedFd;
 
     /// The plan's done-condition for `F2.WS.05`: **a denied `openat` returns
     /// `-EACCES` to the caller**.
@@ -656,6 +942,316 @@ mod tests {
             "the denied openat returned {} and not EACCES",
             wexit_status(status)
         );
+    }
+
+    /// Set up a socketpair and fork; the child installs the filter and hands
+    /// the listener back. Returns `(pid, parent_end)` in the parent and runs
+    /// `child` in the child, which never returns.
+    ///
+    /// Written once because four tests need the same dance, and a dance
+    /// repeated four times drifts in one of them.
+    fn supervised(
+        child: impl FnOnce(std::os::fd::BorrowedFd<'_>) -> i32,
+    ) -> (i32, OwnedFd, OwnedFd) {
+        use std::os::fd::{AsFd, FromRawFd, OwnedFd};
+
+        let mut sv: [libc::c_int; 2] = [0; 2];
+        // SAFETY: a socketpair into storage we own.
+        let made =
+            unsafe { libc::socketpair(libc::AF_UNIX, libc::SOCK_STREAM, 0, sv.as_mut_ptr()) };
+        assert_eq!(made, 0, "socketpair: {}", std::io::Error::last_os_error());
+        // SAFETY: freshly created descriptors, unowned elsewhere.
+        let (parent_end, child_end) =
+            unsafe { (OwnedFd::from_raw_fd(sv[0]), OwnedFd::from_raw_fd(sv[1])) };
+
+        // SAFETY: `fork`; the child reaches `_exit` on every path below.
+        let pid = unsafe { libc::fork() };
+        assert!(pid >= 0, "fork: {}", std::io::Error::last_os_error());
+        if pid == 0 {
+            drop(parent_end);
+            // A supervisor that never answers must not hang the suite.
+            // SAFETY: `alarm` takes no pointers.
+            unsafe { libc::alarm(20) };
+            let Ok(listener) = install_openat_filter() else {
+                // SAFETY: `_exit` in a forked child.
+                unsafe { libc::_exit(101) }
+            };
+            if send_fd(child_end.as_fd(), listener.as_fd()).is_err() {
+                // SAFETY: as above.
+                unsafe { libc::_exit(102) }
+            }
+            drop(listener);
+            let code = child(child_end.as_fd());
+            // SAFETY: `_exit` in a forked child.
+            unsafe { libc::_exit(code) }
+        }
+        (pid, parent_end, child_end)
+    }
+
+    /// Reap the child and return its exit code, failing loudly on a signal.
+    fn reap(pid: i32) -> i32 {
+        let mut status = 0;
+        // SAFETY: waiting on the child we forked, with storage we own.
+        let waited = unsafe { libc::waitpid(pid, &raw mut status, 0) };
+        assert_eq!(waited, pid);
+        assert!(
+            wif_exited(status),
+            "the child did not exit normally (status {status:#x}); a hung supervisor alarms out"
+        );
+        wexit_status(status)
+    }
+
+    /// Open a path and return its first byte, or a marker. Runs in the child.
+    fn open_and_read_first_byte(path: &std::ffi::CStr) -> i32 {
+        // SAFETY: `open` with a NUL-terminated path and no mode.
+        let fd = unsafe { libc::open(path.as_ptr(), libc::O_RDONLY | libc::O_CLOEXEC) };
+        if fd < 0 {
+            // SAFETY: errno immediately after a failed call.
+            return 200 + unsafe { *libc::__errno_location() }.min(50);
+        }
+        let mut byte = [0u8; 1];
+        // SAFETY: reading one byte into storage we own, from a descriptor the
+        // kernel just installed.
+        let got = unsafe { libc::read(fd, byte.as_mut_ptr().cast::<libc::c_void>(), 1) };
+        // SAFETY: closing a descriptor we own.
+        unsafe { libc::close(fd) };
+        if got == 1 {
+            i32::from(byte[0])
+        } else {
+            199
+        }
+    }
+
+    fn scratch(tag: &str) -> std::path::PathBuf {
+        let dir = std::env::temp_dir().join(format!("aisme-seccomp-{tag}-{}", std::process::id()));
+        std::fs::remove_dir_all(&dir).ok();
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    fn cstr(path: &std::path::Path) -> std::ffi::CString {
+        std::ffi::CString::new(path.to_str().unwrap()).unwrap()
+    }
+
+    /// The allow path: the target receives **the supervisor's** descriptor, and
+    /// reads through it.
+    #[test]
+    fn an_allowed_openat_delivers_a_descriptor_the_supervisor_opened() {
+        use std::os::fd::AsFd;
+
+        let dir = scratch("allow");
+        let file = dir.join("secret");
+        std::fs::write(&file, b"A").unwrap();
+        let path = cstr(&file);
+
+        let (pid, parent_end, child_end) =
+            supervised(move |_| open_and_read_first_byte(&path.clone()));
+        drop(child_end);
+
+        let listener = recv_fd(parent_end.as_fd()).expect("the listener");
+        let n = recv(listener.as_fd()).expect("the notification");
+        // Limit one: only what F2 reproduces exactly.
+        reproducible(n.dirfd(), n.open_flags()).unwrap_or_else(|e| {
+            panic!(
+                "dirfd {} flags {:#o} refused: {}",
+                n.dirfd(),
+                n.open_flags(),
+                e.reason()
+            )
+        });
+        let asked = read_target_path(n.pid, n.path_addr()).expect("the path argument");
+        let opened = open_as_target(n.pid, &asked).expect("the supervisor's own open");
+        respond_with_fd(listener.as_fd(), n.id, opened.as_fd()).expect("ADDFD");
+
+        assert_eq!(
+            reap(pid),
+            i32::from(b'A'),
+            "the target did not read through the descriptor we handed it"
+        );
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// TOCTOU, form (i): the path buffer changes **after** the syscall, and the
+    /// target still receives the file the supervisor validated.
+    ///
+    /// The supervisor plays the attacker so the race is deterministic: it reads
+    /// the argument, rewrites the target's own buffer to name a different file,
+    /// then opens what it read and answers. Under
+    /// `SECCOMP_USER_NOTIF_FLAG_CONTINUE` the kernel would re-resolve that
+    /// buffer and the target would receive the *other* file — which is exactly
+    /// why `CONTINUE` may never permit a path-bearing syscall (`I-28`).
+    #[test]
+    fn rewriting_the_path_after_the_syscall_does_not_change_what_arrives() {
+        use std::os::fd::AsFd;
+
+        let dir = scratch("toctou-i");
+        let good = dir.join("authorized");
+        let evil = dir.join("swapped-in");
+        std::fs::write(&good, b"A").unwrap();
+        std::fs::write(&evil, b"B").unwrap();
+        assert_eq!(
+            good.to_str().unwrap().len(),
+            evil.to_str().unwrap().len(),
+            "the two paths must be the same length so the rewrite fits the buffer"
+        );
+        let asked_for = cstr(&good);
+        let swapped = cstr(&evil);
+
+        let (pid, parent_end, child_end) =
+            supervised(move |_| open_and_read_first_byte(&asked_for.clone()));
+        drop(child_end);
+
+        let listener = recv_fd(parent_end.as_fd()).expect("the listener");
+        let n = recv(listener.as_fd()).expect("the notification");
+        let read_back = read_target_path(n.pid, n.path_addr()).expect("the path argument");
+
+        // The attack: the target's buffer now names the other file.
+        let bytes = swapped.as_bytes_with_nul();
+        let local = libc::iovec {
+            iov_base: bytes.as_ptr().cast::<libc::c_void>().cast_mut(),
+            iov_len: bytes.len(),
+        };
+        let remote = libc::iovec {
+            iov_base: usize::try_from(n.args[1]).unwrap_or(0) as *mut libc::c_void,
+            iov_len: bytes.len(),
+        };
+        // SAFETY: both iovecs point at storage that outlives the call; the
+        // kernel validates the remote one and returns EFAULT rather than
+        // faulting us.
+        let wrote = unsafe {
+            libc::process_vm_writev(
+                libc::pid_t::try_from(n.pid).unwrap_or(-1),
+                std::ptr::addr_of!(local),
+                1,
+                std::ptr::addr_of!(remote),
+                1,
+                0,
+            )
+        };
+        assert!(
+            wrote > 0,
+            "the rewrite did not happen, so nothing was raced"
+        );
+        assert_eq!(
+            read_target_path(n.pid, n.args[1]).unwrap(),
+            swapped,
+            "the target's buffer was not actually changed"
+        );
+
+        // We open what we READ, not what the buffer says now.
+        let opened = open_as_target(n.pid, &read_back).expect("the supervisor's own open");
+        respond_with_fd(listener.as_fd(), n.id, opened.as_fd()).expect("ADDFD");
+
+        assert_eq!(
+            reap(pid),
+            i32::from(b'A'),
+            "the target received the swapped-in file: the decision and the object came apart"
+        );
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// TOCTOU, form (ii): a directory component is **renamed** between the
+    /// decision and the response.
+    ///
+    /// This is the one the cgroup freezer would not have caught. The attack
+    /// needs no access to the target and does not change a single byte of the
+    /// path: any process on the machine can rename a directory, and the same
+    /// string then names a different file. Only a descriptor survives it,
+    /// because a descriptor names an inode and a path names a name.
+    #[test]
+    fn renaming_a_directory_after_the_decision_does_not_change_what_arrives() {
+        use std::os::fd::AsFd;
+
+        let dir = scratch("toctou-ii");
+        let live = dir.join("workspace");
+        std::fs::create_dir_all(&live).unwrap();
+        std::fs::write(live.join("data"), b"A").unwrap();
+        let path = cstr(&live.join("data"));
+
+        let (pid, parent_end, child_end) =
+            supervised(move |_| open_and_read_first_byte(&path.clone()));
+        drop(child_end);
+
+        let listener = recv_fd(parent_end.as_fd()).expect("the listener");
+        let n = recv(listener.as_fd()).expect("the notification");
+        let asked = read_target_path(n.pid, n.path_addr()).expect("the path argument");
+
+        // Decided and opened: from here the object is fixed.
+        let opened = open_as_target(n.pid, &asked).expect("the supervisor's own open");
+
+        // The attack, by a third party with no access to the target: the
+        // directory moves aside and a different tree takes its name.
+        let moved = dir.join("moved-aside");
+        std::fs::rename(&live, &moved).unwrap();
+        std::fs::create_dir_all(&live).unwrap();
+        std::fs::write(live.join("data"), b"B").unwrap();
+
+        respond_with_fd(listener.as_fd(), n.id, opened.as_fd()).expect("ADDFD");
+
+        assert_eq!(
+            reap(pid),
+            i32::from(b'A'),
+            "the rename changed what the target received: the string was resolved twice"
+        );
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// `AT_FDCWD` survives the trip through a 64-bit argument slot.
+    ///
+    /// The regression this pins: `i32::try_from(args[0] as i64)` **fails** for
+    /// `AT_FDCWD`, because the kernel leaves the 32-bit descriptor
+    /// zero-extended as `0x0000_0000_ffff_ff9c`. A caller that wrote
+    /// `.unwrap_or(0)` would read the commonest `openat` in the system as one
+    /// relative to descriptor 0.
+    #[test]
+    fn a_descriptor_argument_is_truncated_and_not_range_checked() {
+        let mut n = super::Notification {
+            id: 0,
+            pid: 0,
+            nr: 0,
+            args: [0; 6],
+        };
+        // As the kernel presents it.
+        n.args[0] = 0x0000_0000_ffff_ff9c;
+        assert_eq!(n.dirfd(), libc::AT_FDCWD);
+        assert!(
+            i32::try_from(n.args[0]).is_err(),
+            "the value does fit i32, so this test no longer pins anything"
+        );
+
+        n.args[2] = u64::try_from(libc::O_RDONLY | libc::O_CLOEXEC).unwrap_or(0);
+        assert_eq!(n.open_flags(), libc::O_RDONLY | libc::O_CLOEXEC);
+        assert!(reproducible(n.dirfd(), n.open_flags()).is_ok());
+    }
+
+    /// Limit one of `Q-13`: anything F2 cannot reproduce exactly is denied
+    /// **with the flag named**, never permitted.
+    #[test]
+    fn a_flag_outside_the_subset_is_denied_by_name() {
+        assert!(reproducible(libc::AT_FDCWD, libc::O_RDONLY).is_ok());
+        assert!(reproducible(libc::AT_FDCWD, libc::O_RDONLY | libc::O_CLOEXEC).is_ok());
+
+        for (flags, name) in [
+            (libc::O_RDONLY | libc::O_CREAT, "O_CREAT"),
+            (libc::O_RDONLY | libc::O_TRUNC, "O_TRUNC"),
+            (libc::O_RDONLY | libc::O_APPEND, "O_APPEND"),
+            (libc::O_RDONLY | libc::O_DIRECTORY, "O_DIRECTORY"),
+            (libc::O_WRONLY, "O_WRONLY"),
+            (libc::O_RDWR, "O_RDWR"),
+        ] {
+            let refused = reproducible(libc::AT_FDCWD, flags).unwrap_err();
+            assert_eq!(
+                refused.reason(),
+                name,
+                "the refusal did not name the flag that caused it"
+            );
+        }
+
+        // Limit one also covers where the path is resolved from: F2 reproduces
+        // AT_FDCWD only, and a real directory descriptor is refused rather than
+        // resolved from the wrong directory.
+        let refused = reproducible(3, libc::O_RDONLY).unwrap_err();
+        assert_eq!(refused, Unreproducible::RelativeToDescriptor);
     }
 
     /// A stale notification is not answered into.

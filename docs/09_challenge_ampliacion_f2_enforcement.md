@@ -1,9 +1,10 @@
 # Challenge-amplification — the rest of the walking skeleton
 
 > **Status**: five points amplified. **Points 2 and 5 implemented** (`F2.WS.08`, `F2.WS.07`), and
-> **point 3's deny path proven end to end** — a trapped `openat` returns `-EACCES` to its caller,
-> which is `F2.WS.05`'s done-condition as the plan states it; its *allow* path (`ADDFD`) and the
-> wiring into the product remain. A sixth point is recorded and not
+> **point 3's mechanism proven end to end** — a trapped `openat` is denied with `-EACCES` or
+> permitted with a descriptor the supervisor opened, and **both TOCTOU forms are tested**,
+> including the rename the freezer would not have caught. What remains of `F2.WS.05` is the wiring
+> into `aisme run` and `agentd`. A sixth point is recorded and not
 > amplified. The first is a coherence review that found five defects,
 > one of which reordered the other four and one of which was found while reading for point 2
 > and sent the review back to be corrected

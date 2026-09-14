@@ -8,6 +8,11 @@ rust-version.workspace = true
 publish = false
 
 [dependencies]
+# The WAL format and the event wire. Nothing else: DuckDB, Parquet, the Merkle
+# chain and OTLP are F5's, and F2's out-of-scope list is as binding as its task
+# list.
+aisme-core = { path = "../aisme-core" }
+aisme-ebpf-common = { path = "../aisme-ebpf-common" }
 
 [lints]
 workspace = true

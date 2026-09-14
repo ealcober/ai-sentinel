@@ -1,6 +1,6 @@
 # Challenge-amplification — the rest of the walking skeleton
 
-> **Status**: five points amplified, **point 2 implemented** (`F2.WS.08`); a sixth recorded and not
+> **Status**: five points amplified, **points 2 and 5 implemented** (`F2.WS.08`, `F2.WS.07`); a sixth recorded and not
 > amplified. The first is a coherence review that found five defects,
 > one of which reordered the other four and one of which was found while reading for point 2
 > and sent the review back to be corrected

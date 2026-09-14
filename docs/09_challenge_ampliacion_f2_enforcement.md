@@ -1,9 +1,9 @@
 # Challenge-amplification — the rest of the walking skeleton
 
 > **Status**: five points amplified. **Points 2 and 5 implemented** (`F2.WS.08`, `F2.WS.07`), and
-> **point 3 complete and running**: `aisme run --trap-openat -- cat /etc/hostname` prints the file
-> through a descriptor `agentd` opened for it, with both TOCTOU forms tested. Point 4
-> (`F2.WS.06`) is what remains of this document. A sixth point is recorded and not
+> **complete and running.** `aisme run --trap-openat --escalate /etc/hostname -- cat /etc/hostname`
+> asks, and the syscall obeys the answer: `d` gives *"Permiso denegado"* and exit 1, `1` gives the
+> file and exit 0. Points 2, 3, 4 and 5 are implemented; point 6 is recorded and not A sixth point is recorded and not
 > amplified. The first is a coherence review that found five defects,
 > one of which reordered the other four and one of which was found while reading for point 2
 > and sent the review back to be corrected

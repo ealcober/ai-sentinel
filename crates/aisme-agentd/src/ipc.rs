@@ -247,6 +247,22 @@ fn register_session(request: &rpc::Request, ancillary: &mut Ancillary) -> String
             .get("tty")
             .and_then(Value::as_str)
             .map(ToOwned::to_owned),
+        // An empty list is a session that escalates nothing, which is a real
+        // state and the default: every open it makes is answered with a
+        // validated descriptor and nobody is asked.
+        escalate: match request.params.get("escalate") {
+            Some(Value::Array(items)) => items
+                .iter()
+                .filter_map(Value::as_str)
+                .map(ToOwned::to_owned)
+                .collect(),
+            _ => Vec::new(),
+        },
+        unattended: request
+            .params
+            .get("unattended")
+            .and_then(Value::as_str)
+            .map(ToOwned::to_owned),
         listener,
     });
     rpc::response(
@@ -409,6 +425,22 @@ pub struct Registered {
     /// a real state and not a default: a session with no terminal gets the
     /// adjudicator's timeout verdict rather than a prompt written into nothing.
     pub tty: Option<String>,
+    /// Path prefixes whose opens are escalated to a human instead of being
+    /// permitted silently.
+    ///
+    /// F2's one hardcoded rule, carried by the session rather than compiled in
+    /// the daemon: the loader owns the policy and the daemon holds no map
+    /// (`docs/06` point 3), so what the session escalates is what the session
+    /// declares. `F3.PT.02`'s kernel-side trie replaces this with the compiled
+    /// policy the kernel itself reads.
+    pub escalate: Vec<String>,
+    /// An answer to use instead of asking, for gates and unattended runs.
+    ///
+    /// **Read once by `aisme run`, before `exec`, and carried here.** The
+    /// adjudicator must never read it from the daemon's own environment: a
+    /// daemon-side read could be steered by anything able to set a variable in
+    /// the daemon, which includes the agent being adjudicated.
+    pub unattended: Option<String>,
     /// The seccomp listener for that session.
     pub listener: std::os::fd::OwnedFd,
 }

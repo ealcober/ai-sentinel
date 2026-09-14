@@ -876,6 +876,26 @@ pub fn respond_with_fd(
 /// listener — the session ended — is the ordinary exit and returns `Ok`.
 pub fn serve_notifications(
     listener: BorrowedFd<'_>,
+    record: impl FnMut(u32, bool, Option<&str>),
+) -> aisme_core::error::Result<()> {
+    serve_notifications_with(listener, |_| true, record)
+}
+
+/// [`serve_notifications`], asking `allow` about each path first.
+///
+/// `allow` receives the path the target asked for — **to decide, not to
+/// open**. What the target receives is still the descriptor this supervisor
+/// opened from that same string, so a rewrite between the two changes nothing
+/// (`I-28`). It returns `false` to deny, and it is where a human is asked: it
+/// runs on this session's own thread, so it may block for as long as the
+/// adjudicator's budget allows.
+///
+/// # Errors
+///
+/// As [`serve_notifications`].
+pub fn serve_notifications_with(
+    listener: BorrowedFd<'_>,
+    mut allow: impl FnMut(&str) -> bool,
     mut record: impl FnMut(u32, bool, Option<&str>),
 ) -> aisme_core::error::Result<()> {
     loop {
@@ -902,6 +922,11 @@ pub fn serve_notifications(
             record(n.pid, false, Some("the path argument could not be read"));
             continue;
         };
+        if !allow(&path.to_string_lossy()) {
+            respond_deny(listener, n.id, libc::EACCES)?;
+            record(n.pid, false, Some("refused by the session's adjudicator"));
+            continue;
+        }
         if let Ok(fd) = open_as_target(n.pid, &path) {
             respond_with_fd(listener, n.id, fd.as_fd())?;
             record(n.pid, true, None);

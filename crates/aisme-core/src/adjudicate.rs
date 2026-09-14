@@ -128,6 +128,45 @@ pub struct Escalation {
     pub declared_intent: Option<String>,
 }
 
+impl Escalation {
+    /// One question, with the fields every channel needs to render it.
+    ///
+    /// The type is `#[non_exhaustive]` so it can grow (`ADR-08`), which also
+    /// stops anything outside this crate building one — including the adapters
+    /// that implement `Adjudicator` and the tests that drive them. This
+    /// constructor is the additive answer: a new field gets a default here
+    /// rather than a compile error in five crates.
+    #[must_use]
+    pub fn new(
+        id: EscalationId,
+        session_id: SessionId,
+        group: PermissionGroup,
+        rule_id: impl Into<String>,
+        severity: Severity,
+        summary: impl Into<String>,
+    ) -> Escalation {
+        Escalation {
+            id,
+            session_id,
+            group,
+            rule_id: rule_id.into(),
+            severity,
+            summary: summary.into(),
+            declared_intent: None,
+        }
+    }
+
+    /// The same question, carrying what the agent said it was doing.
+    ///
+    /// Shown as a **claim** and never as a fact: `DT-04` exists because a
+    /// declaration may be a lie.
+    #[must_use]
+    pub fn with_declared_intent(mut self, intent: impl Into<String>) -> Escalation {
+        self.declared_intent = Some(intent.into());
+        self
+    }
+}
+
 /// A non-blocking notice for `Verdict::Warn`.
 #[non_exhaustive]
 #[derive(Clone, Debug, PartialEq, Eq)]

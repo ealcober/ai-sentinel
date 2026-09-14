@@ -96,6 +96,39 @@ fn notify_to(socket: &std::ffi::OsStr, message: &str) -> bool {
         .is_ok()
 }
 
+/// Drive a future to completion on this thread.
+///
+/// The adjudicators this daemon composes do their waiting **before** the future
+/// is built — a terminal prompt blocks on `poll(2)` inside `ask`, and hands
+/// back a future that is ready the moment it is polled. So a poll-once executor
+/// is the whole of what is needed on the control thread, and pulling the Tokio
+/// runtime into a path that never yields would buy nothing.
+///
+/// # Panics
+///
+/// If a future is not ready when polled. That is a contract break in the
+/// adjudicator, not a state to recover from: an adjudicator that yields has to
+/// say so, and the ladder would then need a real executor.
+pub(crate) fn block_on<T>(future: aisme_core::adjudicate::BoxFuture<'_, T>) -> T {
+    use std::task::{Context, Poll, RawWaker, RawWakerVTable, Waker};
+
+    const VTABLE: RawWakerVTable = RawWakerVTable::new(
+        |_| RawWaker::new(std::ptr::null(), &VTABLE),
+        |_| {},
+        |_| {},
+        |_| {},
+    );
+    // SAFETY: the vtable's four functions are no-ops over a null pointer they
+    // never dereference, which is sound for a waker nothing ever wakes.
+    let waker = unsafe { Waker::from_raw(RawWaker::new(std::ptr::null(), &VTABLE)) };
+    let mut cx = Context::from_waker(&waker);
+    let mut future = future;
+    match future.as_mut().poll(&mut cx) {
+        Poll::Ready(value) => value,
+        Poll::Pending => panic!("an adjudicator returned a future that was not ready"),
+    }
+}
+
 #[cfg(test)]
 // A panic *is* the failure report in a test, so the two lints the daemon
 // denies are allowed here — and only here, which is the point: the denial

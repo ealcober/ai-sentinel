@@ -17,6 +17,7 @@ mod ipc;
 mod platform;
 mod runtime;
 mod selfobs;
+mod terminal;
 mod wal;
 
 /// `H-03`: RSS is a budget, not an outcome. mimalloc's purge returns freed
@@ -103,8 +104,16 @@ fn run_slice(dir: &std::path::Path, rest: &[String]) -> std::io::Result<()> {
                     // microseconds (`docs/05` §5.3).
                     let id = session.session_id;
                     let tty = session.tty;
+                    let escalate = session.escalate;
+                    let unattended = session.unattended;
                     std::thread::spawn(move || {
-                        platform::serve_session_notifications(session.listener, id, tty.as_deref());
+                        platform::serve_session_notifications(
+                            session.listener,
+                            id,
+                            tty.as_deref(),
+                            &escalate,
+                            unattended.as_deref(),
+                        );
                     });
                 },
                 || false,

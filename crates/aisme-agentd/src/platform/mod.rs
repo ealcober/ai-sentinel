@@ -194,8 +194,15 @@ pub fn serve_session_notifications(
     listener: std::os::fd::OwnedFd,
     session_id: u64,
     tty: Option<&str>,
+    escalate: &[String],
+    unattended: Option<&str>,
 ) {
     use std::os::fd::AsFd as _;
+
+    use aisme_core::adjudicate::{Adjudicator as _, Escalation};
+    use aisme_core::enforce::EscalationId;
+    use aisme_core::ontology::{PermissionGroup, SessionId, Severity};
+    use aisme_ebpf_common::Verdict;
 
     // Named on the way in, because a session with no terminal cannot be
     // prompted and `F2.WS.06` will answer it with a timeout verdict instead —
@@ -205,21 +212,70 @@ pub fn serve_session_notifications(
         "session {session_id:016x} supervised; terminal {}",
         tty.unwrap_or("none — escalations will take the timeout verdict")
     );
+    // The answer comes from the session's registration, never from this
+    // process's environment: a daemon-side read could be steered by anything
+    // able to set a variable in the daemon, which includes the agent being
+    // adjudicated.
+    let unattended = unattended.and_then(|v| match v {
+        "d" => Some(crate::terminal::Unattended(Verdict::Deny)),
+        "1" | "s" | "a" => Some(crate::terminal::Unattended(Verdict::Allow)),
+        _ => None,
+    });
+    let mut adjudicator =
+        crate::terminal::TerminalAdjudicator::new(tty.map(ToOwned::to_owned), unattended);
+    // An unattended session waits for nobody: the answer is already known, and
+    // a ten-second budget it will never spend would only slow a gate down.
+    if unattended.is_some() {
+        adjudicator = adjudicator.with_budget(std::time::Duration::ZERO);
+    }
+    let mut asked = 0u64;
+    let mut escalation_id = 0u64;
+
+    // The escalate class, as this session declared it. A path under one of
+    // these is a question for a human; everything else is answered with a
+    // validated descriptor and nobody is interrupted.
+    let is_escalate = |path: &str| {
+        escalate
+            .iter()
+            .any(|prefix| path.starts_with(prefix.as_str()))
+    };
+
     let mut delivered = 0u64;
     let mut denied = 0u64;
-    let result = aisme_linux::serve_notifications(listener.as_fd(), |pid, ok, why| {
-        if ok {
-            delivered += 1;
-        } else {
-            denied += 1;
-            // One line per denial, with its reason: "unsupported" tells an
-            // operator nothing they can act on. The WAL record is F2.WS.09's.
-            eprintln!(
-                "session {session_id:016x}: denied an openat from pid {pid}: {}",
-                why.unwrap_or("no reason recorded")
+    let result = aisme_linux::serve_notifications_with(
+        listener.as_fd(),
+        |path| {
+            if !is_escalate(path) {
+                return true;
+            }
+            asked += 1;
+            escalation_id += 1;
+            let question = Escalation::new(
+                EscalationId(escalation_id),
+                SessionId(session_id),
+                PermissionGroup::Credentials,
+                "escalate-declared",
+                Severity::High,
+                format!("read {path}"),
             );
-        }
-    });
+            // Blocking, on this session's own thread and never the hot loop: a
+            // human takes seconds and the hot loop's budget is microseconds.
+            crate::runtime::block_on(adjudicator.ask(&question)) == Verdict::Allow
+        },
+        |pid, ok, why| {
+            if ok {
+                delivered += 1;
+            } else {
+                denied += 1;
+                // One line per denial, with its reason: "unsupported" tells an
+                // operator nothing they can act on. The WAL record is F2.WS.09's.
+                eprintln!(
+                    "session {session_id:016x}: denied an openat from pid {pid}: {}",
+                    why.unwrap_or("no reason recorded")
+                );
+            }
+        },
+    );
     if let Err(e) = result {
         eprintln!(
             "session {session_id:016x}: the notification loop stopped: {}",
@@ -229,7 +285,10 @@ pub fn serve_session_notifications(
     // Closing the listener is what ends the session's enforcement: any syscall
     // still held then gets ENOSYS from the kernel, which is fail-closed.
     drop(listener);
-    println!("session {session_id:016x} ended: {delivered} delivered, {denied} denied");
+    println!(
+        "session {session_id:016x} ended: {delivered} delivered, {denied} denied, {asked} asked ({} unattended)",
+        adjudicator.answered_unattended
+    );
 }
 
 /// Off Linux there are no notifications to answer.
@@ -238,6 +297,8 @@ pub fn serve_session_notifications(
     _listener: std::os::fd::OwnedFd,
     _session_id: u64,
     _tty: Option<&str>,
+    _escalate: &[String],
+    _unattended: Option<&str>,
 ) {
 }
 

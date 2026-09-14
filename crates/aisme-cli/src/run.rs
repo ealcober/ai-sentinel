@@ -47,6 +47,9 @@ pub struct Invocation {
     /// kernel-side trie is what will let the filter trap the escalate class
     /// alone.
     pub trap_openat: bool,
+    /// Path prefixes whose opens are escalated to a human instead of being
+    /// permitted silently — F2's one rule, declared by the session.
+    pub escalate: Vec<String>,
 }
 
 /// Parse `run [--scope <path>…] -- <cmd> [args…]`.
@@ -58,9 +61,10 @@ pub struct Invocation {
 /// to run is a typo, and exec'ing a shell for it would supervise the wrong
 /// process and report success.
 pub fn parse(args: &[String]) -> Result<Invocation, String> {
-    const USAGE: &str = "usage: aisme run [--scope <path>…] [--trap-openat] -- <command> [args…]";
+    const USAGE: &str = "usage: aisme run [--scope <path>…] [--trap-openat] [--escalate <prefix>…] -- <command> [args…]";
     let mut scopes = Vec::new();
     let mut trap_openat = false;
+    let mut escalate = Vec::new();
     let mut rest = args.iter();
     let mut command = Vec::new();
     while let Some(arg) = rest.next() {
@@ -83,6 +87,12 @@ pub fn parse(args: &[String]) -> Result<Invocation, String> {
                 scopes.push(path);
             }
             "--trap-openat" => trap_openat = true,
+            "--escalate" => {
+                let prefix = rest
+                    .next()
+                    .ok_or_else(|| format!("--escalate needs a path prefix\n{USAGE}"))?;
+                escalate.push(prefix.clone());
+            }
             other => return Err(format!("unknown argument {other}\n{USAGE}")),
         }
     }
@@ -96,6 +106,7 @@ pub fn parse(args: &[String]) -> Result<Invocation, String> {
         scopes,
         command,
         trap_openat,
+        escalate,
     })
 }
 
@@ -213,6 +224,7 @@ fn agentd_socket() -> String {
 /// caller refuses to `exec` rather than running unsupervised: a command the
 /// caller asked to have watched must not run unwatched without being told.
 fn pre_exec(invocation: &Invocation, session_id: u64) -> Result<(), String> {
+    use std::fmt::Write as _;
     use std::os::fd::AsFd as _;
 
     if !invocation.trap_openat {
@@ -241,20 +253,39 @@ fn pre_exec(invocation: &Invocation, session_id: u64) -> Result<(), String> {
         .ok()
         .and_then(|p| p.to_str().map(ToOwned::to_owned))
         .filter(|p| p.starts_with("/dev/"));
-    let line = match &tty {
-        Some(tty) => format!(
-            r#"{{"jsonrpc":"2.0","id":1,"method":"{}","params":{{"session_id":{},"tty":"{tty}"}}}}"#,
-            Method::RegisterSession.as_str(),
-            // The codec has no unsigned integer, and a session id is an opaque
-            // token: the daemon reads the same bits back.
-            i64::from_ne_bytes(session_id.to_ne_bytes())
-        ),
-        None => format!(
-            r#"{{"jsonrpc":"2.0","id":1,"method":"{}","params":{{"session_id":{}}}}}"#,
-            Method::RegisterSession.as_str(),
-            i64::from_ne_bytes(session_id.to_ne_bytes())
-        ),
-    };
+    // `AISME_TERMINAL_ANSWER` is read **here**, once, before `exec`, and carried
+    // to the daemon — never read by the adjudicator from its own environment,
+    // which anything able to set a variable in the daemon could steer,
+    // including the agent being adjudicated.
+    let unattended = std::env::var("AISME_TERMINAL_ANSWER")
+        .ok()
+        .filter(|v| matches!(v.as_str(), "d" | "1" | "s" | "a"));
+
+    let mut params = format!(
+        r#""session_id":{}"#,
+        // The codec has no unsigned integer, and a session id is an opaque
+        // token: the daemon reads the same bits back.
+        i64::from_ne_bytes(session_id.to_ne_bytes())
+    );
+    if let Some(tty) = &tty {
+        let _ = write!(params, r#","tty":"{tty}""#);
+    }
+    if let Some(answer) = &unattended {
+        let _ = write!(params, r#","unattended":"{answer}""#);
+    }
+    if !invocation.escalate.is_empty() {
+        let list = invocation
+            .escalate
+            .iter()
+            .map(|p| format!("\"{p}\""))
+            .collect::<Vec<String>>()
+            .join(",");
+        let _ = write!(params, r#","escalate":[{list}]"#);
+    }
+    let line = format!(
+        r#"{{"jsonrpc":"2.0","id":1,"method":"{}","params":{{{params}}}}}"#,
+        Method::RegisterSession.as_str()
+    );
     // One message: the request and the descriptor it carries. Two would put a
     // filler byte in the daemon's stream ahead of the line.
     let mut request = line.into_bytes();

@@ -25,7 +25,8 @@ pub use resolve::{RealpathResolver, ResolverCounts};
 pub use seccomp::{
     allow_ptrace_by, id_valid, install_openat_filter, open_as_target, peer_pid,
     probe as probe_seccomp, read_target_path, recv, recv_fd, reproducible, respond_deny,
-    respond_with_fd, send_fd, serve_notifications, Notification, SeccompSupport, Unreproducible,
+    respond_with_fd, send_fd, serve_notifications, serve_notifications_with, Notification,
+    SeccompSupport, Unreproducible,
 };
 #[cfg(target_os = "linux")]
 pub use sensor::BpfSensor;

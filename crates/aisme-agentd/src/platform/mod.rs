@@ -31,10 +31,25 @@ use aisme_ebpf_common::Verdict;
 pub fn probe() -> CapabilitySet {
     #[cfg(target_os = "linux")]
     {
-        // F3.LD.01 replaces this with the real probe: securityfs, /proc/config.gz,
-        // the Landlock ABI syscall, an attach test for the connect hook. Until
-        // then nothing is claimed present.
-        CapabilitySet::NONE
+        // The two seccomp flags are measured, because `F2.WS.05`'s enforcer is
+        // gated on `seccomp_addfd` and a set that never reports it would leave
+        // that enforcer compiled and never composed — the defect `docs/09`
+        // finding 5 names. Feature-tested in a forked child: a seccomp filter
+        // is irreversible, so the process that asks must not be the one that
+        // wears the answer.
+        //
+        // The rest is still unprobed and still `F3.LD.01`'s: securityfs, the
+        // Landlock ABI syscall, /proc/config.gz, an attach test for the connect
+        // hook. Nothing else is claimed present, which is why the banner keeps
+        // reporting those as degraded rather than absent-and-fine.
+        // `CapabilitySet` is `#[non_exhaustive]` (`ADR-08`), so it is built by
+        // starting from `NONE` and setting what was measured — which is also
+        // the honest shape: everything is absent until something measured it.
+        let seccomp = aisme_linux::probe_seccomp();
+        let mut caps = CapabilitySet::NONE;
+        caps.seccomp_unotify = seccomp.unotify;
+        caps.seccomp_addfd = seccomp.addfd;
+        caps
     }
     #[cfg(not(target_os = "linux"))]
     {

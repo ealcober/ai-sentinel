@@ -144,7 +144,7 @@ row for it. Direction: it makes `F2.WS.05` look unowned and `F3.EN.12` look larg
   (`tier.rs:70`) are **already implemented** — `docs/05` §5.3 lists them as work `F2.WS.05` will do.
   Point 13 did it on 2026-09-07. That bullet is done and the amplification should not re-plan it.
 
-**Finding 5 — the flag exists and nothing in the product sets it.** Measured on 2026-09-15 by
+**Finding 5 — the flag exists and nothing in the product sets it. Closed 2026-09-15.** Measured on 2026-09-15 by
 running `aisme-agentd --measure-idle` in the 6.8 guest: it reports *"no seccomp_unotify"*, *"no
 SECCOMP_IOCTL_NOTIF_ADDFD"*, *"no BPF ring buffer"* — on the guest where `--load-sensor` reported
 `ringbuf: true` and where point 13 measured `ADDFD` present. `platform::probe()`
@@ -160,6 +160,13 @@ product-side probe for the two seccomp flags — the same `EFAULT`-not-`EINVAL` 
 memory file records, run in a forked child so the probing process installs no filter on itself —
 and `platform::probe()` calls it on Linux. The rest of the set stays "not probed" and stays
 `F3.LD.*`'s; two flags whose enforcer is being built now are not a probe framework.
+
+**Implemented and measured**: `aisme_linux::probe_seccomp` forks, installs a permissive filter with
+`SECCOMP_FILTER_FLAG_NEW_LISTENER` and asks the listener about `ADDFD` with the `EFAULT`-not-`EINVAL`
+discriminator, then `_exit`s with the answer — the child wears the irreversible filter, never the
+daemon. `platform::probe()` sets the two fields from it and leaves the rest at `NONE`, which is
+still `F3.LD.01`'s. The banner is the proof: **0 seccomp degradation lines** on the 6.8 guest,
+where the same binary reported *"no seccomp_unotify"* and *"no SECCOMP_IOCTL_NOTIF_ADDFD"* before.
 
 ### 3. Implementation
 

@@ -9,6 +9,8 @@ mod policy;
 #[cfg(target_os = "linux")]
 mod resolve;
 #[cfg(target_os = "linux")]
+mod seccomp;
+#[cfg(target_os = "linux")]
 mod sensor;
 
 #[cfg(target_os = "linux")]
@@ -19,5 +21,7 @@ pub use policy::{
 };
 #[cfg(target_os = "linux")]
 pub use resolve::{RealpathResolver, ResolverCounts};
+#[cfg(target_os = "linux")]
+pub use seccomp::{probe as probe_seccomp, SeccompSupport};
 #[cfg(target_os = "linux")]
 pub use sensor::BpfSensor;

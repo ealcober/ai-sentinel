@@ -1,7 +1,7 @@
 # Challenge-amplification — the rest of the walking skeleton
 
 > **Status**: five points amplified, **point 2 implemented** (`F2.WS.08`); a sixth recorded and not
-> amplified. The first is a coherence review that found four defects,
+> amplified. The first is a coherence review that found five defects,
 > one of which reordered the other four and one of which was found while reading for point 2
 > and sent the review back to be corrected
 > **Scope**: `F2.WS.05` (`SeccompEnforcer`), `F2.WS.06` (`TerminalAdjudicator`), `F2.WS.07`
@@ -21,7 +21,7 @@ tree as it is rather than as the plan describes it.
 
 **The points:**
 
-1. The coherence review. **Closed** — four findings. One reorders the work, one was found while
+1. The coherence review. **Closed** — five findings. One reorders the work, one was found while
    reading for point 2, and one is a question this review asked before reading the plan section
    that answers it.
 2. `F2.WS.08` — `aisme run`, **first**, because two of the others install their machinery inside it.
@@ -143,6 +143,23 @@ row for it. Direction: it makes `F2.WS.05` look unowned and `F3.EN.12` look larg
 * `CapabilitySet::seccomp_addfd` (`crates/aisme-core/src/capability.rs:52`) and `tier_of` reading it
   (`tier.rs:70`) are **already implemented** — `docs/05` §5.3 lists them as work `F2.WS.05` will do.
   Point 13 did it on 2026-09-07. That bullet is done and the amplification should not re-plan it.
+
+**Finding 5 — the flag exists and nothing in the product sets it.** Measured on 2026-09-15 by
+running `aisme-agentd --measure-idle` in the 6.8 guest: it reports *"no seccomp_unotify"*, *"no
+SECCOMP_IOCTL_NOTIF_ADDFD"*, *"no BPF ring buffer"* — on the guest where `--load-sensor` reported
+`ringbuf: true` and where point 13 measured `ADDFD` present. `platform::probe()`
+(`crates/aisme-agentd/src/platform/mod.rs`) does not probe: its own comment says the probe is an
+adapter's (`F3.LD.*`) and until one exists it *"reports nothing present"*. Point 13's feature test
+lives in `xtask/src/vm.rs`'s guest script — a measurement tool, not the product. So
+`platform::enforcers`, which gates `SeccompEnforcer` on `caps.seccomp_addfd`, **would never compose
+it on any kernel**: the same shape as finding 4, constructed and unused, one level down.
+
+The way that biases: `getCapabilities` and the tier banner would call a 6.8 host `L1` while an
+enforcer sat compiled and uncomposed. **Resolved here, not deferred**: `F2.WS.05` carries the
+product-side probe for the two seccomp flags — the same `EFAULT`-not-`EINVAL` discriminator the
+memory file records, run in a forked child so the probing process installs no filter on itself —
+and `platform::probe()` calls it on Linux. The rest of the set stays "not probed" and stays
+`F3.LD.*`'s; two flags whose enforcer is being built now are not a probe framework.
 
 ### 3. Implementation
 
@@ -336,8 +353,10 @@ security:
 
 - **The filter is installed before `exec` and cannot be installed later without a window** — that
   is why it lives in point 2's hook.
-- **The classic filter defaults the escalate class to `EACCES`, not to `ALLOW`.** A supervisor that
-  dies must deny. This is checked by a test that kills `agentd` with a notification outstanding.
+- **A supervisor that dies must deny, and the kernel does it for us.** A `USER_NOTIF` syscall whose
+  listener has closed returns `ENOSYS` to the target — there is no "default action" of ours to
+  get wrong, and nothing to configure. A test kills the supervisor with a notification outstanding
+  and asserts the open failed with that errno.
 - **`SECCOMP_IOCTL_NOTIF_ID_VALID` before every response**, so an answer never lands in a reused
   id after the target died.
 - **The allow path, in this order and no other**: `ID_VALID` → read the request → check `flags`
@@ -348,6 +367,22 @@ security:
   object are then the same thing.
 - **The loop runs on `agentd`'s control thread, never the hot loop.** A human answer takes seconds;
   the hot loop's budget is microseconds.
+- **How the listener reaches `agentd` — unspecified in this point's first draft, and decided here.**
+  `SECCOMP_FILTER_FLAG_NEW_LISTENER` returns the notify fd to the process that installed the filter:
+  `aisme run`, which `exec`s the moment after. The loop that answers it lives in `agentd`. Nothing in
+  the draft carried the fd across, and every way of doing so has a cost: `fork` and keep it is what
+  point 2 refuses; `pidfd_getfd` from the daemon needs `PTRACE_MODE_ATTACH` and Yama's default
+  scope refuses a non-descendant. **The fd travels over the control socket with `SCM_RIGHTS`**, in
+  a minimal `registerSession` — `{ session_id, pid, tty }` plus the descriptor as ancillary data —
+  which is the F2 slice of `docs/design/02_aisme-run.md` step 3 (*"register the session with
+  `agentd` over the control-plane socket"*); its Annex I row is owned by `F2.WS.05` and
+  `F8.CLI.01` widens it. **This is not what `docs/06` point 3 refused.** That refusal was a
+  *writable policy-map* descriptor, which would hand the daemon authority the split removes. A
+  notify fd hands it exactly the authority it must have — to answer a held syscall for that one
+  session — and nothing else; it cannot change what the kernel enforces. The distinction is
+  written in the method's doc comment so it is not re-litigated. `recvmsg`/`sendmsg` with
+  ancillary data is `libc` and lives in `aisme-linux` behind safe functions; `agentd` keeps its
+  L3 rule of touching adapters through L1 traits by receiving an `OwnedFd`, which is `std`.
 - **`unsafe` is permitted here and nowhere above it.** `aisme-linux` is L2, where platform FFI
   lives, and every block will carry its `SAFETY` comment. `aisme-core` stays free of it.
 - **Where `ADDFD` is absent the escalate class denies**, the tier already says so (`tier_of` reads
@@ -384,7 +419,11 @@ mechanism is a test written to pass:
 - A credentials test: a target running as another uid is denied with the reason and receives no
   descriptor.
 - A supervisor-death test: kill the supervisor with a notification outstanding; the syscall fails
-  closed with `EACCES`.
+  **closed**, and the open does not succeed. The errno is **`ENOSYS`**, not `EACCES` — this
+  point's first draft said `EACCES`, and `docs/ai/memory/seccomp-unotify-toctou.md` records what
+  the kernel actually does when the listener fd closes: pending `USER_NOTIF` syscalls return
+  `ENOSYS`. That is the kernel's answer and not ours, and it is closed, which is the property. The
+  test asserts the failure and its errno rather than a value this code never sets.
 - A stale-notification test: the target dies before the answer; `ID_VALID` catches it.
 - The gate's own line, in a guest: `cat /etc/shadow` inside a session returns `-EACCES` and the WAL
   carries the deny with its rule id.
@@ -446,6 +485,12 @@ steered by anything that could set a variable in the daemon — including the su
   by a pipe the agent controls, and an agent that can capture the prompt can answer it.
 - **No prompt without a TTY.** Where there is none, `ask` yields the timeout default immediately and
   says so, rather than waiting a budget it cannot spend.
+- **Which TTY, and how the daemon reaches it.** `agentd` has no controlling terminal; the session
+  does. `aisme run` sends the path of its controlling TTY in `registerSession` (point 3), and the
+  adjudicator opens that path when it must ask. In F2 the daemon and the session share a uid, so
+  the open succeeds; where they do not, the open fails and the no-TTY path above applies — a
+  named degradation, not a prompt that goes nowhere. This point's first draft assumed the daemon
+  could simply write to "the controlling TTY", which it does not have.
 - **`I-05`'s never-promptable groups are refused before the prompt is composed**, not after the
   human answers: asking about something that cannot be permitted teaches the operator that their
   answer does not matter.

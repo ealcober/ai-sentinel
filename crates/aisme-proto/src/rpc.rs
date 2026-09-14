@@ -94,11 +94,23 @@ pub enum Method {
     /// segment is a `u64`, and a `u64` travels over the socket it already
     /// speaks.
     SetPolicyGeneration,
+    /// `aisme run` tells the daemon a session has started, and hands it the
+    /// seccomp listener for it (`F2.WS.05`, `F2.WS.08`).
+    ///
+    /// **It carries a descriptor, and which one matters.** The notify fd lets
+    /// the daemon answer one held syscall for this session and nothing else; it
+    /// cannot change what the kernel enforces. That is the opposite of the
+    /// *writable policy map* `docs/06` point 3 refused, which would have handed
+    /// the daemon authority the privilege split exists to remove.
+    ///
+    /// The F2 slice of `docs/design/02_aisme-run.md` step 3; `F8.CLI.01` widens
+    /// it to the rest of what a session registration carries.
+    RegisterSession,
 }
 
 impl Method {
     /// Every method, in Annex I.1's order.
-    pub const ALL: [Method; 14] = [
+    pub const ALL: [Method; 15] = [
         Method::GetCapabilities,
         Method::ListSessions,
         Method::GetSession,
@@ -113,6 +125,7 @@ impl Method {
         Method::VerifySession,
         Method::DeclareToolCall,
         Method::SetPolicyGeneration,
+        Method::RegisterSession,
     ];
 
     /// The name on the wire.
@@ -121,6 +134,7 @@ impl Method {
         match self {
             Method::DeclareToolCall => "declareToolCall",
             Method::SetPolicyGeneration => "setPolicyGeneration",
+            Method::RegisterSession => "registerSession",
             Method::GetCapabilities => "getCapabilities",
             Method::ListSessions => "listSessions",
             Method::GetSession => "getSession",
@@ -163,7 +177,9 @@ impl Method {
             // The loader runs as root on this machine; the class that means
             // "a process on this host, not a paired device" is the right one,
             // and it is the same class `pairDevice` uses.
-            Method::PairDevice | Method::SetPolicyGeneration => AuthClass::LocalPeer,
+            Method::PairDevice | Method::SetPolicyGeneration | Method::RegisterSession => {
+                AuthClass::LocalPeer
+            }
             Method::SetPolicy | Method::ManageGrant | Method::ManageSuppression => {
                 AuthClass::HumanPrincipal
             }
@@ -177,7 +193,14 @@ impl Method {
             self,
             // Two identical declarations are two tool calls, not one
             // retried: replaying them would invent work that never happened.
-            Method::SetPolicy | Method::PairDevice | Method::Subscribe | Method::DeclareToolCall
+            // Registering the same session twice is two sessions, not one
+            // retried: each has its own listener, and replaying one would
+            // orphan a filter with nobody answering it.
+            Method::SetPolicy
+                | Method::PairDevice
+                | Method::Subscribe
+                | Method::DeclareToolCall
+                | Method::RegisterSession
         )
     }
 }

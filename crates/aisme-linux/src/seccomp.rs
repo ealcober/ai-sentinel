@@ -181,7 +181,7 @@ unsafe fn probe_in_child() -> ! {
 // The listener: trapping an `openat` and answering it (`F2.WS.05`)
 // ---------------------------------------------------------------------------
 
-use std::os::fd::{AsRawFd, BorrowedFd, FromRawFd, OwnedFd, RawFd};
+use std::os::fd::{AsFd, AsRawFd, BorrowedFd, FromRawFd, OwnedFd, RawFd};
 
 /// `SECCOMP_RET_USER_NOTIF` — the syscall is held and the supervisor is asked.
 const SECCOMP_RET_USER_NOTIF: u32 = 0x7fc0_0000;
@@ -495,15 +495,26 @@ pub fn respond_deny(
 /// # Errors
 ///
 /// The `sendmsg` errno.
-pub fn send_fd(socket: BorrowedFd<'_>, fd: BorrowedFd<'_>) -> aisme_core::error::Result<()> {
+pub fn send_fd(
+    socket: BorrowedFd<'_>,
+    fd: BorrowedFd<'_>,
+    payload: &[u8],
+) -> aisme_core::error::Result<()> {
     use aisme_core::error::Error;
 
-    // SCM_RIGHTS needs at least one byte of ordinary data; the byte itself
-    // carries nothing.
-    let mut payload = [0u8; 1];
+    // The descriptor travels **with its own request**, not beside it. SCM_RIGHTS
+    // needs at least one byte of ordinary data, and a filler byte would land in
+    // the reader's stream ahead of the line it belongs to — measured: the
+    // daemon received `\0{"jsonrpc"…}` and the request did not parse, while the
+    // filtered session died with ENOSYS because nobody answered it.
+    if payload.is_empty() {
+        return Err(Error::unsupported(
+            "a descriptor must travel with its request; SCM_RIGHTS needs a byte of data",
+        ));
+    }
     let mut iov = libc::iovec {
-        iov_base: payload.as_mut_ptr().cast::<libc::c_void>(),
-        iov_len: 1,
+        iov_base: payload.as_ptr().cast::<libc::c_void>().cast_mut(),
+        iov_len: payload.len(),
     };
     // SAFETY: `CMSG_SPACE` is a pure size computation.
     let space = unsafe { libc::CMSG_SPACE(u32::try_from(size_of::<RawFd>()).unwrap_or(4)) };
@@ -838,6 +849,143 @@ pub fn respond_with_fd(
     Ok(())
 }
 
+/// Answer every syscall this listener holds, until it closes.
+///
+/// **What F2 can and cannot do here, stated because it constrains the caller.**
+/// A classic BPF filter sees syscall numbers and register values, never paths,
+/// so the filter traps *every* `openat` and the supervisor decides each one.
+/// The only "permit unchanged" the kernel offers is
+/// `SECCOMP_USER_NOTIF_FLAG_CONTINUE`, which `I-28` forbids for a path-bearing
+/// syscall — so an open this supervisor cannot reproduce cannot be permitted
+/// either, and is denied.
+///
+/// That makes this loop **correct and narrow at the same time**: a session
+/// running under it may read and may not write, because limit one of `Q-13`
+/// reproduces `O_RDONLY` only. It is why `aisme run` does not install the
+/// filter by default — `F3.PT.02`'s kernel-side trie is what will let the
+/// filter trap the escalate class alone, and until then a session-wide filter
+/// would deny every write in the session.
+///
+/// Each answer is reported through `record`, so the caller can put it in the
+/// WAL: the tuple is the syscall's pid, whether a validated descriptor was
+/// delivered, and the reason when it was not.
+///
+/// # Errors
+///
+/// Only a listener that failed for a reason other than closing. A closed
+/// listener — the session ended — is the ordinary exit and returns `Ok`.
+pub fn serve_notifications(
+    listener: BorrowedFd<'_>,
+    mut record: impl FnMut(u32, bool, Option<&str>),
+) -> aisme_core::error::Result<()> {
+    loop {
+        let Ok(n) = recv(listener) else {
+            // The listener closed: the session is over. Every syscall still
+            // held gets ENOSYS from the kernel, which is fail-closed and is
+            // the kernel's answer rather than one of ours.
+            return Ok(());
+        };
+        if n.nr != i32::try_from(libc::SYS_openat).unwrap_or(-1) {
+            // The filter traps nothing else, so this is a kernel we do not
+            // understand. Denying is the safe direction and it is named.
+            respond_deny(listener, n.id, libc::EACCES)?;
+            record(n.pid, false, Some("a syscall the filter does not trap"));
+            continue;
+        }
+        if let Err(why) = reproducible(n.dirfd(), n.open_flags()) {
+            respond_deny(listener, n.id, libc::EACCES)?;
+            record(n.pid, false, Some(why.reason()));
+            continue;
+        }
+        let Ok(path) = read_target_path(n.pid, n.path_addr()) else {
+            respond_deny(listener, n.id, libc::EACCES)?;
+            record(n.pid, false, Some("the path argument could not be read"));
+            continue;
+        };
+        if let Ok(fd) = open_as_target(n.pid, &path) {
+            respond_with_fd(listener, n.id, fd.as_fd())?;
+            record(n.pid, true, None);
+        } else {
+            // The supervisor's own open failed — most often the target's own
+            // ENOENT. Answering EACCES rather than passing the errno through is
+            // the conservative choice and is visible in the record; widening it
+            // is `F3.EN.12`'s.
+            respond_deny(listener, n.id, libc::EACCES)?;
+            record(n.pid, false, Some("the supervisor could not open it"));
+        }
+    }
+}
+
+/// Let `pid` read this process's memory, and nothing else.
+///
+/// **Measured, not anticipated.** `process_vm_readv` needs
+/// `PTRACE_MODE_ATTACH_REALCREDS`, and Yama's default `ptrace_scope = 1` grants
+/// that only to a **descendant's ancestor**. `agentd` is the session's sibling,
+/// not its parent, so without this every path argument read fails and every
+/// trapped `openat` is denied — which is what the first end-to-end run did,
+/// fourteen times, with `cat` reporting *"libc.so.6: Permission denied"*.
+///
+/// `PR_SET_PTRACER` is the narrow grant that fits: **one** named process, set by
+/// the session on itself, before it is supervised. It is not `CAP_SYS_PTRACE`
+/// for the daemon and it is not `ptrace_scope = 0` for the machine.
+///
+/// # Errors
+///
+/// `prctl`'s errno. On a kernel without Yama the call is refused as unknown and
+/// that is **not** a failure: nothing was blocking the read there.
+pub fn allow_ptrace_by(pid: i32) -> aisme_core::error::Result<()> {
+    use aisme_core::error::Error;
+
+    // SAFETY: `PR_SET_PTRACER` takes an integer, no pointers.
+    let rc = unsafe { libc::prctl(libc::PR_SET_PTRACER, libc::c_long::from(pid), 0, 0, 0) };
+    if rc != 0 {
+        let e = std::io::Error::last_os_error();
+        // No Yama: the option does not exist and nothing needed granting.
+        if e.raw_os_error() == Some(libc::EINVAL) {
+            return Ok(());
+        }
+        return Err(Error::unsupported(format!("PR_SET_PTRACER({pid}): {e}")));
+    }
+    Ok(())
+}
+
+/// The pid on the other end of a connected Unix socket.
+///
+/// The kernel's answer, which neither side can forge — the same fact the
+/// daemon's own authorization rests on, read from the client's side.
+///
+/// # Errors
+///
+/// `getsockopt`'s errno.
+pub fn peer_pid(socket: BorrowedFd<'_>) -> aisme_core::error::Result<i32> {
+    use aisme_core::error::Error;
+
+    let mut cred = libc::ucred {
+        pid: 0,
+        uid: 0,
+        gid: 0,
+    };
+    let mut len = u32::try_from(size_of::<libc::ucred>()).unwrap_or(0);
+    // SAFETY: `cred` is a live, correctly sized `ucred` and `len` is its size;
+    // the descriptor is borrowed for the call.
+    let rc = unsafe {
+        libc::getsockopt(
+            socket.as_raw_fd(),
+            libc::SOL_SOCKET,
+            libc::SO_PEERCRED,
+            std::ptr::from_mut(&mut cred).cast::<libc::c_void>(),
+            &raw mut len,
+        )
+    };
+    if rc != 0 {
+        return Err(Error::unsupported(format!(
+            "SO_PEERCRED: {}",
+            std::io::Error::last_os_error()
+        )));
+    }
+    Ok(cred.pid)
+}
+
 #[cfg(test)]
 // A panic is the failure report in a test; the adapter's code stays denied.
 #[allow(clippy::unwrap_used, clippy::expect_used)]
@@ -887,7 +1035,7 @@ mod tests {
                 // SAFETY: `_exit` in a forked child.
                 unsafe { libc::_exit(101) }
             };
-            if send_fd(child_end.as_fd(), listener.as_fd()).is_err() {
+            if send_fd(child_end.as_fd(), listener.as_fd(), b"listener\n").is_err() {
                 // SAFETY: as above.
                 unsafe { libc::_exit(102) }
             }
@@ -976,7 +1124,7 @@ mod tests {
                 // SAFETY: `_exit` in a forked child.
                 unsafe { libc::_exit(101) }
             };
-            if send_fd(child_end.as_fd(), listener.as_fd()).is_err() {
+            if send_fd(child_end.as_fd(), listener.as_fd(), b"listener\n").is_err() {
                 // SAFETY: as above.
                 unsafe { libc::_exit(102) }
             }
@@ -1283,7 +1431,7 @@ mod tests {
                 // SAFETY: `_exit` in a forked child.
                 unsafe { libc::_exit(101) }
             };
-            let _ = send_fd(child_end.as_fd(), listener.as_fd());
+            let _ = send_fd(child_end.as_fd(), listener.as_fd(), b"listener\n");
             drop(listener);
             // SAFETY: the trapped call; the supervisor will never answer it.
             unsafe { libc::open(c"/etc/hostname".as_ptr(), libc::O_RDONLY) };

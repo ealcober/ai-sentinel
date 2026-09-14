@@ -97,6 +97,16 @@ fn run_slice(dir: &std::path::Path, rest: &[String]) -> std::io::Result<()> {
                 owner.uid,
                 declared,
                 &generation,
+                |session| {
+                    // One thread per session, and never the hot loop: a human's
+                    // answer takes seconds and the hot loop's budget is
+                    // microseconds (`docs/05` §5.3).
+                    let id = session.session_id;
+                    let tty = session.tty;
+                    std::thread::spawn(move || {
+                        platform::serve_session_notifications(session.listener, id, tty.as_deref());
+                    });
+                },
                 || false,
             ) {
                 eprintln!("ipc: {e}");
@@ -413,6 +423,10 @@ mod slice_tests {
                 uid,
                 declared,
                 &crate::ipc::generation_cell(),
+                // This test registers no session; a listener arriving here
+                // would be dropped, which closes it and fails the target's
+                // syscalls closed rather than leaving them held.
+                drop,
                 move || {
                     served += 1;
                     served >= 1

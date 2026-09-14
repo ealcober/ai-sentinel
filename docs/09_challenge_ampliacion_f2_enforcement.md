@@ -1,10 +1,9 @@
 # Challenge-amplification — the rest of the walking skeleton
 
 > **Status**: five points amplified. **Points 2 and 5 implemented** (`F2.WS.08`, `F2.WS.07`), and
-> **point 3's mechanism proven end to end** — a trapped `openat` is denied with `-EACCES` or
-> permitted with a descriptor the supervisor opened, and **both TOCTOU forms are tested**,
-> including the rename the freezer would not have caught. What remains of `F2.WS.05` is the wiring
-> into `aisme run` and `agentd`. A sixth point is recorded and not
+> **point 3 complete and running**: `aisme run --trap-openat -- cat /etc/hostname` prints the file
+> through a descriptor `agentd` opened for it, with both TOCTOU forms tested. Point 4
+> (`F2.WS.06`) is what remains of this document. A sixth point is recorded and not
 > amplified. The first is a coherence review that found five defects,
 > one of which reordered the other four and one of which was found while reading for point 2
 > and sent the review back to be corrected
@@ -662,6 +661,23 @@ That is test hygiene, not the fix.
 
 **Implementation order**: `F2.WS.08` → `F2.WS.05` → `F2.WS.06`, with `F2.WS.07` independent and
 runnable at any point.
+
+**Two limits measured while wiring point 3, recorded rather than worked around.**
+
+*A session under the filter can read and cannot write.* A classic BPF filter sees syscall numbers
+and register values, never paths, so it traps **every** `openat` and the supervisor answers each
+one. The kernel's only "permit unchanged" is `SECCOMP_USER_NOTIF_FLAG_CONTINUE`, which `I-28`
+forbids for a path-bearing syscall — so an open the supervisor cannot reproduce cannot be permitted
+either, and limit one of `Q-13` reproduces `O_RDONLY` only. That is why `aisme run` takes
+**`--trap-openat`** rather than filtering by default: the default would break every session, and
+`F3.PT.02`'s kernel-side trie is what will let the filter trap the escalate class alone.
+
+*The supervisor cannot read the target's memory unless the session says so.* `process_vm_readv`
+needs ptrace permission, which Yama's default scope grants only to an ancestor, and `agentd` is
+the session's sibling. `aisme run` grants it with `PR_SET_PTRACER` to **one** pid — the daemon's,
+read from `SO_PEERCRED` on the socket it has just opened — **before** installing the irreversible
+filter. Recorded in `docs/ai/memory/yama-blocks-the-supervisor.md`, because the failure looks like
+success: a supervisor that can decide nothing denies everything, which reads as fail-closed.
 
 **Nothing is open for the owner.** The one question this review first raised was answered by the
 plan's own §3.2, which it had not read; the divergence that question was hiding — an engine with no

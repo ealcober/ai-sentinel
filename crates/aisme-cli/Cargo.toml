@@ -12,6 +12,16 @@ name = "aisme"
 path = "src/main.rs"
 
 [dependencies]
+# Annex I's method names, so the registration cannot drift from the method the
+# daemon serves.
+aisme-proto = { path = "../aisme-proto" }
+
+# DEP.SUP.06: the platform adapter, named only in src/platform.rs, which is this
+# crate's composition root — the same rule A-05 puts on every L3 engine, applied
+# here because `aisme run` installs a kernel filter and that choice belongs in
+# one auditable place.
+[target.'cfg(target_os = "linux")'.dependencies]
+aisme-linux = { path = "../aisme-linux" }
 
 [lints]
 workspace = true

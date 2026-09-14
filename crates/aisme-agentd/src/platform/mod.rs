@@ -183,6 +183,64 @@ pub fn sensors(caps: &CapabilitySet) -> Vec<Box<dyn Sensor>> {
     sensors
 }
 
+/// Answer the seccomp notifications of one registered session, until its
+/// listener closes.
+///
+/// The composition root names the adapter; the caller passes an `OwnedFd` and
+/// gets back nothing platform-specific, which is what keeps `A-05` true with a
+/// second engine in the tree.
+#[cfg(target_os = "linux")]
+pub fn serve_session_notifications(
+    listener: std::os::fd::OwnedFd,
+    session_id: u64,
+    tty: Option<&str>,
+) {
+    use std::os::fd::AsFd as _;
+
+    // Named on the way in, because a session with no terminal cannot be
+    // prompted and `F2.WS.06` will answer it with a timeout verdict instead —
+    // which an operator should learn when the session starts, not when a
+    // decision is silently defaulted.
+    println!(
+        "session {session_id:016x} supervised; terminal {}",
+        tty.unwrap_or("none — escalations will take the timeout verdict")
+    );
+    let mut delivered = 0u64;
+    let mut denied = 0u64;
+    let result = aisme_linux::serve_notifications(listener.as_fd(), |pid, ok, why| {
+        if ok {
+            delivered += 1;
+        } else {
+            denied += 1;
+            // One line per denial, with its reason: "unsupported" tells an
+            // operator nothing they can act on. The WAL record is F2.WS.09's.
+            eprintln!(
+                "session {session_id:016x}: denied an openat from pid {pid}: {}",
+                why.unwrap_or("no reason recorded")
+            );
+        }
+    });
+    if let Err(e) = result {
+        eprintln!(
+            "session {session_id:016x}: the notification loop stopped: {}",
+            e.detail
+        );
+    }
+    // Closing the listener is what ends the session's enforcement: any syscall
+    // still held then gets ENOSYS from the kernel, which is fail-closed.
+    drop(listener);
+    println!("session {session_id:016x} ended: {delivered} delivered, {denied} denied");
+}
+
+/// Off Linux there are no notifications to answer.
+#[cfg(not(target_os = "linux"))]
+pub fn serve_session_notifications(
+    _listener: std::os::fd::OwnedFd,
+    _session_id: u64,
+    _tty: Option<&str>,
+) {
+}
+
 /// The enforcers for this platform and this capability set.
 #[must_use]
 pub fn enforcers(caps: &CapabilitySet) -> Vec<Box<dyn Enforcer>> {

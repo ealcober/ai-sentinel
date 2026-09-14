@@ -15,7 +15,9 @@
 //!
 //! The transport is here (L3, I/O); the protocol is `aisme-proto` (L4).
 
-use std::io::{BufRead, BufReader, Write};
+use std::io::Write;
+#[cfg(test)]
+use std::io::{BufRead as _, BufReader};
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::Path;
 
@@ -213,6 +215,46 @@ fn capabilities(generation: Option<aisme_core::policy::PolicyGeneration>) -> Val
     Value::Object(fields)
 }
 
+/// Take a session's registration, and the listener it carries.
+///
+/// The descriptor **is** the message: a registration without one would leave a
+/// filtered process with nobody to answer its syscalls, and every `openat` in
+/// that session would fail with `ENOSYS` while the daemon reported success.
+fn register_session(request: &rpc::Request, ancillary: &mut Ancillary) -> String {
+    let Some(listener) = ancillary.received.take() else {
+        return rpc::error(
+            request.id,
+            ErrorCode::InvalidParams,
+            "registerSession must carry its seccomp listener as SCM_RIGHTS",
+        );
+    };
+    let Some(Value::Int(session_id)) = request.params.get("session_id") else {
+        return rpc::error(
+            request.id,
+            ErrorCode::InvalidParams,
+            "session_id must be an integer",
+        );
+    };
+    ancillary.registered = Some(Registered {
+        // The codec has no unsigned integer and a session id is an opaque
+        // token: the same bits go back out.
+        session_id: u64::from_ne_bytes(session_id.to_ne_bytes()),
+        // Absent is a session with no terminal, which is a real state: the
+        // adjudicator answers with its timeout default rather than prompting
+        // into nothing (`F2.WS.06`).
+        tty: request
+            .params
+            .get("tty")
+            .and_then(Value::as_str)
+            .map(ToOwned::to_owned),
+        listener,
+    });
+    rpc::response(
+        request.id,
+        Value::object([("outcome", Value::string("accepted"))]),
+    )
+}
+
 /// Serve one line-framed request from `line`, as `peer`.
 ///
 /// Framing is one JSON object per line: it is greppable in a capture, it
@@ -225,6 +267,7 @@ pub fn serve_line(
     owner_uid: u32,
     declarations: &mut Declarations,
     generation: &mut Option<aisme_core::policy::PolicyGeneration>,
+    ancillary: &mut Ancillary,
 ) -> String {
     let request = match rpc::parse_request(line) {
         Ok(request) => request,
@@ -241,6 +284,11 @@ pub fn serve_line(
     }
     match request.method {
         Method::GetCapabilities => rpc::response(request.id, capabilities(*generation)),
+        // `F2.WS.05`/`F2.WS.08`. A session starts and hands over the listener
+        // for it. The descriptor is the message: a registration without one
+        // would leave a filtered process with nobody to answer its syscalls,
+        // and every `openat` in it would fail with ENOSYS.
+        Method::RegisterSession => register_session(&request, ancillary),
         // `F2.WS.04`. The loader publishes, then tells the daemon the number.        // It carries no descriptor: `agentd` holds no policy-map fd of any
         // kind, because `SCM_RIGHTS` would leave its empty
         // `CapabilityBoundingSet=` decorative (`F1.RT.07`).
@@ -350,6 +398,136 @@ pub fn serve_line(
     }
 }
 
+/// A session that registered, with the listener it handed over.
+#[derive(Debug)]
+pub struct Registered {
+    /// The session's own id, as `aisme run` prints it.
+    pub session_id: u64,
+    /// The controlling terminal of the session, for `F2.WS.06`'s prompt.
+    ///
+    /// `agentd` has none of its own, so the session names one for it. Absent is
+    /// a real state and not a default: a session with no terminal gets the
+    /// adjudicator's timeout verdict rather than a prompt written into nothing.
+    pub tty: Option<String>,
+    /// The seccomp listener for that session.
+    pub listener: std::os::fd::OwnedFd,
+}
+
+/// The descriptor that arrived with a request, and the session it registered.
+///
+/// One value rather than two parameters, so `serve_line` keeps a signature a
+/// reader can hold in their head.
+#[derive(Debug, Default)]
+pub struct Ancillary {
+    /// Set by the reader when a request carried a descriptor.
+    pub received: Option<std::os::fd::OwnedFd>,
+    /// Set by the handler when that descriptor registered a session. The caller
+    /// takes it and starts answering notifications for it.
+    pub registered: Option<Registered>,
+}
+
+/// Read line-framed requests, keeping any descriptor sent alongside one.
+///
+/// **`BufReader::lines()` cannot be used here.** It reads with `read(2)`, which
+/// delivers the bytes and **silently discards** the `SCM_RIGHTS` control
+/// message: the registration would be accepted and the listener it exists to
+/// carry would be gone, with nothing reporting a problem. `recvmsg` is the only
+/// reader that sees both.
+struct Requests {
+    fd: std::os::fd::RawFd,
+    buf: Vec<u8>,
+    /// A descriptor delivered by the last `recvmsg`, waiting for the line it
+    /// came with. The client sends the request and its descriptor in one
+    /// `sendmsg`, so it belongs to the next line completed.
+    pending: Option<std::os::fd::OwnedFd>,
+    eof: bool,
+}
+
+impl Requests {
+    const fn new(fd: std::os::fd::RawFd) -> Requests {
+        Requests {
+            fd,
+            buf: Vec::new(),
+            pending: None,
+            eof: false,
+        }
+    }
+
+    /// The next request, and the descriptor that came with it.
+    fn next(&mut self) -> std::io::Result<Option<(String, Option<std::os::fd::OwnedFd>)>> {
+        loop {
+            if let Some(at) = self.buf.iter().position(|b| *b == b'\n') {
+                let line = self.buf.drain(..=at).collect::<Vec<u8>>();
+                let line = String::from_utf8_lossy(&line[..line.len() - 1]).into_owned();
+                return Ok(Some((line, self.pending.take())));
+            }
+            if self.eof {
+                // A trailing line with no newline is still a request.
+                if self.buf.is_empty() {
+                    return Ok(None);
+                }
+                let line = String::from_utf8_lossy(&std::mem::take(&mut self.buf)).into_owned();
+                return Ok(Some((line, self.pending.take())));
+            }
+            self.fill()?;
+        }
+    }
+
+    /// One `recvmsg`, appending bytes and keeping any descriptor.
+    fn fill(&mut self) -> std::io::Result<()> {
+        use std::os::fd::{FromRawFd, OwnedFd, RawFd};
+
+        let mut chunk = [0u8; 4096];
+        let mut iov = libc::iovec {
+            iov_base: chunk.as_mut_ptr().cast::<libc::c_void>(),
+            iov_len: chunk.len(),
+        };
+        // SAFETY: a pure size computation.
+        let space = unsafe { libc::CMSG_SPACE(u32::try_from(size_of::<RawFd>()).unwrap_or(4)) };
+        let mut control = vec![0u8; space as usize];
+        // SAFETY: a zeroed `msghdr`; every field used below is set first.
+        let mut msg: libc::msghdr = unsafe { std::mem::zeroed() };
+        msg.msg_iov = std::ptr::addr_of_mut!(iov);
+        msg.msg_iovlen = 1;
+        msg.msg_control = control.as_mut_ptr().cast::<libc::c_void>();
+        msg.msg_controllen = control.len() as _;
+
+        // SAFETY: `msg` is initialised and the kernel writes only into the
+        // buffers it points at, both of which outlive the call.
+        let got = unsafe { libc::recvmsg(self.fd, std::ptr::addr_of_mut!(msg), 0) };
+        if got < 0 {
+            return Err(std::io::Error::last_os_error());
+        }
+        if got == 0 {
+            self.eof = true;
+            return Ok(());
+        }
+        // SAFETY: reading back the control message the kernel just wrote into
+        // the buffer we supplied.
+        let fd = unsafe {
+            let cmsg = libc::CMSG_FIRSTHDR(std::ptr::addr_of!(msg));
+            if cmsg.is_null()
+                || (*cmsg).cmsg_level != libc::SOL_SOCKET
+                || (*cmsg).cmsg_type != libc::SCM_RIGHTS
+            {
+                None
+            } else {
+                Some(std::ptr::read_unaligned(
+                    libc::CMSG_DATA(cmsg).cast::<RawFd>(),
+                ))
+            }
+        };
+        if let Some(fd) = fd.filter(|fd| *fd >= 0) {
+            // SAFETY: the kernel installed this descriptor in our table and
+            // nothing else owns it.
+            self.pending = Some(unsafe { OwnedFd::from_raw_fd(fd) });
+        }
+        self.buf
+            .extend_from_slice(&chunk[..usize::try_from(got).unwrap_or(0)]);
+        Ok(())
+    }
+}
+
 /// The policy generation the daemon has been told, shared with whoever stamps
 /// it on a WAL segment.
 ///
@@ -370,11 +548,15 @@ pub fn generation_cell() -> GenerationCell {
 ///
 /// Binding or accepting.
 pub fn serve(path: &Path, owner_uid: u32, until: impl FnMut() -> bool) -> std::io::Result<()> {
+    // Nothing answers notifications on this path: `serve` is the read-only
+    // surface, and a session registered here would hand over a listener with no
+    // loop behind it. `serve_feeding_sharing` is the one `aisme run` uses.
     serve_with(
         path,
         owner_uid,
         &generation_cell(),
         Declarations::new,
+        drop,
         until,
     )
 }
@@ -389,6 +571,7 @@ pub fn serve_feeding_sharing(
     owner_uid: u32,
     declared: crate::declare::Declared,
     generation: &GenerationCell,
+    on_session: impl FnMut(Registered),
     until: impl FnMut() -> bool,
 ) -> std::io::Result<()> {
     serve_with(
@@ -396,6 +579,7 @@ pub fn serve_feeding_sharing(
         owner_uid,
         generation,
         move || Declarations::feeding(declared.clone()),
+        on_session,
         until,
     )
 }
@@ -405,6 +589,7 @@ fn serve_with(
     owner_uid: u32,
     generation: &GenerationCell,
     mut counter: impl FnMut() -> Declarations,
+    mut on_session: impl FnMut(Registered),
     mut until: impl FnMut() -> bool,
 ) -> std::io::Result<()> {
     if path.exists() {
@@ -414,18 +599,23 @@ fn serve_with(
     for stream in listener.incoming() {
         let stream = stream?;
         let peer = peer_of(&stream)?;
-        let reader = BufReader::new(stream.try_clone()?);
-        let mut writer = stream;
+        let mut requests = Requests::new(std::os::fd::AsRawFd::as_raw_fd(&stream));
+        let mut writer = stream.try_clone()?;
+        // Held so the descriptor `requests` reads from stays open.
+        let _stream = stream;
         // One counter per connection: a peer that reconnects to reset it has
         // done the expensive part of the attack — a new connection, a new
         // SO_PEERCRED check — for a new window, which is a far worse trade than
         // sending declarations down one socket. F2.WS.08 keys it by session.
         let mut declarations = counter();
-        for line in reader.lines() {
-            let line = line?;
+        while let Some((line, received)) = requests.next()? {
             if line.trim().is_empty() {
                 continue;
             }
+            let mut ancillary = Ancillary {
+                received,
+                registered: None,
+            };
             writeln!(writer, "{}", {
                 // Held only across one request. A poisoned lock means a
                 // previous request panicked mid-write, and continuing with
@@ -436,8 +626,18 @@ fn serve_with(
                     Ok(g) => g,
                     Err(poisoned) => poisoned.into_inner(),
                 };
-                serve_line(&line, &peer, owner_uid, &mut declarations, &mut told)
+                serve_line(
+                    &line,
+                    &peer,
+                    owner_uid,
+                    &mut declarations,
+                    &mut told,
+                    &mut ancillary,
+                )
             })?;
+            if let Some(session) = ancillary.registered.take() {
+                on_session(session);
+            }
         }
         if until() {
             break;
@@ -632,7 +832,103 @@ mod tests {
     /// several and watch the bound apply.
     fn call_with(method: &str, params: &str, peer: &Peer, d: &mut Declarations) -> json::Value {
         let line = format!(r#"{{"jsonrpc":"2.0","id":1,"method":"{method}","params":{params}}}"#);
-        json::parse(&serve_line(&line, peer, OWNER, d, &mut None)).unwrap()
+        json::parse(&serve_line(
+            &line,
+            peer,
+            OWNER,
+            d,
+            &mut None,
+            &mut Ancillary::default(),
+        ))
+        .unwrap()
+    }
+
+    /// `registerSession` is the descriptor, not the line.
+    ///
+    /// A registration without its listener is **refused**, because accepting it
+    /// would leave a filtered process with nobody to answer its syscalls: every
+    /// `openat` in that session would fail with `ENOSYS` and the daemon would
+    /// have reported success.
+    #[test]
+    fn a_session_registration_without_its_listener_is_refused() {
+        let line =
+            r#"{"jsonrpc":"2.0","id":1,"method":"registerSession","params":{"session_id":7}}"#;
+
+        let mut empty = Ancillary::default();
+        let refused = json::parse(&serve_line(
+            line,
+            &user(),
+            OWNER,
+            &mut Declarations::new(),
+            &mut None,
+            &mut empty,
+        ))
+        .unwrap();
+        assert!(
+            refused.get("error").is_some(),
+            "a registration with no descriptor was accepted: {refused:?}"
+        );
+        assert!(empty.registered.is_none());
+
+        // With one, it is accepted and the caller is handed the session.
+        let (a, b) = std::os::unix::net::UnixStream::pair().unwrap();
+        drop(b);
+        let mut carried = Ancillary {
+            received: Some(std::os::fd::OwnedFd::from(a)),
+            registered: None,
+        };
+        let accepted = json::parse(&serve_line(
+            line,
+            &user(),
+            OWNER,
+            &mut Declarations::new(),
+            &mut None,
+            &mut carried,
+        ))
+        .unwrap();
+        assert_eq!(
+            accepted
+                .get("result")
+                .and_then(|r| r.get("outcome"))
+                .and_then(json::Value::as_str),
+            Some("accepted")
+        );
+        let session = carried.registered.expect("the session reached the caller");
+        assert_eq!(session.session_id, 7);
+        assert_eq!(session.tty, None, "no tty is a real state, not a default");
+        assert!(
+            carried.received.is_none(),
+            "the descriptor was left behind as well as taken"
+        );
+    }
+
+    /// A session registration from a peer that is not local is refused by
+    /// **where the caller is**, before its descriptor is looked at.
+    #[test]
+    fn a_session_registration_from_a_stranger_is_refused() {
+        let (a, b) = std::os::unix::net::UnixStream::pair().unwrap();
+        drop(b);
+        let mut carried = Ancillary {
+            received: Some(std::os::fd::OwnedFd::from(a)),
+            registered: None,
+        };
+        let refused = json::parse(&serve_line(
+            r#"{"jsonrpc":"2.0","id":1,"method":"registerSession","params":{"session_id":7}}"#,
+            &stranger(),
+            OWNER,
+            &mut Declarations::new(),
+            &mut None,
+            &mut carried,
+        ))
+        .unwrap();
+        assert_eq!(
+            refused
+                .get("error")
+                .and_then(|e| e.get("code"))
+                .and_then(json::Value::as_int),
+            Some(-32001)
+        );
+        assert!(carried.registered.is_none());
     }
 
     /// `setPolicyGeneration` is accepted from a local peer, refused from one
@@ -651,6 +947,7 @@ mod tests {
                     OWNER,
                     &mut Declarations::new(),
                     told,
+                    &mut Ancillary::default(),
                 ))
                 .unwrap()
             };
@@ -663,6 +960,7 @@ mod tests {
             OWNER,
             &mut Declarations::new(),
             &mut told,
+            &mut Ancillary::default(),
         ))
         .unwrap();
         assert!(
@@ -707,6 +1005,7 @@ mod tests {
             OWNER,
             &mut Declarations::new(),
             &mut told,
+            &mut Ancillary::default(),
         ))
         .unwrap();
         assert_eq!(
@@ -779,6 +1078,7 @@ mod tests {
             OWNER,
             &mut Declarations::new(),
             &mut None,
+            &mut Ancillary::default(),
         ))
         .unwrap();
         assert_eq!(
@@ -794,6 +1094,7 @@ mod tests {
             OWNER,
             &mut Declarations::new(),
             &mut None,
+            &mut Ancillary::default(),
         ))
         .unwrap();
         assert_eq!(response.get("id").and_then(json::Value::as_int), Some(42));

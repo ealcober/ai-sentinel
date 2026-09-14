@@ -4,6 +4,7 @@
 //! `aisme run -- <cmd>` is the documented default onboarding path and the primary
 //! prompt channel on headless and WSL2 hosts.
 
+mod platform;
 mod run;
 
 fn main() {

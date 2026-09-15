@@ -196,6 +196,7 @@ pub fn serve_session_notifications(
     tty: Option<&str>,
     escalate: &[String],
     unattended: Option<&str>,
+    policy: Option<&aisme_core::policy::CompiledPolicy>,
 ) {
     use std::os::fd::AsFd as _;
 
@@ -231,13 +232,36 @@ pub fn serve_session_notifications(
     let mut asked = 0u64;
     let mut escalation_id = 0u64;
 
-    // The escalate class, as this session declared it. A path under one of
-    // these is a question for a human; everything else is answered with a
-    // validated descriptor and nobody is interrupted.
-    let is_escalate = |path: &str| {
-        escalate
+    // What this session is judged against, in order of authority:
+    //
+    // 1. The **daemon's compiled policy**, when it has one. This is the real
+    //    answer: `Verdict::Deny` refuses and **asks nobody**, which is what
+    //    makes it stronger than an escalation that denies on a timeout — no
+    //    answer exists to get wrong and no budget has to expire for it to
+    //    hold. `evaluate` is `aisme-core`'s and already handles globs, which
+    //    the trie lowering does not.
+    // 2. Failing that, the prefixes the session declared with `--escalate`:
+    //    a shorthand for tests and for a daemon started without a policy. It
+    //    can only ever *ask*, never refuse outright.
+    let decide = |path: &str| -> Verdict {
+        if let Some(policy) = policy {
+            let facts = aisme_core::policy::EventFacts {
+                // No group: at F2 the supervisor matches paths and does not
+                // classify, and `evaluate` reads an absent group as "every
+                // rule applies" rather than as "none does".
+                path: Some(path),
+                ..aisme_core::policy::EventFacts::default()
+            };
+            return aisme_core::policy::evaluate(policy, &facts).verdict;
+        }
+        if escalate
             .iter()
             .any(|prefix| path.starts_with(prefix.as_str()))
+        {
+            Verdict::Escalate
+        } else {
+            Verdict::Allow
+        }
     };
 
     let mut delivered = 0u64;
@@ -245,8 +269,12 @@ pub fn serve_session_notifications(
     let result = aisme_linux::serve_notifications_with(
         listener.as_fd(),
         |path| {
-            if !is_escalate(path) {
-                return true;
+            match decide(path) {
+                // Refused by the policy, and nobody is asked. A deny that could
+                // become a prompt is a deny that can be argued with.
+                Verdict::Deny => return false,
+                Verdict::Allow | Verdict::Warn => return true,
+                Verdict::Escalate => {}
             }
             asked += 1;
             escalation_id += 1;
@@ -299,6 +327,7 @@ pub fn serve_session_notifications(
     _tty: Option<&str>,
     _escalate: &[String],
     _unattended: Option<&str>,
+    _policy: Option<&aisme_core::policy::CompiledPolicy>,
 ) {
 }
 

@@ -270,16 +270,38 @@ one parameter and one `poll`. Open: nothing.
 *Is this the best order?* Three tasks remain, plus point 2, plus a recording, plus the gate. The
 order is decided by what unblocks what and by what would otherwise be measured twice:
 
-1. **`F2.WS.05`'s missing half — the compiled policy reaches the supervisor.** First, because
-   every later measurement is taken against whatever the enforcer decides, and because it is the
+1. **`F2.WS.05`'s missing half — the compiled policy reaches the supervisor.** First, because every
+   later measurement is taken against whatever the enforcer decides, and because it is the
    difference between a gate that demonstrates enforcement and one that demonstrates a flag.
-   `aisme run --policy <file>` parses and compiles with `aisme_core::policy::{parse, compile}` —
-   the same F1 compiler `aisme-loaderd --publish` uses, so a policy that compiles for one compiles
-   for the other — lowers it, and carries the lowered `(prefix, verdict)` table in
-   `registerSession`. The supervisor matches **longest prefix**: `deny` refuses with `-EACCES` and
-   **asks nobody**; `escalate` asks the adjudicator; anything else is answered with a validated
-   descriptor. `--escalate <prefix>` stays as the shorthand it is, documented as expressing a
-   subset of what `--policy` expresses, and the gate uses `--policy`.
+
+   **`aisme-agentd --policy <file>`** parses and compiles at startup with
+   `aisme_core::policy::{parse, compile}` — the same F1 compiler `aisme-loaderd --publish` uses, so
+   a policy that compiles for one compiles for the other — and holds the `CompiledPolicy`. The
+   supervisor builds an `EventFacts` for each trapped open and calls
+   `aisme_core::policy::evaluate` (`crates/aisme-core/src/policy/evaluate.rs:80`), which already
+   exists and is L1's. `Verdict::Deny` refuses with `-EACCES` and **asks nobody**;
+   `Verdict::Escalate` asks the adjudicator; `Allow` and `Warn` are answered with a validated
+   descriptor.
+
+   **Two things this point's first draft got wrong, both toward the insecure, and both measured
+   rather than argued:**
+
+   * It said `aisme run --policy <file>`. That would let **the supervised party choose what governs
+     it**, and a policy the agent can pick is not enforcement — it is opt-in. The design note is
+     already right: step 3 has the session *"register with `agentd` … **receiving** the compiled
+     policy generation"* (`docs/design/02_aisme-run.md:34`). The policy is the daemon's, and the
+     session learns which one is in force.
+   * It said to carry the lowered `(prefix, verdict)` table. **The lowering is not the policy.**
+     `BpfTrieBackend::lower` emits only `Term::PathUnder` prefixes and says so
+     (`crates/aisme-linux/src/policy.rs:157`: *"Only prefixes become trie keys. A glob is accepted
+     by the plan and matched elsewhere"*) — and the skeleton's escalate rule is
+     `path_glob = "~/.aws/**"`. Carrying that table would have shipped the deny and the write scope
+     and **dropped the escalate rule GATE F2's third line depends on**. Measured: the shipped
+     policy's three rules lower to **two** trie entries, which is what the guest reported as
+     `A: 2  B: 2` on 2026-09-09.
+
+   `--escalate <prefix>` stays as the shorthand it is, for tests and for a session with no daemon
+   policy, and is documented as such.
 2. **`F2.WS.11` — Landlock.** Because it is the last thing that changes what the gate observes, and
    because its seam already exists: `pre_exec` in `crates/aisme-cli/src/run.rs` runs after the
    cgroup and before `exec`, which is the only place a ruleset is inherited from. `docs/05`
@@ -383,9 +405,70 @@ user-space deny is added to the enforcer, which is the copy of F3 `docs/06` poin
 |---|---|
 | 1 | Three of the four things it was asked to amplify **already are**, in `docs/05` points 9–11; the gate would **deny nothing** as written, because trapping became opt-in after it; the gate asks for two verdicts the daemon cannot reach; and `F0.ASSET.02`'s recording is due now and invisible |
 | 2 | The cgroup is released by **`agentd`**, on `poll` of `cgroup.events` — not by a sweeper and not by the process `exec` replaced. The listener becomes optional so an unsupervised session is still watched, and the client's path is validated because it becomes a filesystem operation |
-| 3 | The order: **`F2.WS.05`'s compiled-policy half first**, then `.11`, the cgroup, `.10`, `.09`, the recording, the gate. The supervisor evaluates the compiled policy — plan `:1638` reserves only *kernel-side* evaluation for F3, and a compiled `deny` cannot be answered away while a timeout-deny depends on nobody answering |
+| 3 | The order: **`F2.WS.05`'s compiled-policy half first**, then `.11`, the cgroup, `.10`, `.09`, the recording, the gate. The supervisor evaluates the compiled policy — plan `:1638` reserves only *kernel-side* evaluation for F3, and a compiled `deny` cannot be answered away while a timeout-deny depends on nobody answering. **The policy is the daemon's, not the session's**: one the supervised party could choose is not enforcement, and the lowered trie is not the policy — it drops the globs, including the escalate rule the gate tests |
 
 **Nothing is open for the owner.** The question point 3 first raised was answered by plan `:1638`,
 `docs/05` §5.3 and the correction of `docs/06` point 3's one wrong sentence — and the security
 argument points the same way: a compiled `deny` cannot be answered away, while an escalation that
 denies on timeout depends on nobody answering. F2's scope row stands as written.
+
+---
+
+## Step 1, as executed — the compiled policy reaching the supervisor
+
+`aisme-agentd --policy <file>` compiles at startup with `parse` + `compile`, holds the
+`CompiledPolicy`, and the supervisor calls `aisme_core::policy::evaluate` for every trapped open.
+`--escalate <prefix>` stays as the shorthand for a session with no daemon policy.
+
+**Four runs against one daemon holding the skeleton's three rules.** The column that matters is
+`asked`, because it is what separates a compiled deny from an escalation nobody answered:
+
+| Command | delivered | denied | asked |
+|---|---|---|---|
+| `cat /etc/hostname` | 4 | 0 | **0** |
+| `cat /etc/shadow` | 6 | 12 | **0** |
+| `cat $D/aws/credentials`, answer `d` | 6 | 12 | 1 |
+| `cat $D/aws/credentials`, answer `1` | 4 | 0 | 1 |
+
+`/etc/shadow` was refused **without anyone being asked**, and the glob rule was honoured — the two
+properties the first draft of this point would have lost.
+
+### Two claims that fell, both mine
+
+1. **"The supervisor turns a missing file's `ENOENT` into `EACCES`, and that is an undiscovered
+   defect."** Measured — a missing file does report `Permiso denegado` under supervision and `No
+   existe el archivo` without it, which is where the 12 denies in the failing runs come from:
+   `cat`'s error path loading locale files that are not there. But it is **not undiscovered**.
+   `crates/aisme-linux/src/seccomp.rs:934` already states it as the conservative choice, says it is
+   visible in the record, and assigns the widening to `F3.EN.12` — which exists (plan `:1753`).
+   Nothing to fix here. The lesson is the ordinary one: read the comment before filing the bug.
+2. **The shipped policy's write-scope rule was inert, and the daemon said so with exit 0.** Both
+   real, both fixed below.
+
+### Two defects this step found — one fixed, one filed with its owner
+
+1. **`deploy/policy/skeleton.aisme` writes `$workspace`, and the grammar's variable is
+   `${workspace}`.** Without braces it is a literal, so rule 3 matches a directory no machine has
+   while `3 rule(s) in force` reports it as present. **Damage today: none** — the rule's verdict is
+   `allow` and `allow` is already §B.10's default, so no verdict changes. **The open path is
+   `F2.WS.11`**, which derives its Landlock ruleset from exactly this rule, and there an inert rule
+   is a write scope that permits everything.
+
+   **It is not corrected here, and the reason is measured rather than preferred.** `Bindings` is
+   per session by construction — *"what `${…}` variables resolve to for one session"*
+   (`crates/aisme-core/src/policy/compile.rs:43`) — and the daemon compiles once at startup, before
+   any session exists. Correcting the spelling alone therefore makes the shipped policy **refuse to
+   load**: `${workspace}` unbound stops the daemon, naming the rule. That trades an inert rule for a
+   gate whose `--policy` line cannot start, which is worse. The spelling and the binding are one
+   change and they are `F2.WS.11`'s, which is the next step and the task that owns the write scope.
+   Recorded in `docs/ai/memory/policy-variables-need-braces.md`.
+2. **A daemon that refused its policy exited 0.** `run_slice`'s error was printed and returned,
+   so `aisme-agentd --run … --policy <broken>` failed to start and reported success to anything
+   reading only the status — the gate's guest script, a unit file, an operator's `&&`. This is the
+   exact failure the code's own comment says the startup compile prevents. All of `main`'s argument
+   and startup error paths now exit non-zero, following the convention `measure-idle` already set.
+
+**Falsifier for both, and it runs in milliseconds:**
+`the_shipped_policy_keeps_all_three_of_its_rules` evaluates the shipped file and asserts deny,
+escalate-through-the-glob and default-allow; `an_unbound_variable_refuses_the_daemon_and_names_the_rule`
+asserts `${nowhere}` is refused with the variable and the rule named.

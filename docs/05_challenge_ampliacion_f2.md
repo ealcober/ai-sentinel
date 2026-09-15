@@ -709,7 +709,7 @@ notifier (`SECCOMP_GET_NOTIF_SIZES`, present since 5.0) and reported `yes` on 5.
   first becomes code, and that the directory-rename form is why a freezer does not substitute.
 - `docs/ai/STATE.md`: `Q-13` moved from open to answered, with the date and the answer.
 
-**Closing.** Verified against the plan's `F2.WS.05` row (`:1633`), `F3.EN.12` (`:1745`), `H-01`,
+**Closing.** Verified against the plan's `F2.WS.05` row (`:1633`), `F3.EN.12` (`:1753`), `H-01`,
 `docs/ai/memory/seccomp-unotify-toctou.md:7`, §2.23's capability annotation, and the kernel
 versions of `ADDFD` (5.9) and `SECCOMP_ADDFD_FLAG_SEND` (5.14). `Q-13` is **answered**: the
 mechanism moves into F2, bounded to read-only `openat` at matching credentials, with everything

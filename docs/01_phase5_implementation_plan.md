@@ -1630,7 +1630,7 @@ test $(grep -rn 'cfg(target_os' crates/aisme-core/src --include='*.rs' | grep -v
 | `F2.WS.02` | Hot loop wired: `poll` → intern → canonicalize → correlate → WAL | Zero allocations in steady state, verified by `dhat` |
 | `F2.WS.03` | `agentsim` emits one synthetic ToolCall with a hidden correlation token, declared to `agentd` over Annex I's **`declareToolCall`** (`aisme-agentsim --declare <socket>`) — the token stays on the ground-truth stream and never crosses the socket | Ground-truth scoring possible from day one |
 | `F2.WS.04` | One AISME-PL rule compiled by the real F1 compiler and published to a real BPF map. **The mechanism**: two `LpmTrie` maps (`AISME_POLICY_A`/`_B`, 1024 entries each) and an `Array<u64,2>` of `[generation, active_index]`, all in the legacy `maps` section — **not** `BPF_MAP_TYPE_ARRAY_OF_MAPS`, which exists at the pinned `aya-ebpf 0.2.1` only as a BTF map that this toolchain pairing cannot produce readably (`docs/06` point 1, measured). Publication fills the idle trie and writes the index **last**; the cost of the substitution is a one-lookup staleness window, in the safe direction | Policy generation counter increments; no torn read — both measured by `cargo xtask test-policy-publish` in one guest boot (6.8: 1 then 2, and 200 000 samples with 493 swaps, `absent=0 foreign=0`) |
-| `F2.WS.05` | `SeccompEnforcer` implementing `Enforcer`: suspend, ask, respond. The filter traps **`openat` only**, after pinning `arch` — a filter reading `nr` without pinning the personality traps a different syscall under i386. `CONTINUE` never permits a path-bearing syscall (`I-28`); an *allow* is delivered as a descriptor the supervisor opened. The listener reaches `agentd` over the control socket with `SCM_RIGHTS`, which is **not** the writable policy-map descriptor `docs/06` point 3 refused | A denied `openat` returns `-EACCES` to the caller — proven end to end in `aisme-linux::seccomp`'s tests: a child installs the real filter, hands the real listener over a real `SCM_RIGHTS` message, and its `open` returns what the supervisor answered |
+| `F2.WS.05` | `SeccompEnforcer` implementing `Enforcer`: suspend, ask, respond. The filter traps **`openat` only**, after pinning `arch` — a filter reading `nr` without pinning the personality traps a different syscall under i386. `CONTINUE` never permits a path-bearing syscall (`I-28`); an *allow* is delivered as a descriptor the supervisor opened. The listener reaches `agentd` over the control socket with `SCM_RIGHTS`, which is **not** the writable policy-map descriptor `docs/06` point 3 refused | A denied `openat` returns `-EACCES` to the caller — proven end to end in `aisme-linux::seccomp`'s tests: a child installs the real filter, hands the real listener over a real `SCM_RIGHTS` message, and its `open` returns what the supervisor answered. **And what decides is the compiled policy**: `aisme-agentd --policy <file>` compiles at startup with the same F1 compiler `aisme-loaderd --publish` uses, and the supervisor calls `aisme_core::policy::evaluate` per trapped open, per `docs/05` §5.3. Measured over the shipped three rules: `/etc/shadow` denied with **0 asked**, `~/.aws/**` escalated and the answer obeyed both ways, everything else allowed |
 | `F2.WS.06` | `TerminalAdjudicator` implementing `Adjudicator`, with the terminal prompt specified in `docs/design/01_permission-model.md` §7.3. It puts the terminal in **raw mode** for the read and restores it on every path — a prompt offering one keystroke gets nothing until a newline otherwise. The unattended answer is read **once by `aisme run` before `exec`** and carried in `registerSession`; the adjudicator never reads the daemon's environment, which anything able to set a variable there could steer, including the agent being adjudicated | A human answers in the terminal and the syscall obeys; `AISME_TERMINAL_ANSWER=<d\|1\|s\|a>` is accepted for unattended gates and recorded as such in the WAL |
 | `F2.WS.07` | `aisme-forensicd --tail <wal-dir> [--once]` follows the WAL by offset and prints one line per record. The cursor — `<wal-dir>/.forensicd-cursor`, carrying **segment and offset**, because an offset alone would be read into whichever segment was newest after a roll — is written **after** the record it accounts for is printed, so a crash costs a repeat and never a loss. A torn tail is waited for, not skipped; a roll is followed only once the current segment is drained; a cursor past the end or one that does not parse is refused rather than clamped or read as absent | Kill `forensicd` mid-stream; it resumes with zero loss — `tests/tail.rs::a_killed_tail_loses_nothing` kills the running binary, restarts it, and asserts the union is every record with at most one repeat |
 | `F2.WS.08` | `aisme run [--scope <path>…] -- <cmd>` establishes session identity and scope: one scope, the session cgroup created and joined **before `exec`**, and `exec` itself — steps 1, 2, 7 and the summary of 9 in `docs/design/02_aisme-run.md`. **Built before `.05` and `.06`**, because both install their machinery inside it (`docs/09` point 1) | The session's own process tree is correctly attributed — `tests/session.rs` reads the supervised child's own `/proc/self/cgroup` |
@@ -1651,18 +1651,26 @@ test $(grep -rn 'cfg(target_os' crates/aisme-core/src --include='*.rs' | grep -v
 
 **GATE F2** — the product runs:
 ```bash
-P=/etc/aisme/policy.aisme       # deny /etc/shadow, escalate ~/.aws/**, default allow
+# In the guest, once — the daemon holds the operator's policy; the session does not:
+#   aisme-agentd --run /var/lib/aisme/wal --serve-ipc /run/aisme/agentd.sock \
+#                --policy /etc/aisme/policy.aisme &     # deny /etc/shadow, escalate ~/.aws/**, allow
 
 cargo xtask test-skeleton              # full slice against MockSensor, no kernel
-cargo xtask vm run <image> --with-dist -- aisme run --policy $P -- sh -c 'cat /etc/hostname'   # allowed: a descriptor the supervisor opened
-cargo xtask vm run <image> --with-dist -- aisme run --policy $P -- sh -c 'cat /etc/shadow'     # compiled deny: -EACCES, and nobody was asked
-AISME_TERMINAL_ANSWER=d cargo xtask vm run <image> --with-dist -- aisme run --policy $P -- sh -c 'cat ~/.aws/credentials'  # ESCALATE -> terminal prompt -> answer obeyed
-cargo xtask vm run <image> --with-dist -- aisme run --policy $P -- sh -c 'touch /tmp/outside'  # Landlock deny, zero notifications (if F0.VER.04)
+cargo xtask vm run <image> --with-dist -- aisme run --trap-openat -- sh -c 'cat /etc/hostname'   # allowed: a descriptor the supervisor opened
+cargo xtask vm run <image> --with-dist -- aisme run --trap-openat -- sh -c 'cat /etc/shadow'     # compiled deny: -EACCES, and nobody was asked
+AISME_TERMINAL_ANSWER=d cargo xtask vm run <image> --with-dist -- aisme run --trap-openat -- sh -c 'cat ~/.aws/credentials'  # ESCALATE -> terminal prompt -> answer obeyed
+cargo xtask vm run <image> --with-dist -- aisme run --trap-openat -- sh -c 'touch /tmp/outside'  # Landlock deny, zero notifications (if F0.VER.04)
 cargo xtask verify-budgets --profile skeleton                  # measuring real code now
 cargo xtask bench-t0 --syscalls 100000                         # baseline recorded
 ```
 
-**`--policy` is on every guest line, and its absence was a defect.** `aisme run` installs no seccomp
+**The policy is the daemon's, and that is a security property rather than a layout choice.** A
+session that chose the policy governing it would be choosing whether to be enforced at all, and
+`docs/design/02_aisme-run.md` step 3 already says the session *receives* the generation from
+`agentd` rather than supplying it. `aisme run` asks to be supervised with `--trap-openat`; what it
+is supervised *against* is not its to pick.
+
+**`--trap-openat` is on every guest line, and its absence was a defect.** `aisme run` installs no seccomp
 filter unless it is given a policy, because a filter traps *every* `openat` and the only "permit
 unchanged" the kernel offers — `SECCOMP_USER_NOTIF_FLAG_CONTINUE` — is forbidden for a path-bearing
 syscall (`I-28`). A session under a filter is therefore answered open by open, and one without a

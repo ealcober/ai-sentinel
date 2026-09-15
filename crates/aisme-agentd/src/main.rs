@@ -32,9 +32,10 @@ static ALLOCATOR: mimalloc::MiMalloc = mimalloc::MiMalloc;
 /// Its own function so `run_slice` stays about the slice: an argument parser
 /// inline in a composition root makes the composition harder to read than the
 /// thing it composes.
-fn parse_run_args(rest: &[String]) -> std::io::Result<(u64, Option<String>)> {
+fn parse_run_args(rest: &[String]) -> std::io::Result<(u64, Option<String>, Option<String>)> {
     let mut ticks: u64 = 1_000;
     let mut socket: Option<String> = None;
+    let mut policy: Option<String> = None;
     let mut it = rest.iter();
     while let Some(arg) = it.next() {
         match arg.as_str() {
@@ -47,10 +48,18 @@ fn parse_run_args(rest: &[String]) -> std::io::Result<(u64, Option<String>)> {
                     .map_err(|_| std::io::Error::other(format!("--ticks {raw} is not a number")))?;
             }
             "--serve-ipc" => socket = it.next().cloned(),
+            // The operator's policy. The daemon's, never a session's.
+            "--policy" => {
+                policy = Some(
+                    it.next()
+                        .cloned()
+                        .ok_or_else(|| std::io::Error::other("--policy needs a file"))?,
+                );
+            }
             other => return Err(std::io::Error::other(format!("unknown argument `{other}`"))),
         }
     }
-    Ok((ticks, socket))
+    Ok((ticks, socket, policy))
 }
 
 /// Compose the whole slice and drive it (`F2.WS.02`).
@@ -59,13 +68,61 @@ fn parse_run_args(rest: &[String]) -> std::io::Result<(u64, Option<String>)> {
 /// sensors are whatever `platform::sensors` composed, the resolver is the
 /// platform's, and the sink is the file-backed WAL. Declarations arrive as a
 /// `Sensor` like any other producer, so the engine sees one stream.
+/// Parse and compile a policy file, with every error named and positioned.
+///
+/// The same two calls `aisme-loaderd --publish` makes, in the same order, so a
+/// policy the loader accepts is one the daemon accepts.
+fn compile_policy(path: &std::path::Path) -> Result<aisme_core::policy::CompiledPolicy, String> {
+    use aisme_core::policy::{compile, parse, Bindings};
+
+    let source = std::fs::read_to_string(path).map_err(|e| format!("{}: {e}", path.display()))?;
+    let policy = parse(&source).map_err(|errors| {
+        errors
+            .iter()
+            .map(|e| format!("{}: {e}", path.display()))
+            .collect::<Vec<String>>()
+            .join("; ")
+    })?;
+    compile(&policy, &Bindings::new()).map_err(|errors| {
+        errors
+            .iter()
+            .map(|e| format!("{}: {e}", path.display()))
+            .collect::<Vec<String>>()
+            .join("; ")
+    })
+}
+
 fn run_slice(dir: &std::path::Path, rest: &[String]) -> std::io::Result<()> {
     use aisme_core::detect::DetectorSet;
     use aisme_core::engine::Engine;
     use aisme_core::sensor::{Sensor, SensorConfig};
     use std::time::Duration;
 
-    let (ticks, socket) = parse_run_args(rest)?;
+    let (ticks, socket, policy_path) = parse_run_args(rest)?;
+
+    // The operator's policy, compiled at startup by the same F1 compiler
+    // `aisme-loaderd --publish` uses — so a policy that compiles for one
+    // compiles for the other. **It is the daemon's.** A session that chose what
+    // governs it would be choosing whether to be enforced at all, and
+    // `docs/design/02_aisme-run.md` step 3 has the session *receive* the
+    // generation rather than supply it.
+    //
+    // A policy that does not compile refuses the daemon at startup rather than
+    // per open: a daemon running against a policy it could not read would
+    // supervise every session against nothing while reporting that it was
+    // supervising.
+    let policy = match &policy_path {
+        Some(path) => {
+            let compiled =
+                compile_policy(std::path::Path::new(path)).map_err(std::io::Error::other)?;
+            println!(
+                "policy: {} rule(s) in force from {path}",
+                compiled.rules.len()
+            );
+            Some(std::sync::Arc::new(compiled))
+        }
+        None => None,
+    };
 
     let caps = platform::probe();
     let mut sensors: Vec<Box<dyn Sensor>> = platform::sensors(&caps);
@@ -106,6 +163,7 @@ fn run_slice(dir: &std::path::Path, rest: &[String]) -> std::io::Result<()> {
                     let tty = session.tty;
                     let escalate = session.escalate;
                     let unattended = session.unattended;
+                    let policy = policy.clone();
                     std::thread::spawn(move || {
                         platform::serve_session_notifications(
                             session.listener,
@@ -113,6 +171,7 @@ fn run_slice(dir: &std::path::Path, rest: &[String]) -> std::io::Result<()> {
                             tty.as_deref(),
                             &escalate,
                             unattended.as_deref(),
+                            policy.as_deref(),
                         );
                     });
                 },
@@ -277,28 +336,35 @@ fn main() {
         if flag == "--run" {
             let Some(dir) = args.next() else {
                 eprintln!("--run needs a directory for the WAL");
-                return;
+                std::process::exit(1);
             };
             let rest: Vec<String> = args.collect();
+            // Non-zero, not a printed line. A daemon whose `--policy` did not
+            // compile supervises nothing, and a caller that reads only the exit
+            // status — the gate's guest script, a unit, an operator's `&&` —
+            // would read that silence as a daemon in force. The convention is
+            // already `measure-idle`'s above.
             if let Err(e) = run_slice(std::path::Path::new(&dir), &rest) {
                 eprintln!("run: {e}");
+                std::process::exit(1);
             }
             return;
         }
         if flag == "--serve-ipc" {
             let Some(path) = args.next() else {
                 eprintln!("--serve-ipc needs a socket path");
-                return;
+                std::process::exit(1);
             };
             let owner = ipc::Peer::from_current_uid();
             println!("ipc: serving {path} for uid {}", owner.uid);
             if let Err(e) = ipc::serve(std::path::Path::new(&path), owner.uid, || false) {
                 eprintln!("ipc: {e}");
+                std::process::exit(1);
             }
             return;
         }
         eprintln!("unknown argument `{flag}`");
-        return;
+        std::process::exit(1);
     }
     println!(
         "ipc: ready — `--serve-ipc <path>` serves the control plane (protocol {})",
@@ -396,6 +462,78 @@ mod slice_tests {
     use std::io::{BufRead as _, BufReader, Write as _};
     use std::os::unix::net::UnixStream;
     use std::time::Duration;
+
+    /// The shipped policy compiles, and each of its three rules still decides
+    /// after compilation (`F2.WS.05`).
+    ///
+    /// The glob assertion is the one that matters, and it is here because the
+    /// first draft of this step was going to carry the **lowered** trie table
+    /// to the supervisor instead of the compiled policy.
+    /// `BpfTrieBackend::lower` emits only `Term::PathUnder` prefixes
+    /// (`crates/aisme-linux/src/policy.rs:157`), so that route would have
+    /// shipped the deny and the write scope and silently dropped
+    /// `escalate-aws` — the rule the whole escalate path exists to exercise.
+    /// A test that only checked the deny would have passed with that defect in.
+    #[test]
+    fn the_shipped_policy_keeps_all_three_of_its_rules() {
+        use aisme_ebpf_common::Verdict;
+
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../deploy/policy/skeleton.aisme");
+        let compiled = super::compile_policy(&path).expect("the shipped policy compiles");
+
+        let verdict_for = |p: &str| {
+            aisme_core::policy::evaluate(
+                &compiled,
+                &aisme_core::policy::EventFacts {
+                    path: Some(p),
+                    ..aisme_core::policy::EventFacts::default()
+                },
+            )
+            .verdict
+        };
+
+        assert_eq!(
+            verdict_for("/etc/shadow"),
+            Verdict::Deny,
+            "`deny-shadow` is a compiled deny: nobody is asked and no answer can undo it"
+        );
+        assert_eq!(
+            verdict_for("~/.aws/credentials"),
+            Verdict::Escalate,
+            "`escalate-aws` is a path_glob — the lowered trie would have dropped it"
+        );
+        assert_eq!(
+            verdict_for("/etc/hostname"),
+            Verdict::Allow,
+            "§B.10's default verdict: what no rule names is allowed"
+        );
+    }
+
+    /// A policy the daemon cannot compile refuses the daemon, and the refusal
+    /// names the rule.
+    ///
+    /// The alternative — starting anyway — is the one failure this must not
+    /// have: a daemon supervising every session against nothing while every
+    /// line it prints says it is supervising.
+    #[test]
+    fn an_unbound_variable_refuses_the_daemon_and_names_the_rule() {
+        let dir = std::env::temp_dir().join(format!("aisme-policy-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("unbound.aisme");
+        std::fs::write(
+            &path,
+            "[[rule]]\nid = \"scope\"\ngroup = \"FILES_OUTSIDE_WORKSPACE\"\n             match = { path_under = \"${nowhere}\" }\nverdict = \"allow\"\n",
+        )
+        .unwrap();
+
+        let err = super::compile_policy(&path).expect_err("an unbound variable does not compile");
+        assert!(
+            err.contains("nowhere") && err.contains("scope"),
+            "the refusal names the variable and the rule, got: {err}"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 
     /// The whole slice, over a real socket and onto a real file: a declaration
     /// crosses the control plane, becomes an event on the sensor stream, goes

@@ -26,6 +26,7 @@ mod doctor;
 mod gate;
 mod rules;
 mod scenarios;
+mod skeleton;
 mod tooling;
 mod verify;
 mod vm;
@@ -131,6 +132,7 @@ fn run(name: &str, args: &[&str]) -> Option<u8> {
         "test-detect" => scenarios::test_detect(args),
         "test-policy-compiler" => scenarios::test_policy_compiler(args),
         "test-policy-publish" => scenarios::test_policy_publish(args),
+        "test-skeleton" => skeleton::run(args),
         "vm up" | "vm run" | "vm probe" => vm::run(name, args),
         _ => return None,
     })

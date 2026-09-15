@@ -620,3 +620,69 @@ whatever order the runner chose. The fix is the ordering rule the function alrea
 which now covers both irreversible steps: reach the daemon first, *then* confine, *then* filter. A
 session with no daemon still gets its write scope — it is unwatched, not unconfined — which the
 measurement above checks explicitly.
+
+---
+
+## Step 4, as executed — `F2.WS.10`, the whole slice with no kernel
+
+`cargo xtask test-skeleton` orchestrates the **shipped binaries**: it compiles
+`deploy/policy/skeleton.aisme` with the same `parse` + `compile` the daemon and the loader use,
+asserts the three verdicts, runs `aisme-agentd --run … --policy … --trace …` so the daemon composes
+itself as it always does, and then reads the WAL back with `aisme-forensicd --tail` as a **second
+process**, because "the record survives its writer" is a two-process property.
+
+```
+policy: 3 rule(s) compiled
+  verdict /etc/shadow = Deny
+  verdict ~/.aws/credentials = Escalate
+  verdict /etc/hostname = Allow
+  trace: 3 event(s) replayed
+  wal: /etc/shadow
+  wal: ~/.aws/credentials
+  wal: /etc/hostname
+test-skeleton: 69 ms
+PASS test-skeleton — the whole slice ran with no kernel
+```
+
+The one product change is `aisme-agentd --trace <file>`: a recording in the wire layout, replayed
+through the composition root's own `MockSensor`, joining the same stream as the declarations. The
+format is `RawEvent` back to back with no header, because `RAW_EVENT_SIZE` is fixed and
+layout-stable by L0's contract and a second serialisation of the same struct is a second thing to
+keep in step with it. A file whose length is not a whole number of events is refused rather than
+truncated. **`F0.ASSET.02`'s reference-trace recording — the next step — needs exactly this input.**
+
+### Three claims of `docs/05` point 10 that fell, and the plan decided each
+
+1. **"The correlation joined the three actions to the declared tool call, scored against the
+   hidden token, with precision and recall 1.0."** That measurement is **F5's**: plan `:1866`
+   gives it to `cargo xtask test-correlation --harness ground-truth`, and `:1285` lists "measured
+   correlation precision" among F5's outputs. `F2.WS.03` exists so the scoring is *possible* from
+   day one, which is what its own row says — not so that F2 performs it. `aisme-correlate` has no
+   scorer, and a gate that grew one here would be building an F5 deliverable inside an F2 gate.
+2. **"Evaluate each against the compiled policy"** on the engine path. The engine has no policy
+   hook at all — `crates/aisme-core/src/engine.rs` contains neither `policy` nor `evaluate` nor
+   `Verdict` — and `F2.WS.02`'s row says why: the hot loop is *"`poll` → intern → canonicalize →
+   correlate → WAL"*. Policy evaluation at F2 lives in the supervisor (`F2.WS.05`, step 1 above).
+   So the gate evaluates the compiled policy with the same `aisme_core::policy::evaluate` the
+   supervisor calls, and does not invent a second place for it to live.
+3. **"Compile with `aisme_core::policy::compile_with`."** That function's third argument is the
+   grant list, not a backend; the skeleton declares no grants, and `compile` is both the simpler
+   form and the one `aisme-agentd --policy` calls — so what the gate compiles is what the daemon
+   compiles rather than a near-miss of it.
+
+### One defect this step found in the gate itself
+
+**`gate --level pr` reported `FAIL` on every machine and always would have.** The runner invokes
+each member **with no arguments**, and `vm up`, `vm run` and `vm probe` each need an image name it
+has no way to choose: all three printed their usage, exited 1, and were counted as failures. A gate
+that cannot pass is decoration, which is the thing this project's rules exist to prevent. The three
+verbs are no longer automatic members — they are still Annex H commands, and the plan's GATE F2
+block calls them explicitly with the image the phase is measured against. After the change,
+`gate --level pr` reports **11 PASS · 0 FAIL · 2 SKIP · 47 PENDING**.
+
+### One check of mine that could have passed vacuously, and no longer can
+
+The WAL ordering assertion reads `seq=` out of the tailer's lines. `seq=` is a format this gate does
+not own, so a renderer that stopped printing it would have left the loop with nothing to iterate and
+an assertion that passed by finding nothing. It counts what it found and fails when that is fewer
+than the trace — an absence read as a value, caught inside the check written to catch one.

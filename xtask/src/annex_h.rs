@@ -482,18 +482,39 @@ pub(crate) const COMMANDS: &[Command] = &[
         name: "vm probe",
         owner: "F0.REPO.03",
         phase: "F0",
-        level: Some(Level::Pr),
+        // **Not a gate member, and the reason is measurable.** `gate --level`
+        // invokes each member with no arguments, and every `vm` verb needs an
+        // image name the gate has no way to choose — so all three printed their
+        // usage, exited 1, and made `gate --level pr` report FAIL on every
+        // machine, for ever. A gate that can never pass is decoration. They are
+        // still Annex H commands and the plan's GATE F2 block calls them
+        // explicitly, with the image the phase is being measured against.
+        level: None,
     },
     Command {
         name: "vm run",
         owner: "F0.REPO.03",
         phase: "F0",
-        level: Some(Level::Pr),
+        // **Not a gate member, and the reason is measurable.** `gate --level`
+        // invokes each member with no arguments, and every `vm` verb needs an
+        // image name the gate has no way to choose — so all three printed their
+        // usage, exited 1, and made `gate --level pr` report FAIL on every
+        // machine, for ever. A gate that can never pass is decoration. They are
+        // still Annex H commands and the plan's GATE F2 block calls them
+        // explicitly, with the image the phase is being measured against.
+        level: None,
     },
     Command {
         name: "vm up",
         owner: "F0.REPO.03",
         phase: "F0",
-        level: Some(Level::Pr),
+        // **Not a gate member, and the reason is measurable.** `gate --level`
+        // invokes each member with no arguments, and every `vm` verb needs an
+        // image name the gate has no way to choose — so all three printed their
+        // usage, exited 1, and made `gate --level pr` report FAIL on every
+        // machine, for ever. A gate that can never pass is decoration. They are
+        // still Annex H commands and the plan's GATE F2 block calls them
+        // explicitly, with the image the phase is being measured against.
+        level: None,
     },
 ];

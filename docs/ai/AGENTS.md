@@ -50,6 +50,7 @@ A task is done when **all** of these hold. Not seven out of eight.
 - [ ] Budget gate passes if the task touches `agentd`, `forensicd`, the BPF programs, or a mobile sensor (`sentinel-core` or a platform shim).
 - [ ] **If the task touches an architectural boundary** (ADR-01 decision 3): the relevant ADR was re-read and is still true, or a superseding ADR was written.
 - [ ] **If the phase started against a mocked entry condition** (§3.7.1), the gate output says which.
+- [ ] **If the task touches the F2 slice** — a sensor, the engine, the policy path, the WAL or the tailer — `cargo xtask test-skeleton` passes. It runs the whole path with no kernel in under a second, so there is no reason not to have run it.
 - [ ] The phase gate command output is **shown**, not summarized.
 - [ ] `STATE.md` updated.
 

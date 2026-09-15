@@ -32,10 +32,27 @@ static ALLOCATOR: mimalloc::MiMalloc = mimalloc::MiMalloc;
 /// Its own function so `run_slice` stays about the slice: an argument parser
 /// inline in a composition root makes the composition harder to read than the
 /// thing it composes.
-fn parse_run_args(rest: &[String]) -> std::io::Result<(u64, Option<String>, Option<String>)> {
+/// What `--run` was asked for.
+///
+/// A struct rather than a tuple because the fourth `Option<String>` is where a
+/// tuple stops being readable: a caller destructuring four same-typed options
+/// in a row has no way to notice it swapped two of them.
+struct RunArgs {
+    /// How many turns of the loop before the slice stops.
+    ticks: u64,
+    /// The control-plane socket, when one is served.
+    socket: Option<String>,
+    /// The operator's policy file.
+    policy: Option<String>,
+    /// A recorded trace to replay through `MockSensor` (`F2.WS.10`).
+    trace: Option<String>,
+}
+
+fn parse_run_args(rest: &[String]) -> std::io::Result<RunArgs> {
     let mut ticks: u64 = 1_000;
     let mut socket: Option<String> = None;
     let mut policy: Option<String> = None;
+    let mut trace: Option<String> = None;
     let mut it = rest.iter();
     while let Some(arg) = it.next() {
         match arg.as_str() {
@@ -56,10 +73,61 @@ fn parse_run_args(rest: &[String]) -> std::io::Result<(u64, Option<String>, Opti
                         .ok_or_else(|| std::io::Error::other("--policy needs a file"))?,
                 );
             }
+            // A recorded trace, replayed through the composition root's own
+            // `MockSensor` (`F2.WS.10`). It is a sensor source like any other:
+            // the engine, the detectors, the WAL and the control plane are the
+            // daemon's, and only the end that would have touched the kernel is
+            // substituted. A gate that composed its own engine would prove the
+            // gate works.
+            "--trace" => {
+                trace = Some(
+                    it.next()
+                        .cloned()
+                        .ok_or_else(|| std::io::Error::other("--trace needs a file"))?,
+                );
+            }
             other => return Err(std::io::Error::other(format!("unknown argument `{other}`"))),
         }
     }
-    Ok((ticks, socket, policy))
+    Ok(RunArgs {
+        ticks,
+        socket,
+        policy,
+        trace,
+    })
+}
+
+/// Read a recorded trace: `RawEvent`s, back to back, in the wire layout.
+///
+/// The format is the wire format and nothing else — no header, no framing —
+/// because `RAW_EVENT_SIZE` is fixed and layout-stable by `L0`'s contract, and
+/// a second serialisation of the same struct is a second thing to keep in step
+/// with it. A file whose length is not a whole number of events is refused
+/// rather than truncated: a short tail is a corrupted recording, and replaying
+/// the part that parsed would be reading an absence as a value.
+///
+/// # Errors
+///
+/// The file, or its length.
+fn read_trace(path: &std::path::Path) -> std::io::Result<Vec<aisme_ebpf_common::RawEvent>> {
+    use aisme_ebpf_common::{RawEvent, RAW_EVENT_SIZE};
+
+    let bytes = std::fs::read(path)?;
+    if bytes.len() % RAW_EVENT_SIZE != 0 {
+        return Err(std::io::Error::other(format!(
+            "{}: {} bytes is not a whole number of {RAW_EVENT_SIZE}-byte events",
+            path.display(),
+            bytes.len()
+        )));
+    }
+    Ok(bytes
+        .chunks_exact(RAW_EVENT_SIZE)
+        .map(|chunk| {
+            let mut one = [0u8; RAW_EVENT_SIZE];
+            one.copy_from_slice(chunk);
+            RawEvent::from_bytes(one)
+        })
+        .collect())
 }
 
 /// Compose the whole slice and drive it (`F2.WS.02`).
@@ -92,13 +160,42 @@ fn compile_policy(path: &std::path::Path) -> Result<aisme_core::policy::Compiled
     })
 }
 
+/// Compile the operator's policy, or report that there is none.
+///
+/// A policy that does not compile refuses the daemon at startup rather than
+/// per open: a daemon running against a policy it could not read would
+/// supervise every session against nothing while reporting that it was
+/// supervising.
+///
+/// # Errors
+///
+/// The compiler's diagnostics, each with the file that produced it.
+fn policy_in_force(
+    path: Option<&str>,
+) -> std::io::Result<Option<std::sync::Arc<aisme_core::policy::CompiledPolicy>>> {
+    let Some(path) = path else {
+        return Ok(None);
+    };
+    let compiled = compile_policy(std::path::Path::new(path)).map_err(std::io::Error::other)?;
+    println!(
+        "policy: {} rule(s) in force from {path}",
+        compiled.rules.len()
+    );
+    Ok(Some(std::sync::Arc::new(compiled)))
+}
+
 fn run_slice(dir: &std::path::Path, rest: &[String]) -> std::io::Result<()> {
     use aisme_core::detect::DetectorSet;
     use aisme_core::engine::Engine;
     use aisme_core::sensor::{Sensor, SensorConfig};
     use std::time::Duration;
 
-    let (ticks, socket, policy_path) = parse_run_args(rest)?;
+    let RunArgs {
+        ticks,
+        socket,
+        policy: policy_path,
+        trace: trace_path,
+    } = parse_run_args(rest)?;
 
     // The operator's policy, compiled at startup by the same F1 compiler
     // `aisme-loaderd --publish` uses — so a policy that compiles for one
@@ -111,23 +208,19 @@ fn run_slice(dir: &std::path::Path, rest: &[String]) -> std::io::Result<()> {
     // per open: a daemon running against a policy it could not read would
     // supervise every session against nothing while reporting that it was
     // supervising.
-    let policy = match &policy_path {
-        Some(path) => {
-            let compiled =
-                compile_policy(std::path::Path::new(path)).map_err(std::io::Error::other)?;
-            println!(
-                "policy: {} rule(s) in force from {path}",
-                compiled.rules.len()
-            );
-            Some(std::sync::Arc::new(compiled))
-        }
-        None => None,
-    };
+    let policy = policy_in_force(policy_path.as_deref())?;
 
     let caps = platform::probe();
     let mut sensors: Vec<Box<dyn Sensor>> = platform::sensors(&caps);
     let (declarations, declared) = declare::DeclarationSensor::new();
     sensors.push(Box::new(declarations));
+    // The recorded trace joins the same stream, beside whatever the platform
+    // composed and beside the declarations — one engine, one batch, one WAL.
+    if let Some(path) = &trace_path {
+        let trace = read_trace(std::path::Path::new(path))?;
+        println!("trace: {} event(s) from {path}", trace.len());
+        sensors.push(Box::new(aisme_core::mock::MockSensor::new(trace)));
+    }
 
     // `None`, not zero: nothing has published a policy to this daemon yet, and
     // a segment claiming generation 0 answers a forensic reader wrongly rather

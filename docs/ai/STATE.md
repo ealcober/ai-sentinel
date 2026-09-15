@@ -305,12 +305,26 @@ In the topology a real agent has, the hook and the tool are two **children** of 
 never ancestors. The declaration also carries `ppid = 0`, so even the chain that would let them meet
 is not recorded.
 
-**What unblocks it** is a decision about what a declaration binds to, and it is the owner's because
-it changes what `F2.WS.03` states. The proposal: the daemon reads the declaring peer's parent from
-`/proc/<pid>/stat` while the peer is still connected — derived, not claimed, so still unforgeable —
-stamps it as `ppid`, and `attribute` accepts a declaration whose `tgid` **or** `ppid` is an ancestor
-of the action. The risk to weigh is over-attribution when one agent has two hooks in flight, which
-is the same ambiguity the current rule already has for two declarations by one process.
+**What unblocks it** is a decision about what a declaration binds to, amplified against the source in
+`docs/16` point 1 — and **the first proposal was refuted there**. Accepting a declaration whose
+`tgid` *or* `ppid` is an ancestor, and breaking a tie by taking the latest, reintroduces exactly the
+defect `actions_are_attributed_by_ancestry_and_not_by_arrival_order` (`record.rs:425`) exists to
+prevent: every hook of a session has the agent as its parent, so all of them match at once. `docs/12`
+M3 measures **14.4 %** of model turns issuing parallel tool calls, so about one turn in seven would
+have its actions handed to the wrong declaration **while every total still came out right**. It also
+widens who may explain an action from *an ancestor* to *any child of an ancestor*, which in an agent
+session is every tool subprocess — an alibi surface, against `DT-04`'s premise that a declaration may
+be a lie.
+
+**What replaces it:** the same candidate rule, with the tie **reported instead of broken**.
+`attribute` yields *attributed*, *unexplained*, or **ambiguous**; the declaration carries its parent
+(read by the daemon from the connected peer, derived rather than claimed); and `Recorded` counts the
+ambiguous separately. The 85.6 % of turns with one tool call in flight attribute exactly, and the
+rest are marked rather than guessed — which is the principle `record.rs:34-40` already states: *"an
+unattributed action is visible, while a wrongly attributed one is not."*
+
+**Still the owner's**, and it is now one narrow question: whether `F0.ASSET.02` may be a fixture that
+states an ambiguous fraction rather than explaining every action.
 
 **Nothing else is blocked.** `F2.WS.01`'s verifier clause was the open one and is now closed: `vm run --with-dist` stages the product's own loader into the guest, and the kernel answered — `ACCEPTED` on 6.8, `REFUSED` on 5.4 naming `BPF_MAP_TYPE_RINGBUF`. The two items below were blockers, are not now, and keep their reasoning because both recur.
 

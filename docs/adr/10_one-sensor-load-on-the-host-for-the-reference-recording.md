@@ -100,6 +100,16 @@ and re-recording in a guest if one ever becomes able to host a session. What kee
 
 ## Follow-up actions
 
+- [ ] **First, and cheaper than the load:** read
+      `/sys/kernel/tracing/events/syscalls/sys_enter_openat/format` on this host and compare
+      `filename`, `flags` and `mode` against the 24/32/40 the program compiles in
+      (`crates/aisme-ebpf/src/main.rs:87`). Those offsets are an ABI detail of a **format file** and
+      are verified only **in the guest**, by `cargo xtask vm probe`; the VM matrix tops out at 7.0
+      and this host runs 7.1.5. A wrong offset does not fault — it yields a pointer that is not the
+      filename, and the recording fills with nonsense that looks like data. The file needs the same
+      privilege as the load, which is why it shares the one `sudo` rather than preceding it. **If
+      they differ, stop**: the offsets become an `F0.VER` row measured on 7.1 and the recording waits.
+      (`docs/16` point 2)
 - [ ] Run `sudo aisme-agentd --load-sensor` on the owner's host; paste the output verbatim into
       `docs/ai/STATE.md`. (`F0.ASSET.02`)
 - [ ] If `ACCEPTED`: record `tests/fixtures/reference-trace/` from one observe-only session, with the

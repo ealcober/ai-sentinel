@@ -155,6 +155,9 @@ impl TerminalAdjudicator {
                     }
                     // Not one of the four: ask again rather than choose.
                 }
+                // Interrupted for the same reason `wait_readable` can be, and
+                // with the same answer: resume, the deadline still bounds it.
+                Err(e) if e.kind() == std::io::ErrorKind::Interrupted => {}
                 _ => return None,
             }
         }
@@ -215,18 +218,36 @@ impl Drop for RawMode {
 }
 
 /// Whether the descriptor has something to read before `timeout`.
+///
+/// **A signal is not an answer, and it is not a timeout either.** `poll` returns
+/// `EINTR` whenever a caught signal arrives, and Linux never restarts it — not
+/// even under `SA_RESTART`. Treating that as *the budget ran out* reads an
+/// absence as a value: measured, a 300 ms budget was given up on in **4.4 ms**
+/// because another thread reaped a child. The daemon reaps children, so this
+/// would deny a developer who was about to type. The wait is therefore against
+/// a deadline, and an interruption resumes it with the time that is left.
 fn wait_readable(handle: &std::fs::File, timeout: Duration) -> bool {
     use std::os::fd::AsRawFd as _;
 
-    let mut fds = libc::pollfd {
-        fd: handle.as_raw_fd(),
-        events: libc::POLLIN,
-        revents: 0,
-    };
-    let ms = i32::try_from(timeout.as_millis()).unwrap_or(i32::MAX);
-    // SAFETY: one `pollfd` we own, and a count that matches it.
-    let rc = unsafe { libc::poll(std::ptr::addr_of_mut!(fds), 1, ms) };
-    rc > 0 && fds.revents & libc::POLLIN != 0
+    let deadline = std::time::Instant::now() + timeout;
+    loop {
+        let left = deadline.saturating_duration_since(std::time::Instant::now());
+        let mut fds = libc::pollfd {
+            fd: handle.as_raw_fd(),
+            events: libc::POLLIN,
+            revents: 0,
+        };
+        let ms = i32::try_from(left.as_millis()).unwrap_or(i32::MAX);
+        // SAFETY: one `pollfd` we own, and a count that matches it.
+        let rc = unsafe { libc::poll(std::ptr::addr_of_mut!(fds), 1, ms) };
+        if rc < 0
+            && std::io::Error::last_os_error().kind() == std::io::ErrorKind::Interrupted
+            && !left.is_zero()
+        {
+            continue;
+        }
+        return rc > 0 && fds.revents & libc::POLLIN != 0;
+    }
 }
 
 impl Adjudicator for TerminalAdjudicator {
@@ -416,6 +437,47 @@ mod tests {
         assert!(
             waited < std::time::Duration::from_secs(3),
             "it waited {waited:?}, which is not a budget"
+        );
+    }
+
+    /// A signal that arrives mid-prompt does not end the wait.
+    ///
+    /// The flaky version of this is the test above under parallel load, which
+    /// is how the defect was found; this one is deterministic. `SIGCONT` is
+    /// chosen because its default action harms nothing — what makes it
+    /// interrupt `poll` is that a handler is installed, and Linux returns
+    /// `EINTR` from `poll` even under `SA_RESTART`. It is delivered to **this**
+    /// thread with `pthread_kill`, so it cannot land on another test's thread.
+    #[test]
+    fn a_signal_does_not_end_the_wait_early() {
+        extern "C" fn noop(_: libc::c_int) {}
+        // SAFETY: installing a handler for a signal whose default action is to
+        // continue an already-running process; the handler does nothing.
+        unsafe { libc::signal(libc::SIGCONT, noop as *const () as libc::sighandler_t) };
+
+        // SAFETY: `pthread_self` takes nothing and cannot fail.
+        let me = unsafe { libc::pthread_self() };
+        let ticker = std::thread::spawn(move || {
+            for _ in 0..5 {
+                std::thread::sleep(std::time::Duration::from_millis(40));
+                // SAFETY: a thread id taken from the thread now waiting, which
+                // is joined below and therefore still alive.
+                unsafe { libc::pthread_kill(me, libc::SIGCONT) };
+            }
+        });
+
+        let (_master, slave) = pty();
+        let mut adjudicator = TerminalAdjudicator::new(Some(slave), None)
+            .with_budget(std::time::Duration::from_millis(300));
+        let started = std::time::Instant::now();
+        let verdict = block_on(adjudicator.ask(&question(PermissionGroup::Credentials)));
+        let waited = started.elapsed();
+        ticker.join().unwrap();
+
+        assert_eq!(verdict, Verdict::Deny);
+        assert!(
+            waited >= std::time::Duration::from_millis(250),
+            "a signal ended the wait after {waited:?}: an interruption was read as a timeout"
         );
     }
 

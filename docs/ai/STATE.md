@@ -211,28 +211,36 @@ a loaded BPF program, which `I-12` keeps off a developer's machine.
 PASS bench-t0 — 4 leg(s) measured; T0 at L3 and T-tel named as absent, not as zero
 ```
 
-### What this output does and does not say, and the gate does not close on it
+### Re-run against the configuration that ships
 
-**It does not close F2**, and the reason is in the output itself rather than beside it.
+The block above was measured in a guest whose daemon runs as `uid 0`, where `CAP_SYS_PTRACE` makes
+Yama irrelevant — so it measured a configuration the product does not ship. `ADR-09` closed that,
+and the five enforcement lines were re-run on the host against a daemon with **no capabilities at
+all**, every line through `sh -c` and therefore through a grandchild:
 
-1. **The guest daemon runs as `uid 0`, and the shipped one does not.** Every trapped line above went
-   through `sh -c` — a grandchild — and was supervised correctly, because a root supervisor has
-   `CAP_SYS_PTRACE` and Yama does not apply to it. `deploy/systemd/aisme-agentd.service` runs as
-   `User=aisme` with an empty `CapabilityBoundingSet=`, and on that configuration the same five
-   lines deny everything the shell runs (measured on the host: 2 delivered, 13 denied, all the
-   grandchild's). **So this gate passes on a configuration the product does not ship**, which is
-   worse than a gate that fails: it is a gate that reports the property of a different system. The
-   decision that closes it is in *Blocked* above.
-2. **The `asked` column could not be read in the guest.** The daemon logged summaries only for the
-   two unfiltered sessions, so "the compiled deny asks nobody" is **not** demonstrated by this run.
-   It is demonstrated on the host, where `/etc/shadow` was refused with `0 asked` and the escalate
-   rule reported `1 asked` with the answer obeyed both ways.
-3. **`F0.ASSET.02`'s recording is still owed**, and plan `:1360` places it before this gate.
+```
+demonio: uid 1000, CapEff 0000000000000000   (zero capabilities)
 
-`PASS` and `PENDING` are acceptable in a gate; a gate whose passing lines measure a configuration
-nobody deploys is not. F2 closes when the decision in *Blocked* is taken and these five lines are
-re-run against the configuration that ships.
+line 2  cat /etc/hostname                  read, exit 0
+line 3  cat /etc/shadow                    denied, nothing leaked
+        ended: 8 delivered, 12 denied, 0 asked     ← nobody was prompted
+line 4a ~/.aws/credentials, answer d       refused
+line 4b the same,           answer 1       SECRETVALUE
+        ended: 6 delivered, 0 denied, 1 asked
+line 5  touch outside the scope, no filter denied in kernel
+        and a write inside the scope still works
 
+GATE-F2-ENFORCEMENT (shipped configuration): PASS
+```
+
+The `asked` column is the one that matters and it could not be read in the guest. A **compiled
+deny asks nobody**: no answer exists to get wrong and no timeout has to expire for it to hold. An
+escalation that denies on timeout is strictly weaker, and the two are indistinguishable by their
+verdict alone.
+
+**What F2 still owes**, and neither is a blocker of the other: `F2.WS.11`'s second half — zero
+notification traffic, observed through `sys_exit_openat` — and `F0.ASSET.02`'s recording, whose two
+open questions are in `docs/12`.
 
 ## Next up
 

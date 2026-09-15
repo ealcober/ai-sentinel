@@ -41,7 +41,17 @@ fn delegation_available() -> bool {
             })
         })
         .is_some_and(|dir| {
-            let probe = dir.join(format!("aisme-probe-{}", std::process::id()));
+            // **A name per call, not per process.** Every test in this binary
+            // runs in the *same* process, so a probe named after the pid is one
+            // name shared by every thread: measured, two tests probing at once
+            // had the second fail with `EEXIST` and report that the host does
+            // not delegate — and it skipped, in green, saying so. A check that
+            // reads contention as absence is worse than no check, because the
+            // suite keeps passing with four of its tests no longer running.
+            static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+            let n = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            let probe = dir.join(format!("aisme-probe-{}-{n}", std::process::id()));
+            let _ = std::fs::remove_dir(&probe);
             let ok = std::fs::create_dir(&probe).is_ok();
             if ok {
                 let _ = std::fs::remove_dir(&probe);
@@ -169,16 +179,33 @@ fn agentd() -> Option<std::path::PathBuf> {
 /// Waits for the socket to answer rather than sleeping a guess: a sleep long
 /// enough on this machine is a flake on a slower one.
 fn daemon(tag: &str) -> Option<(std::process::Child, std::path::PathBuf)> {
+    daemon_with_policy(tag, None)
+}
+
+/// [`daemon`], holding a policy file.
+///
+/// The daemon **parses** it at startup and compiles it once per session
+/// registration, because `${workspace}` and `${home}` are facts about a session
+/// and there is none yet when the daemon starts (`F2.WS.11`).
+fn daemon_with_policy(
+    tag: &str,
+    policy: Option<&std::path::Path>,
+) -> Option<(std::process::Child, std::path::PathBuf)> {
     let dir = std::env::temp_dir().join(format!("aisme-{tag}-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(dir.join("wal")).ok()?;
     let socket = dir.join("sock");
-    let child = Command::new(agentd()?)
+    let mut command = Command::new(agentd()?);
+    command
         .arg("--run")
         .arg(dir.join("wal"))
         .args(["--ticks", "2000000"])
         .arg("--serve-ipc")
-        .arg(&socket)
+        .arg(&socket);
+    if let Some(policy) = policy {
+        command.arg("--policy").arg(policy);
+    }
+    let child = command
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null())
         .spawn()
@@ -254,6 +281,324 @@ fn a_grandchild_of_the_session_is_supervised() {
     assert!(
         delivered(&summary) > 0,
         "nothing was delivered, so nothing was supervised: {summary}"
+    );
+}
+
+/// The summary's three counts, as numbers.
+///
+/// Parsed for the same reason [`delivered`] is: the fields are counted words in
+/// one line, and a substring check on them reports a busy session as an empty
+/// one.
+fn counts(summary: &str) -> (u64, u64, u64) {
+    let of = |name: &str| {
+        summary
+            .split_whitespace()
+            .zip(summary.split_whitespace().skip(1))
+            .find(|(_, word)| word.trim_end_matches(',') == name)
+            .and_then(|(n, _)| n.parse().ok())
+            .unwrap_or(u64::MAX)
+    };
+    (of("delivered"), of("denied"), of("asked"))
+}
+
+/// **A known gap, with a test on it**: a supervised session can write the agent
+/// configuration files its own host executes.
+///
+/// This test asserts the gap, not the fix. Measured on 2026-09-15: under
+/// `aisme run --scope <ws>`, a session created `<ws>/.claude/settings.json`,
+/// `<ws>/.vscode/tasks.json`, `<ws>/.mcp.json` and `<ws>/.git/config`. The
+/// write scope is a **grant** — Landlock rules only grant, there is no deny
+/// rule and no way to subtract a subtree from an allowed one — so a scope that
+/// covers the workspace covers these.
+///
+/// It matters because the host executes them: hooks in a repository's settings
+/// run on clone-and-run with no confirmation (CVE-2025-59536), an agent writing
+/// one gets it executed unsandboxed (CVE-2026-48124, CVSS 8.5, task-file
+/// variant unfixed), and CHAINDROP — a worm, in the wild, August 2026 — commits
+/// one into victim repositories so that reopening the folder re-runs its
+/// payload. `DT-14` detects this class; nothing denies it, and `F3.EN.11` is
+/// the task that would.
+///
+/// A known gap with a test on it is a gap somebody closes; a known gap with
+/// nothing on it survives three phases. The day this starts failing, whoever is
+/// holding it should delete it and read `docs/14` point 4 for the three routes
+/// and what each costs.
+#[test]
+fn a_session_can_still_write_the_agent_configuration_its_host_executes() {
+    if !delegation_available() {
+        eprintln!("SKIP: this host does not delegate a cgroup subtree to us");
+        return;
+    }
+    let dir = std::env::temp_dir().join(format!("aisme-agentcfg-{}", std::process::id()));
+    let scope = dir.join("workspace");
+    std::fs::create_dir_all(&scope).expect("the scope");
+
+    let mut writable = Vec::new();
+    for relative in [
+        ".claude/settings.json",
+        ".vscode/tasks.json",
+        ".mcp.json",
+        ".git/config",
+    ] {
+        let target = scope.join(relative);
+        if let Some(parent) = target.parent() {
+            std::fs::create_dir_all(parent).expect("the directory");
+        }
+        // Written by the supervised process itself, not by the test: what is
+        // being measured is what the session's own confinement permits.
+        let out = aisme()
+            .env("LC_ALL", "C")
+            .args(["run", "--scope"])
+            .arg(&scope)
+            .args(["--", "/bin/cp"])
+            .arg("/etc/hostname")
+            .arg(&target)
+            .output()
+            .expect("aisme run");
+        release(&String::from_utf8_lossy(&out.stdout));
+        if target.exists() {
+            writable.push(relative);
+        }
+    }
+    let _ = std::fs::remove_dir_all(&dir);
+
+    assert_eq!(
+        writable,
+        [
+            ".claude/settings.json",
+            ".vscode/tasks.json",
+            ".mcp.json",
+            ".git/config"
+        ],
+        "one of these stopped being writable. That is the right direction — read \
+         `docs/14` point 4, record which route was taken, and replace this test with \
+         one that asserts the denial for a file that is **absent** as well as one that \
+         is present (CVE-2026-25725 was a protection applied only to a file that \
+         already existed)"
+    );
+}
+
+/// **Enforcement does not move when the agent disables its own approvals.**
+///
+/// In the one supply-chain incident where AI agents were the attack
+/// *instrument* rather than the target, the malware did not defeat the
+/// permission system: it invoked the agents with their own permission-skipping
+/// flags. The human gate was not bypassed, it was not present — 2,349
+/// credentials from 1,079 systems.
+///
+/// AISME's verdicts never consult the agent, so this holds by construction.
+/// **By construction is not the same as under test**: a later change that made
+/// any verdict depend on something the session supplies would break it in
+/// silence, and every other test here would still pass. `I-20`'s determinism
+/// and `H-11`'s "no LLM in the decision path" are the same claim; this is the
+/// executable form of it.
+///
+/// The variables set below are the *agent's*, never AISME's. AISME's own
+/// unattended answer is set identically in both runs, because it is the
+/// operator's control and varying it would make this a test of something else.
+///
+/// The `asked` count is asserted alongside the verdict, and that is the half
+/// that matters: a session that skipped the prompt and was *allowed* looks
+/// exactly like one that was never asked, and only this column tells them
+/// apart.
+#[test]
+fn enforcement_does_not_move_when_the_agent_disables_its_own_approvals() {
+    // The switches a compromised caller reaches for. They belong to the agents,
+    // not to AISME, which is the point: none of them is an input to a verdict.
+    const AGENT_FLAGS: [(&str, &str); 4] = [
+        ("CLAUDE_CODE_DANGEROUSLY_SKIP_PERMISSIONS", "1"),
+        ("DANGEROUSLY_SKIP_PERMISSIONS", "1"),
+        ("AIDER_YES_ALWAYS", "1"),
+        ("CI", "true"),
+    ];
+
+    if !delegation_available() {
+        eprintln!("SKIP: this host does not delegate a cgroup subtree to us");
+        return;
+    }
+    // Not `aisme-flags-…`: `daemon_with_policy` builds its scratch directory
+    // from the tag the same way and wipes it, which would delete the policy
+    // file written here a moment before it is read.
+    let dir = std::env::temp_dir().join(format!("aisme-flags-input-{}", std::process::id()));
+    let scope = dir.join("workspace");
+    std::fs::create_dir_all(&scope).expect("the scope");
+    // Two rules bound to this session's own workspace, so the test needs
+    // nothing of the machine it runs on — not a home directory, not /etc.
+    let policy = dir.join("policy.aisme");
+    std::fs::write(
+        &policy,
+        concat!(
+            "[[rule]]\nid = \"deny-secret\"\ngroup = \"CREDENTIALS\"\n",
+            "match = { path_under = \"${workspace}/secret\" }\nverdict = \"deny\"\n\n",
+            "[[rule]]\nid = \"escalate-asked\"\ngroup = \"CREDENTIALS\"\n",
+            "match = { path_under = \"${workspace}/asked\" }\nverdict = \"escalate\"\n",
+        ),
+    )
+    .expect("the policy");
+    for name in ["secret", "asked", "ordinary"] {
+        std::fs::write(scope.join(name), b"x").expect("the file");
+    }
+
+    let Some((mut server, socket)) = daemon_with_policy("flags", Some(&policy)) else {
+        eprintln!("SKIP: aisme-agentd could not be started");
+        return;
+    };
+
+    let run = |name: &str, permissive: bool| {
+        let mut command = aisme();
+        command
+            .env("AISME_AGENTD_SOCKET", &socket)
+            .env("LC_ALL", "C")
+            // The operator's own answer, identical in both runs.
+            .env("AISME_TERMINAL_ANSWER", "d");
+        if permissive {
+            for (k, v) in AGENT_FLAGS {
+                command.env(k, v);
+            }
+        }
+        let out = command
+            .args(["run", "--scope"])
+            .arg(&scope)
+            .args(["--trap-openat", "--", "/bin/cat"])
+            .arg(scope.join(name))
+            .output()
+            .expect("aisme run");
+        let stdout = String::from_utf8_lossy(&out.stdout);
+        release(&stdout);
+        let summary = stdout
+            .lines()
+            .find(|l| l.contains("ended:"))
+            .unwrap_or_default()
+            .to_owned();
+        (counts(&summary), out.status.success(), summary)
+    };
+
+    for name in ["secret", "asked", "ordinary"] {
+        let (plain, plain_ok, plain_summary) = run(name, false);
+        let (loose, loose_ok, loose_summary) = run(name, true);
+        assert_eq!(
+            (plain, plain_ok),
+            (loose, loose_ok),
+            "the agent's own permission flags changed what AISME enforced for {name}:\n  \
+             without: {plain_summary}\n  with:    {loose_summary}"
+        );
+    }
+
+    // And the policy really did decide, or the comparison above compared two
+    // runs of nothing.
+    //
+    // **The assertion is `asked` and the exit status, never the denial count.**
+    // How many denials a run produces belongs to the environment: `cat` failing
+    // walks its locale search path, and now that a missing file is answered
+    // `ENOENT` rather than `EACCES` it walks all of it, exactly as it would
+    // unsupervised. That is the point of answering truthfully, and it makes the
+    // count a measurement of this machine.
+    let ((_, _, asked), ok, summary) = run("secret", false);
+    assert!(
+        !ok && asked == 0,
+        "the compiled deny did not fire, or it asked somebody: {summary}"
+    );
+    let ((_, _, asked), ok, summary) = run("asked", false);
+    assert!(
+        !ok && asked == 1,
+        "the escalation did not reach an adjudicator, or its `deny` answer was not obeyed: \
+         {summary}"
+    );
+    let ((_, _, asked), ok, summary) = run("ordinary", false);
+    assert!(
+        ok && asked == 0,
+        "a file no rule names was not simply allowed: {summary}"
+    );
+
+    let _ = server.kill();
+    let _ = server.wait();
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// **A denial the filter does not trap wakes nobody**, which is §2.2.1's whole
+/// argument for putting the write scope in the kernel (`F2.WS.11`).
+///
+/// The done-condition as originally written — *"a write outside the workspace
+/// produces zero notification traffic"* — is **not measurable on a write-mode
+/// `openat`**, and it took a measurement to see why: `seccomp_unotify` fires
+/// **before** the LSM hook, so under `--trap-openat` such an open is trapped
+/// by the filter and refused by `reproducible` long before Landlock is
+/// consulted. Counting notifications there would count seccomp wearing
+/// Landlock's name.
+///
+/// The property is real and it belongs to the operations the filter does not
+/// trap: `unlink` is one. So the measurement is a **comparison**: the same
+/// binary deleting a file inside the scope and outside it. One deletion happens
+/// and the other does not, and the notification traffic is identical — the
+/// enforcement that made the difference woke nobody.
+///
+/// `LC_ALL=C` is not decoration. Without it, `rm` failing loads locale
+/// catalogues and probes for twenty-odd files that are not there, and each
+/// `ENOENT` is a notification; measured, that noise was 22 denials and it is
+/// the environment's, not the product's.
+#[test]
+fn a_denial_the_filter_does_not_trap_wakes_nobody() {
+    if !delegation_available() {
+        eprintln!("SKIP: this host does not delegate a cgroup subtree to us");
+        return;
+    }
+    let Some((mut server, socket)) = daemon("unlink") else {
+        eprintln!("SKIP: aisme-agentd could not be started");
+        return;
+    };
+
+    let dir = std::env::temp_dir().join(format!("aisme-unlink-{}", std::process::id()));
+    let scope = dir.join("workspace");
+    std::fs::create_dir_all(&scope).expect("the scope");
+    let outside = dir.join("outside.txt");
+    let inside = scope.join("inside.txt");
+
+    // Each run deletes its own file, so the two differ in one thing only:
+    // whether the target lies within the session's declared scope.
+    let mut traffic = Vec::new();
+    for target in [&outside, &inside] {
+        std::fs::write(target, b"x").expect("the victim");
+        let out = aisme()
+            .env("AISME_AGENTD_SOCKET", &socket)
+            .env("LC_ALL", "C")
+            .args(["run", "--scope"])
+            .arg(&scope)
+            .args(["--trap-openat", "--", "/bin/rm", "-f"])
+            .arg(target)
+            .output()
+            .expect("aisme run");
+        let stdout = String::from_utf8_lossy(&out.stdout);
+        release(&stdout);
+        let summary = stdout
+            .lines()
+            .find(|l| l.contains("ended:"))
+            .unwrap_or_default()
+            .to_owned();
+        traffic.push((summary, target.exists()));
+    }
+    let _ = server.kill();
+    let _ = server.wait();
+
+    let (outside_summary, outside_survived) = &traffic[0];
+    let (inside_summary, inside_survived) = &traffic[1];
+    let _ = std::fs::remove_dir_all(&dir);
+
+    assert!(
+        *outside_survived,
+        "a file outside the declared scope was deleted: {outside_summary}"
+    );
+    assert!(
+        !*inside_survived,
+        "a file inside the scope could not be deleted, so the scope is not a scope: {inside_summary}"
+    );
+    // The point of the test. If the write scope were enforced by waking the
+    // supervisor, the refused run would carry a denial the permitted one does
+    // not — and it carries nothing.
+    assert_eq!(
+        counts(outside_summary),
+        counts(inside_summary),
+        "the denied deletion raised notification traffic the permitted one did not, \
+         so it was not denied in kernel:\n  outside: {outside_summary}\n  inside:  {inside_summary}"
     );
 }
 

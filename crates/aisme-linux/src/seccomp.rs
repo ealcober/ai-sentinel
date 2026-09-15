@@ -844,6 +844,22 @@ pub fn read_target_path(pid: u32, addr: u64) -> aisme_core::error::Result<std::f
 ///
 /// The target's own, most often `ENOENT`.
 pub fn locate_as_target(pid: u32, path: &std::ffi::CStr) -> aisme_core::error::Result<OwnedFd> {
+    locate_errno(pid, path).map_err(|errno| {
+        aisme_core::error::Error::unsupported(format!(
+            "locating {}: {}",
+            path.to_string_lossy(),
+            std::io::Error::from_raw_os_error(errno)
+        ))
+    })
+}
+
+/// [`locate_as_target`], keeping the kernel's errno instead of a sentence.
+///
+/// The supervisor needs the number, not the words: *this file is not there* and
+/// *this file is refused* are different answers to the caller, and the only
+/// place the difference still exists is the errno the kernel just returned.
+/// Formatting it into a message is where it used to be lost.
+fn locate_errno(pid: u32, path: &std::ffi::CStr) -> Result<OwnedFd, i32> {
     open_relative_to_target(
         pid,
         path,
@@ -911,23 +927,22 @@ pub fn open_located(located: &OwnedFd) -> aisme_core::error::Result<OwnedFd> {
 }
 
 /// Open `path` as `pid` would, with `flags`, refusing magic links.
-fn open_relative_to_target(
-    pid: u32,
-    path: &std::ffi::CStr,
-    flags: u64,
-) -> aisme_core::error::Result<OwnedFd> {
-    use aisme_core::error::Error;
-
-    let cwd = std::ffi::CString::new(format!("/proc/{pid}/cwd"))
-        .map_err(|e| Error::unsupported(format!("cwd path: {e}")))?;
+///
+/// Returns the kernel's **errno** on failure rather than a sentence: the
+/// caller answers a held syscall, and what it has to answer with is a number.
+/// A failure that is the supervisor's own rather than the path's — it could not
+/// reach the target's working directory — is reported as `EACCES`, because the
+/// caller asked about a file and "there is no such file" would be a claim this
+/// supervisor never established.
+fn open_relative_to_target(pid: u32, path: &std::ffi::CStr, flags: u64) -> Result<OwnedFd, i32> {
+    let Ok(cwd) = std::ffi::CString::new(format!("/proc/{pid}/cwd")) else {
+        return Err(libc::EACCES);
+    };
     // SAFETY: `O_PATH|O_DIRECTORY` on a NUL-terminated path; the descriptor is
     // owned below.
     let dirfd = unsafe { libc::open(cwd.as_ptr(), libc::O_PATH | libc::O_DIRECTORY) };
     if dirfd < 0 {
-        return Err(Error::unsupported(format!(
-            "/proc/{pid}/cwd: {}",
-            std::io::Error::last_os_error()
-        )));
+        return Err(libc::EACCES);
     }
     // SAFETY: freshly opened, unowned elsewhere.
     let dir = unsafe { OwnedFd::from_raw_fd(dirfd) };
@@ -952,14 +967,13 @@ fn open_relative_to_target(
             size_of::<libc::open_how>(),
         )
     };
-    let fd = RawFd::try_from(fd)
-        .map_err(|_| Error::unsupported("openat2 returned something that is not a descriptor"))?;
+    let Ok(fd) = RawFd::try_from(fd) else {
+        return Err(libc::EACCES);
+    };
     if fd < 0 {
-        return Err(Error::unsupported(format!(
-            "openat2 {}: {}",
-            path.to_string_lossy(),
-            std::io::Error::last_os_error()
-        )));
+        return Err(std::io::Error::last_os_error()
+            .raw_os_error()
+            .unwrap_or(libc::EACCES));
     }
     // SAFETY: the kernel just gave us this descriptor.
     Ok(unsafe { OwnedFd::from_raw_fd(fd) })
@@ -1105,14 +1119,31 @@ pub fn serve_notifications_with(
         // on what the descriptor **names**, and the descriptor handed over is
         // that same one reopened through `/proc/self/fd` rather than through
         // the string, so nothing is resolved twice (`I-28`).
-        let Ok(located) = locate_as_target(n.pid, &path) else {
-            // The supervisor's own open failed — most often the target's own
-            // ENOENT. Answering EACCES rather than passing the errno through is
-            // the conservative choice and is visible in the record; widening it
-            // is `F3.EN.12`'s.
-            respond_deny(listener, n.id, libc::EACCES)?;
-            record(n.pid, false, Some("the supervisor could not open it"));
-            continue;
+        let located = match locate_errno(n.pid, &path) {
+            Ok(located) => located,
+            // **An absence is answered as an absence.** Every refusal used to
+            // come back as `EACCES`, so a caller could not tell *this file is
+            // not there* from *this file is refused* — and the field record
+            // says an agent that cannot tell them apart tries another spelling,
+            // which is the first move of every escape in it. The supervisor has
+            // always known the difference; this is where the caller learns it.
+            //
+            // It is not an oracle: the distinction is absence versus refusal
+            // and nothing finer. No rule is named, and a caller learns nothing
+            // it could not learn by calling `stat` itself.
+            Err(errno) => {
+                respond_deny(listener, n.id, errno)?;
+                record(
+                    n.pid,
+                    false,
+                    Some(if errno == libc::ENOENT {
+                        "there is no such file"
+                    } else {
+                        "the supervisor could not open it"
+                    }),
+                );
+                continue;
+            }
         };
         let Ok(resolved) = canonical_path(&located) else {
             respond_deny(listener, n.id, libc::EACCES)?;
@@ -1502,6 +1533,60 @@ mod tests {
             reap(pid),
             i32::from(b'S'),
             "the target did not read through the descriptor we handed it"
+        );
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// **An absence is answered as an absence, and a refusal as a refusal.**
+    ///
+    /// Every denial used to come back as `EACCES`, so a supervised process
+    /// could not tell *this file is not there* from *this file is refused*. The
+    /// field record says that is where an escape begins: an agent that cannot
+    /// interpret a refusal tries another spelling, and every escape in the
+    /// record starts with one. `I-19` says this system never fails silently;
+    /// the supervised process was the one audience it excluded.
+    ///
+    /// Both cases are in one test on purpose. A supervisor that answered a
+    /// single errno for everything would pass either of them alone.
+    ///
+    /// It is **not** an oracle. The distinction is absence versus refusal and
+    /// nothing finer: no rule is named, a caller learns nothing it could not
+    /// learn by calling `stat` itself, and two paths refused by different rules
+    /// are indistinguishable to it.
+    #[test]
+    fn a_missing_file_says_missing_and_a_refused_one_says_refused() {
+        use std::os::fd::AsFd;
+
+        let dir = scratch("errno");
+        let present = dir.join("present");
+        std::fs::write(&present, b"P").unwrap();
+        let absent = dir.join("not-here");
+
+        // `open_and_read_first_byte` reports a failure as `200 + errno`, so the
+        // exit status carries the number the kernel gave the caller.
+        let code_for = |path: &std::path::Path, permit: bool| {
+            let target = cstr(path);
+            let (pid, parent_end, child_end) =
+                supervised(move |_| open_and_read_first_byte(&target.clone()));
+            drop(child_end);
+            let listener = recv_fd(parent_end.as_fd()).expect("the listener");
+            // The production loop, not a hand-rolled one: the errno the caller
+            // receives is chosen inside it.
+            let _ = super::serve_notifications_with(listener.as_fd(), |_| permit, |_, _, _| {});
+            reap(pid)
+        };
+
+        assert_eq!(
+            code_for(&absent, true),
+            200 + libc::ENOENT,
+            "a file that is not there was reported as refused, which sends the caller \
+             looking for another spelling of a file that does not exist"
+        );
+        assert_eq!(
+            code_for(&present, false),
+            200 + libc::EACCES,
+            "a refused file was reported as missing, which tells the caller the policy \
+             does not exist rather than that it said no"
         );
         std::fs::remove_dir_all(&dir).ok();
     }

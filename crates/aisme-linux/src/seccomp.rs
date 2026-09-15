@@ -238,9 +238,17 @@ pub fn install_openat_filter() -> aisme_core::error::Result<OwnedFd> {
         )));
     }
 
-    // 0: load arch. 1: if it is not ours, allow (jump 3 → index 5).
-    // 2: load nr.   3: if it is not openat, allow (jump 1 → index 5).
-    // 4: trap.      5: allow.
+    // **Three syscalls open a path, and trapping one of them traps nothing.**
+    // Measured on 2026-09-15 against a policy that denied a file: under a
+    // filter that named `openat` alone, `open` and `openat2` opened it, and the
+    // supervisor never saw either. That is not even the *retry by indirection*
+    // `DT-05` describes — it succeeds first time — and it made the deny and
+    // escalate classes decoration for anything that did not go through glibc.
+    //
+    // 0: load arch.   1: if it is not ours, allow (jump 4 → index 6).
+    // 2: load nr.     3: `open`    → trap (jump 3 → index 7).
+    // 4: `openat`  → trap (jump 2). 5: `openat2` → trap (jump 1).
+    // 6: allow.       7: trap.
     let filter = [
         libc::sock_filter {
             code: BPF_LD_W_ABS,
@@ -251,7 +259,7 @@ pub fn install_openat_filter() -> aisme_core::error::Result<OwnedFd> {
         libc::sock_filter {
             code: BPF_JEQ_K,
             jt: 0,
-            jf: 3,
+            jf: 4,
             k: NATIVE_AUDIT_ARCH,
         },
         libc::sock_filter {
@@ -260,26 +268,38 @@ pub fn install_openat_filter() -> aisme_core::error::Result<OwnedFd> {
             jf: 0,
             k: SECCOMP_DATA_NR,
         },
+        // `try_from`, not `as`: a truncated syscall number would trap a
+        // different call than the one this filter names, and it would do it
+        // silently.
         libc::sock_filter {
             code: BPF_JEQ_K,
-            jt: 0,
-            jf: 1,
-            // `try_from`, not `as`: a truncated syscall number would trap a
-            // different call than the one this filter names, and it would do
-            // it silently.
+            jt: 3,
+            jf: 0,
+            k: u32::try_from(libc::SYS_open).unwrap_or(u32::MAX),
+        },
+        libc::sock_filter {
+            code: BPF_JEQ_K,
+            jt: 2,
+            jf: 0,
             k: u32::try_from(libc::SYS_openat).unwrap_or(u32::MAX),
         },
         libc::sock_filter {
-            code: BPF_RET_K_OP,
-            jt: 0,
+            code: BPF_JEQ_K,
+            jt: 1,
             jf: 0,
-            k: SECCOMP_RET_USER_NOTIF,
+            k: u32::try_from(libc::SYS_openat2).unwrap_or(u32::MAX),
         },
         libc::sock_filter {
             code: BPF_RET_K_OP,
             jt: 0,
             jf: 0,
             k: SECCOMP_RET_ALLOW,
+        },
+        libc::sock_filter {
+            code: BPF_RET_K_OP,
+            jt: 0,
+            jf: 0,
+            k: SECCOMP_RET_USER_NOTIF,
         },
     ];
     let prog = libc::sock_fprog {
@@ -368,6 +388,66 @@ impl Notification {
     pub const fn path_addr(&self) -> u64 {
         self.args[1]
     }
+
+    /// The `(dirfd, path pointer, flags)` of a held open, whatever syscall
+    /// asked for it — or `None` for a shape this supervisor cannot reproduce.
+    ///
+    /// **Three syscalls open a path and they do not agree on their arguments.**
+    /// `openat(dirfd, path, flags)` is the shape the accessors above read.
+    /// `open(path, flags, mode)` has no descriptor argument at all, so reading
+    /// `args[0]` as one would take a *pointer* for a file descriptor.
+    /// `openat2(dirfd, path, how, size)` keeps its flags inside a `struct
+    /// open_how` in the target's memory, together with a `resolve` field that
+    /// changes what the path even means.
+    ///
+    /// `openat2` is therefore **refused**, and that is `I-28` rather than
+    /// laziness: an open the supervisor cannot reproduce is denied with the
+    /// reason, never permitted, because a descriptor that does not mean what
+    /// the caller asked for is worse than a refusal — the caller will use it
+    /// believing it does. A caller that asked for `RESOLVE_BENEATH` and was
+    /// handed a descriptor opened without it has been given an answer it will
+    /// trust and must not. Reading `open_how` and honouring it is `F3.EN.12`'s,
+    /// with the rest of the widening.
+    #[must_use]
+    #[expect(
+        clippy::cast_possible_truncation,
+        clippy::cast_possible_wrap,
+        reason = "the argument slot holds a 32-bit flag set; truncating is the correct read, \
+                  for the reason `open_flags` states"
+    )]
+    pub fn open_request(&self) -> Option<OpenRequest> {
+        if self.nr == i32::try_from(libc::SYS_open).unwrap_or(-1) {
+            return Some(OpenRequest {
+                dirfd: libc::AT_FDCWD,
+                path_addr: self.args[0],
+                flags: self.args[1] as i64 as i32,
+            });
+        }
+        if self.nr == i32::try_from(libc::SYS_openat).unwrap_or(-1) {
+            return Some(OpenRequest {
+                dirfd: self.dirfd(),
+                path_addr: self.path_addr(),
+                flags: self.open_flags(),
+            });
+        }
+        None
+    }
+}
+
+/// One held open, in the shape the supervisor reasons about.
+///
+/// The three syscalls that reach it disagree about their arguments, so they are
+/// normalised here rather than at each use — a caller that had to remember
+/// which syscall it was looking at would eventually forget.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct OpenRequest {
+    /// The directory the path is relative to; `AT_FDCWD` when the syscall has
+    /// no descriptor argument.
+    pub dirfd: i32,
+    /// A **pointer** into the target's memory, never a path.
+    pub path_addr: u64,
+    /// The open flags.
+    pub flags: i32,
 }
 
 /// Wait for the next held syscall.
@@ -905,19 +985,25 @@ pub fn serve_notifications_with(
             // the kernel's answer rather than one of ours.
             return Ok(());
         };
-        if n.nr != i32::try_from(libc::SYS_openat).unwrap_or(-1) {
-            // The filter traps nothing else, so this is a kernel we do not
-            // understand. Denying is the safe direction and it is named.
+        let Some(request) = n.open_request() else {
+            // `openat2`, or a syscall this filter does not trap on a kernel we
+            // do not understand. Denying is the safe direction, `I-28` requires
+            // it for anything this supervisor cannot reproduce, and it is named
+            // so an operator can see which call it was.
             respond_deny(listener, n.id, libc::EACCES)?;
-            record(n.pid, false, Some("a syscall the filter does not trap"));
+            record(
+                n.pid,
+                false,
+                Some("a shape this supervisor cannot reproduce (openat2)"),
+            );
             continue;
-        }
-        if let Err(why) = reproducible(n.dirfd(), n.open_flags()) {
+        };
+        if let Err(why) = reproducible(request.dirfd, request.flags) {
             respond_deny(listener, n.id, libc::EACCES)?;
             record(n.pid, false, Some(why.reason()));
             continue;
         }
-        let Ok(path) = read_target_path(n.pid, n.path_addr()) else {
+        let Ok(path) = read_target_path(n.pid, request.path_addr) else {
             respond_deny(listener, n.id, libc::EACCES)?;
             record(n.pid, false, Some("the path argument could not be read"));
             continue;
@@ -1398,6 +1484,83 @@ mod tests {
     }
 
     /// Limit one of `Q-13`: anything F2 cannot reproduce exactly is denied
+    /// `struct open_how`, which `openat2` takes instead of a flags argument.
+    ///
+    /// Declared here because the test has to build one to *make* the call; the
+    /// supervisor never reads it, which is why an `openat2` is refused.
+    #[repr(C)]
+    struct OpenHow {
+        flags: u64,
+        mode: u64,
+        resolve: u64,
+    }
+
+    /// **Every syscall that opens a path is trapped, not only `openat`.**
+    ///
+    /// Measured before this held: under a filter that named `openat` alone, a
+    /// child called `open` and `openat2` on a denied file and **opened it both
+    /// times**, and the supervisor never saw either. That is not the *retry by
+    /// indirection* `DT-05` describes — it succeeds first time — and it made
+    /// the deny and escalate classes decoration for anything not going through
+    /// glibc.
+    ///
+    /// The child refuses everything, so a syscall that reaches the supervisor
+    /// comes back denied and one that does not reach it comes back **open**.
+    /// The assertion is therefore on the file descriptor, which is the thing an
+    /// attacker would have.
+    #[test]
+    fn open_and_openat2_are_trapped_as_well_as_openat() {
+        use std::os::fd::AsFd as _;
+
+        let path = cstr(std::path::Path::new("/etc/hostname"));
+        let (pid, parent, child_end) = supervised(|_| {
+            // Three ways to ask for the same file. `-100` is `AT_FDCWD`.
+            let mut opened = 0;
+            let how = OpenHow {
+                flags: 0,
+                mode: 0,
+                resolve: 0,
+            };
+            for fd in [
+                // SAFETY: a NUL-terminated path that outlives each call.
+                unsafe { libc::syscall(libc::SYS_open, path.as_ptr(), 0) },
+                // SAFETY: as above.
+                unsafe { libc::syscall(libc::SYS_openat, -100_i64, path.as_ptr(), 0) },
+                // SAFETY: `how` outlives the call and its size is given.
+                unsafe {
+                    libc::syscall(
+                        libc::SYS_openat2,
+                        -100_i64,
+                        path.as_ptr(),
+                        std::ptr::addr_of!(how),
+                        std::mem::size_of::<OpenHow>(),
+                    )
+                },
+            ] {
+                if let Ok(fd) = i32::try_from(fd) {
+                    if fd >= 0 {
+                        opened += 1;
+                        // SAFETY: a descriptor the kernel just returned.
+                        unsafe { libc::close(fd) };
+                    }
+                }
+            }
+            opened
+        });
+        drop(child_end);
+
+        let listener = recv_fd(parent.as_fd()).expect("the listener");
+        let mut seen = 0;
+        // Refuse everything: what matters is whether the call arrived at all.
+        let _ = super::serve_notifications_with(listener.as_fd(), |_| false, |_, _, _| seen += 1);
+        let opened = reap(pid);
+        assert_eq!(
+            opened, 0,
+            "{opened} of the three opening syscalls went round the filter"
+        );
+        assert_eq!(seen, 3, "the supervisor saw {seen} of the three calls");
+    }
+
     /// **with the flag named**, never permitted.
     #[test]
     fn a_flag_outside_the_subset_is_denied_by_name() {

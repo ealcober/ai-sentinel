@@ -100,6 +100,14 @@ and re-recording in a guest if one ever becomes able to host a session. What kee
 
 ## Follow-up actions
 
+- [x] **Done, 2026-09-15 — the offsets hold on 7.1.5.** The format file reports `filename` at
+      **offset 24**, `flags` at **32** and `mode` at **40**, which is exactly what the program
+      compiles in. The recording may proceed on this kernel. The same output also shows a field the
+      VM matrix has never seen — `field:__data_loc char[] __filename_val; offset:48; size:4;` — the
+      kernel's **own captured copy** of the filename, beside the user pointer the program
+      dereferences. It is not used and is recorded as an open question, not as a change: reading a
+      copy the kernel made beats dereferencing a user pointer that can change or fault, and whether
+      it is available below 7.1 decides whether it can ever be more than a fast path.
 - [ ] **First, and cheaper than the load:** read
       `/sys/kernel/tracing/events/syscalls/sys_enter_openat/format` on this host and compare
       `filename`, `flags` and `mode` against the 24/32/40 the program compiles in

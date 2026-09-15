@@ -26,12 +26,34 @@ use aisme_ebpf_common::{EventKind, Outcome, RawEvent};
 /// The tool name is bounded by the wire (`SemanticPayload::tool_name` is 64
 /// bytes) and truncation is marked, so a long name is visibly cut rather than
 /// silently renamed.
+/// **`declared_by` is the whole point of recording a declaration.** A
+/// declaration says a tool call started; without the process that made it,
+/// nothing can ever be joined to it. Correlation attributes an action to the
+/// declaration made by a process in the action's own **ancestry**, and an
+/// ancestry is walked from a pid — so a declaration with no pid is an intent
+/// nobody can match to anything, recorded beside the actions it claims to
+/// explain with no way to reach them. Measured on 2026-09-15, before this
+/// argument existed: the WAL held `tgid=0 pid=0 kind=ToolCall`.
+///
+/// It comes from `SO_PEERCRED`, which is the kernel's answer and which no
+/// client can forge — the same fact the whole authorization model rests on.
+/// `None` where the platform gave none, and it is stored as `0` with that
+/// meaning stated here rather than left for a reader to guess.
 #[must_use]
-pub fn declaration_event(toolcall_id: u64, tool_name: &str, ts_ns: u64) -> RawEvent {
+pub fn declaration_event(
+    toolcall_id: u64,
+    tool_name: &str,
+    ts_ns: u64,
+    declared_by: Option<u32>,
+) -> RawEvent {
     let mut event = RawEvent::ZERO;
     event.kind = EventKind::ToolCall.into();
     event.outcome = Outcome::Observed.into();
     event.ts_ns = ts_ns;
+    // `SO_PEERCRED` reports the peer's **process**, which is `tgid` here. Which
+    // thread of it called is not knowable from the socket, so `pid` stays 0
+    // and means "not measured" rather than "thread zero".
+    event.tgid = declared_by.unwrap_or(0);
     // Written through L0's accessor, so the one place that knows the layout is
     // the one place that writes it. It returns `None` for any kind outside the
     // Semantic range, and `kind` was set to `ToolCall` two lines up.
@@ -145,7 +167,8 @@ mod tests {
     #[test]
     fn a_declaration_arrives_as_an_observed_toolcall_event() {
         let (mut sensor, tx) = DeclarationSensor::new();
-        tx.send(declaration_event(42, "Bash", 1_000)).unwrap();
+        tx.send(declaration_event(42, "Bash", 1_000, Some(4242)))
+            .unwrap();
         let mut batch = EventBatch::with_capacity(4);
         assert_eq!(sensor.poll(&mut batch, Duration::ZERO).unwrap(), 1);
 
@@ -166,12 +189,37 @@ mod tests {
         assert!(!event.truncated());
     }
 
+    /// A declaration records **who declared it**, and an absent peer is 0 with
+    /// that meaning stated rather than a pid nobody has.
+    ///
+    /// Without this a declaration is an intent nobody can match to anything:
+    /// correlation attributes an action to the declaration made by a process in
+    /// the action's own ancestry, and an ancestry is walked from a pid.
+    /// Measured before the field existed — the WAL held `tgid=0 pid=0
+    /// kind=ToolCall` — which is why the assertion is on the value and not on
+    /// the field being present.
+    #[test]
+    fn a_declaration_records_the_process_that_made_it() {
+        let stamped = declaration_event(7, "Bash", 0, Some(4242));
+        assert_eq!(stamped.tgid, 4242, "the declaring process is on the wire");
+        assert_eq!(
+            stamped.pid, 0,
+            "SO_PEERCRED names a process and not a thread; 0 here means not measured"
+        );
+
+        let anonymous = declaration_event(7, "Bash", 0, None);
+        assert_eq!(
+            anonymous.tgid, 0,
+            "a platform that gives no peer pid records none, and 0 is that absence"
+        );
+    }
+
     /// A name longer than the wire allows is cut and *marked*, never silently
     /// renamed into a different tool.
     #[test]
     fn an_overlong_tool_name_is_truncated_and_says_so() {
         let long = "T".repeat(100);
-        let event = declaration_event(1, &long, 0);
+        let event = declaration_event(1, &long, 0, None);
         assert!(event.truncated(), "the flag is the whole point");
         match event.payload() {
             Some(Payload::Semantic(s)) => assert_eq!(usize::from(s.name_len), 64),
@@ -197,7 +245,7 @@ mod tests {
     fn declarations_beyond_the_batch_are_counted_as_refused() {
         let (mut sensor, tx) = DeclarationSensor::new();
         for id in 0..4 {
-            tx.send(declaration_event(id, "Bash", 0)).unwrap();
+            tx.send(declaration_event(id, "Bash", 0, Some(1))).unwrap();
         }
         let mut batch = EventBatch::with_capacity(2);
         assert_eq!(sensor.poll(&mut batch, Duration::ZERO).unwrap(), 2);

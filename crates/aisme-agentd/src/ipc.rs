@@ -225,6 +225,87 @@ fn capabilities(generation: Option<aisme_core::policy::PolicyGeneration>) -> Val
 /// The descriptor **is** the message: a registration without one would leave a
 /// filtered process with nobody to answer its syscalls, and every `openat` in
 /// that session would fail with `ENOSYS` while the daemon reported success.
+/// `declareToolCall` (`F2.WS.03`) — an agent volunteers what it is about to do.
+///
+/// It authorizes nothing: no grant, no verdict, no scope. The declaration is
+/// recorded **beside** the actions it claims to explain so correlation can
+/// check the claim rather than believe it (`DT-04`), and the process that made
+/// it comes from `SO_PEERCRED` rather than from the message — a caller that
+/// could name its own pid could attribute its actions to somebody else.
+fn declare_tool_call(
+    request: &rpc::Request,
+    peer: &Peer,
+    declarations: &mut Declarations,
+) -> String {
+    if !declarations.admit() {
+        // A *result*, not an error (Annex I.2): the caller learns the
+        // bound applied and the declarations already accepted stand.
+        return rpc::response(
+            request.id,
+            Value::object([
+                ("outcome", Value::string("rate_limited")),
+                (
+                    "per_minute",
+                    Value::Int(i64::from(rpc::DECLARATIONS_PER_MINUTE)),
+                ),
+            ]),
+        );
+    }
+    let toolcall_id = request.params.get("toolcall_id").and_then(|v| match v {
+        Value::Int(n) => Some(*n),
+        _ => None,
+    });
+    match toolcall_id {
+        Some(id) => {
+            // Delivered as an event on the same stream as everything
+            // else, so correlation can check the claim against the
+            // actions instead of believing it (`DT-04`).
+            if let Some(out) = &declarations.out {
+                let name = request
+                    .params
+                    .get("tool_name")
+                    .and_then(Value::as_str)
+                    .unwrap_or("");
+                let ts_ns = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map_or(0, |d| u64::try_from(d.as_nanos()).unwrap_or(u64::MAX));
+                let event = crate::declare::declaration_event(
+                    u64::try_from(id).unwrap_or(0),
+                    name,
+                    ts_ns,
+                    peer.pid.and_then(|p| u32::try_from(p).ok()),
+                );
+                // A closed receiver means the loop stopped. The caller
+                // is not told the declaration was recorded when it was
+                // not, so the answer becomes the honest one.
+                if out.send(event).is_err() {
+                    return rpc::response(
+                        request.id,
+                        Value::object([
+                            ("outcome", Value::string("not_recorded")),
+                            ("reason", Value::string("the engine is not running")),
+                        ]),
+                    );
+                }
+            }
+            rpc::response(
+                request.id,
+                Value::object([
+                    ("outcome", Value::string("accepted")),
+                    ("toolcall_id", Value::Int(id)),
+                ]),
+            )
+        }
+        // A declaration with no id cannot be joined to anything, so
+        // accepting it would record a fact nobody can use.
+        None => rpc::error(
+            request.id,
+            ErrorCode::InvalidParams,
+            "toolcall_id is required and must be an integer",
+        ),
+    }
+}
+
 /// Constrain a session cgroup path a client named, before the daemon will ever
 /// `rmdir` it.
 ///
@@ -412,74 +493,7 @@ pub fn serve_line(
         // it creates no grant, changes no verdict and carries no scope, and
         // `DT-04` exists because a declaration may be a lie. The engine records
         // it beside the actions it claims to explain and checks it later.
-        Method::DeclareToolCall => {
-            if !declarations.admit() {
-                // A *result*, not an error (Annex I.2): the caller learns the
-                // bound applied and the declarations already accepted stand.
-                return rpc::response(
-                    request.id,
-                    Value::object([
-                        ("outcome", Value::string("rate_limited")),
-                        (
-                            "per_minute",
-                            Value::Int(i64::from(rpc::DECLARATIONS_PER_MINUTE)),
-                        ),
-                    ]),
-                );
-            }
-            let toolcall_id = request.params.get("toolcall_id").and_then(|v| match v {
-                Value::Int(n) => Some(*n),
-                _ => None,
-            });
-            match toolcall_id {
-                Some(id) => {
-                    // Delivered as an event on the same stream as everything
-                    // else, so correlation can check the claim against the
-                    // actions instead of believing it (`DT-04`).
-                    if let Some(out) = &declarations.out {
-                        let name = request
-                            .params
-                            .get("tool_name")
-                            .and_then(Value::as_str)
-                            .unwrap_or("");
-                        let ts_ns = std::time::SystemTime::now()
-                            .duration_since(std::time::UNIX_EPOCH)
-                            .map_or(0, |d| u64::try_from(d.as_nanos()).unwrap_or(u64::MAX));
-                        let event = crate::declare::declaration_event(
-                            u64::try_from(id).unwrap_or(0),
-                            name,
-                            ts_ns,
-                        );
-                        // A closed receiver means the loop stopped. The caller
-                        // is not told the declaration was recorded when it was
-                        // not, so the answer becomes the honest one.
-                        if out.send(event).is_err() {
-                            return rpc::response(
-                                request.id,
-                                Value::object([
-                                    ("outcome", Value::string("not_recorded")),
-                                    ("reason", Value::string("the engine is not running")),
-                                ]),
-                            );
-                        }
-                    }
-                    rpc::response(
-                        request.id,
-                        Value::object([
-                            ("outcome", Value::string("accepted")),
-                            ("toolcall_id", Value::Int(id)),
-                        ]),
-                    )
-                }
-                // A declaration with no id cannot be joined to anything, so
-                // accepting it would record a fact nobody can use.
-                None => rpc::error(
-                    request.id,
-                    ErrorCode::InvalidParams,
-                    "toolcall_id is required and must be an integer",
-                ),
-            }
-        }
+        Method::DeclareToolCall => declare_tool_call(&request, peer, declarations),
         // Every other method is F8a's; saying so is better than a stub that
         // answers something plausible.
         other => rpc::response(

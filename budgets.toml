@@ -75,6 +75,20 @@ t0_p999_us = { direction = "min", target = 25,   hard = 50 }
 t1_p99_us  = { direction = "min", target = 400,  hard = 1000 }
 t2_p95_ms  = { direction = "min", target = 1200, hard = 2500 }
 
+# The F2 skeleton's own two figures (`F2.WS.09`), written by `cargo xtask bench-t0`.
+# They are here so that nothing measured goes unchecked — an artefact key with no
+# budget is a number nobody compares against anything.
+#
+# The baseline is a property of the machine, not of the product: it is the cost of
+# one unsupervised `openat`, and it exists so the supervised figures have a floor to
+# stand on. Its ceiling is set to catch a catastrophic regression, not to police a
+# laptop under load.
+skeleton_baseline_open_p99_us  = { direction = "min", target = 10,   hard = 50 }
+# The T2 *path* with a scripted answer: the notification reaching the adjudicator,
+# the verdict returning, the syscall resuming. It is deliberately not `t2_p95_ms`,
+# which is about a person's time and must not be met by a robot answering instantly.
+skeleton_t2_scripted_p99_us    = { direction = "min", target = 800,  hard = 2000 }
+
 [telemetry]
 drop_rate_pct = { direction = "min", target = 0.0, hard = 0.01 }
 # Metric cardinality. An unbounded label set is how a telemetry backend starts

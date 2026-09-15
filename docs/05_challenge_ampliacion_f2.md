@@ -1053,9 +1053,15 @@ Safe and clear with three rules:
   for exactly this.
 - The report is written to `target/budget/skeleton-latency.toml` so `verify-budgets` reads it as
   an artefact, in the shape `F1.RT.06` established — a measurement is a file some run produced.
-- The command prints, verbatim: `T0 is not measured at this shape: at F2 the sensor is a
-  tracepoint and enforcement is seccomp plus Landlock, so no decision is taken in kernel. F3
-  measures T0.`
+- The command prints that **T0 at L3** is not measured here and that **T0 at L2 is**.
+
+  *(Corrected during implementation, and the correction is the interesting one: this point's first
+  draft had the command print "no decision is taken in kernel". `budgets.toml` says the opposite in
+  its own comment — "T0 exists at both enforcement tiers but through different primitives … L3 is
+  BPF-LSM; **L2 is Landlock (files)** + cgroup connect hooks" — and plan `:1768` agrees, with
+  `--tier l2` labelled "Landlock + cgroup deny". A Landlock deny **is** an in-kernel decision, so
+  the original sentence would have hidden a figure the project already has a budget for behind a
+  disclaimer. Measured at **2.42 µs p99** against that budget's target of 12.)*
 
 ### 4. Tests
 

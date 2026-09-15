@@ -7,5 +7,6 @@
 //! (`F5.CO.*`) and `verify-budgets` link against; the binary is what the
 //! workload runs.
 
+pub mod openbench;
 pub mod replay;
 pub mod trace;

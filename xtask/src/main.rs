@@ -24,6 +24,7 @@ mod budgets;
 mod docgate;
 mod doctor;
 mod gate;
+mod latency;
 mod rules;
 mod scenarios;
 mod skeleton;
@@ -133,6 +134,7 @@ fn run(name: &str, args: &[&str]) -> Option<u8> {
         "test-policy-compiler" => scenarios::test_policy_compiler(args),
         "test-policy-publish" => scenarios::test_policy_publish(args),
         "test-skeleton" => skeleton::run(args),
+        "bench-t0" => latency::run(args),
         "vm up" | "vm run" | "vm probe" => vm::run(name, args),
         _ => return None,
     })

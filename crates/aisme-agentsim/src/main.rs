@@ -13,6 +13,22 @@ use aisme_agentsim::{replay, trace};
 
 fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
+    // `--open-bench` is its own mode and returns before the replay: it measures
+    // what one `openat` costs the agent, from inside the session, which is the
+    // only place T1 can be timed (`F2.WS.09`).
+    match aisme_agentsim::openbench::Request::parse(&args) {
+        Ok(Some(request)) => {
+            let report = aisme_agentsim::openbench::run(&request);
+            println!("{}", aisme_agentsim::openbench::render(&request, &report));
+            return ExitCode::SUCCESS;
+        }
+        Ok(None) => {}
+        Err(problem) => {
+            eprintln!("aisme-agentsim: {problem}");
+            eprintln!("usage: aisme-agentsim --open-bench <path> [--count N] [--create]");
+            return ExitCode::FAILURE;
+        }
+    }
     let options = match replay::Options::parse(&args) {
         Ok(options) => options,
         Err(problem) => {

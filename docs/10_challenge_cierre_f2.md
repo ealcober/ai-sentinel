@@ -686,3 +686,61 @@ The WAL ordering assertion reads `seq=` out of the tailer's lines. `seq=` is a f
 not own, so a renderer that stopped printing it would have left the loop with nothing to iterate and
 an assertion that passed by finding nothing. It counts what it found and fails when that is fewer
 than the trace — an absence read as a value, caught inside the check written to catch one.
+
+---
+
+## Step 5, as executed — `F2.WS.09`, what the tiers that exist actually cost
+
+`cargo xtask bench-t0 --syscalls 100000`, on this host, in 5.3 seconds. Every figure carries its
+sample count, because a p999 over a hundred samples is the maximum wearing a percentile's name.
+
+| Leg | samples | p50 | p99 | p999 | budget |
+|---|---|---|---|---|---|
+| one `openat`, unsupervised | 100 000 | 1.00 µs | 1.80 µs | 11.3 µs | 10 / 50 |
+| **T1** — held syscall, supervisor answered, no human | 100 000 | 18.2 µs | **46.6 µs** | 232 µs | 400 / 1000 |
+| T2 path, scripted answer | 2 000 | 15.7 µs | 39.3 µs | 60.4 µs | 800 / 2000 |
+| **T0 at L2** — Landlock deny, no supervisor woken | 20 000 | 1.31 µs | **2.42 µs** | 11.8 µs | 12 / 20 |
+
+**The number the phase exists to produce: an in-kernel deny costs 2.42 µs where the supervised
+round trip costs 46.6 µs — 19× less.** That is §2.2.1's argument ("everything trapping to the
+supervisor would be a disaster") in figures rather than in prose, and it is why L2 is a tier and not
+a euphemism. T1 is inside its budget unoptimized, with a factor of twenty to spare.
+
+### The claim of `docs/05` point 9 that fell, and it was its most load-bearing sentence
+
+The point specified the command's disclaimer **verbatim**: *"T0 is not measured at this shape: at
+F2 the sensor is a tracepoint and enforcement is seccomp plus Landlock, so no decision is taken in
+kernel."*
+
+**`budgets.toml` says the opposite in its own comment**, above the keys it is describing: *"T0
+exists at both enforcement tiers but through different primitives, so it has two budgets: L3 is
+BPF-LSM; **L2 is Landlock (files)** + cgroup connect hooks (network)."* Plan `:1768` agrees, giving
+F3's gate a line labelled *"`--tier l2` … p99 < 20 µs, **Landlock** + cgroup deny"*. A Landlock deny
+is an in-kernel decision by both of those documents, so printing the specified sentence would have
+**hidden a figure the project already budgets for behind a disclaimer** — and `t0_l2_p99_us` would
+have stayed "no artefact" while the run that could fill it was happening. The command now separates
+the two absences from the one presence: T0 at L3 is absent (no BPF-LSM), T-tel is absent (needs a
+loaded BPF program, so a VM), and T0 at L2 is **measured**.
+
+### Two deviations from the point, each with its reason
+
+1. **It said the command "will run inside a VM (`I-12`)".** Plan `:1664` invokes it directly in the
+   GATE F2 block, not through `vm run`, and the plan wins. The project's own operative reading of
+   `I-12` is in its code rather than only in the invariant list:
+   `crates/aisme-agentd/src/platform/mod.rs` keeps the rule by ensuring **no BPF program is
+   loaded** on a host running the test suite, and the committed seccomp and Landlock tests install
+   real filters and real rulesets on the host. Three of the four legs load no BPF; T-tel is the one
+   that does, and it is reported absent with its reason.
+2. **It said to report the Landlock deny cost as "a denied write versus the same write without the
+   ruleset, the difference reported".** Those are different operations — one is refused and the
+   other writes a file — so their difference is partly the cost of denial and partly the cost of
+   not having done the work. Both figures are reported instead, and the unsupervised baseline is
+   the floor everything else stands on.
+
+### Where the probe had to live, and why it is not a detail
+
+`aisme-agentsim --open-bench` times the opens **from inside the session**, because T1 is not a
+number the supervisor can report about itself: what matters is how long the syscall was *held*, and
+only the caller can time that. It must also be the process `aisme run` `exec`s and never a child of
+one — a grandchild's path arguments cannot be read by a sibling supervisor under Yama, so a bench
+driven through `sh -c` would have measured a refusal and reported it as a fast T1.

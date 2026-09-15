@@ -115,9 +115,14 @@ pub fn in_session_cgroup(pid: i32) -> bool {
         return true;
     };
     text.lines().any(|line| {
-        line.rsplit(':')
-            .next()
-            .is_some_and(|path| path.contains("/aisme.slice") || path.contains("/aisme-session-"))
+        line.rsplit(':').next().is_some_and(|path| {
+            // The names sessions are actually given. `aisme run` creates
+            // `aisme-<16 hex>` under its own cgroup (`F2.WS.08`) and the
+            // deployed unit delegates a `sessions` subgroup, so a pattern that
+            // matched neither classified every agent as the user — the one
+            // direction this must never fail in.
+            path.contains("/aisme-") || path.contains("/aisme.slice") || path.contains("/sessions/")
+        })
     })
 }
 
@@ -220,20 +225,93 @@ fn capabilities(generation: Option<aisme_core::policy::PolicyGeneration>) -> Val
 /// The descriptor **is** the message: a registration without one would leave a
 /// filtered process with nobody to answer its syscalls, and every `openat` in
 /// that session would fail with `ENOSYS` while the daemon reported success.
+/// Constrain a session cgroup path a client named, before the daemon will ever
+/// `rmdir` it.
+///
+/// **What this protects against is not the peer.** The socket is uid-matched,
+/// so a caller that reaches here can already remove its own cgroups with its
+/// own hands; no check here takes an ability away from it. What the check does
+/// is bound what *the daemon* can be asked to delete, so that a malformed or
+/// mistaken registration cannot turn the daemon into the tool that removes
+/// something nobody asked about.
+///
+/// The last component must be a session name, which is what makes the rule
+/// worth having: `rmdir` is then reachable only for an `aisme-<16 hex>`
+/// directory, never for a slice, a scope, or the delegated root itself.
+///
+/// # Errors
+///
+/// The first rule the path breaks, in the words the caller needs.
+fn checked_session_cgroup(path: &str) -> Result<String, &'static str> {
+    // The unified hierarchy's mount point. A cgroup path outside it is not a
+    // cgroup, whatever it is named.
+    const ROOT: &str = "/sys/fs/cgroup/";
+
+    if !path.starts_with(ROOT) {
+        return Err("cgroup must be under /sys/fs/cgroup");
+    }
+    if path.contains('\0') {
+        return Err("cgroup must not contain a NUL");
+    }
+    let rest = &path[ROOT.len()..];
+    if rest
+        .split('/')
+        .any(|component| component.is_empty() || component == "." || component == "..")
+    {
+        return Err("cgroup must be a normalised path with no empty or dot components");
+    }
+    // `aisme-` and exactly sixteen lowercase hexadecimal digits: the format
+    // `aisme run` prints and the only shape this daemon will remove.
+    let Some(last) = rest.rsplit('/').next() else {
+        return Err("cgroup must name a session directory");
+    };
+    let Some(id) = last.strip_prefix("aisme-") else {
+        return Err("the last component of cgroup must be aisme-<16 hex>");
+    };
+    if id.len() != 16 || !id.bytes().all(|b| b.is_ascii_hexdigit()) {
+        return Err("the last component of cgroup must be aisme-<16 hex>");
+    }
+    Ok(path.to_owned())
+}
+
 fn register_session(request: &rpc::Request, ancillary: &mut Ancillary) -> String {
-    let Some(listener) = ancillary.received.take() else {
+    let listener = ancillary.received.take();
+    let trapping = matches!(request.params.get("trapping"), Some(Value::Bool(true)));
+    // A filtered session with nobody to answer it is the one registration that
+    // must be refused: every `openat` in it would fail with `ENOSYS`. An
+    // unfiltered one carries no listener by construction and is accepted —
+    // the daemon watches it rather than supervising it.
+    if trapping && listener.is_none() {
         return rpc::error(
             request.id,
             ErrorCode::InvalidParams,
-            "registerSession must carry its seccomp listener as SCM_RIGHTS",
+            "a session that installs a seccomp filter must carry its listener as SCM_RIGHTS",
         );
-    };
+    }
     let Some(Value::Int(session_id)) = request.params.get("session_id") else {
         return rpc::error(
             request.id,
             ErrorCode::InvalidParams,
             "session_id must be an integer",
         );
+    };
+    // The one place in this protocol where a client's string becomes a
+    // filesystem operation, so it is constrained before it is stored rather
+    // than before it is used: a value that reaches the struct has already been
+    // checked, and no later caller has to remember to.
+    let cgroup = match request.params.get("cgroup") {
+        None => None,
+        Some(Value::Str(path)) => match checked_session_cgroup(path) {
+            Ok(path) => Some(path),
+            Err(why) => return rpc::error(request.id, ErrorCode::InvalidParams, why),
+        },
+        Some(_) => {
+            return rpc::error(
+                request.id,
+                ErrorCode::InvalidParams,
+                "cgroup must be a string",
+            )
+        }
     };
     ancillary.registered = Some(Registered {
         // The codec has no unsigned integer and a session id is an opaque
@@ -264,6 +342,7 @@ fn register_session(request: &rpc::Request, ancillary: &mut Ancillary) -> String
             .and_then(Value::as_str)
             .map(ToOwned::to_owned),
         listener,
+        cgroup,
     });
     rpc::response(
         request.id,
@@ -441,8 +520,20 @@ pub struct Registered {
     /// daemon-side read could be steered by anything able to set a variable in
     /// the daemon, which includes the agent being adjudicated.
     pub unattended: Option<String>,
-    /// The seccomp listener for that session.
-    pub listener: std::os::fd::OwnedFd,
+    /// The seccomp listener for that session, when there is one.
+    ///
+    /// **Optional, because not every session is filtered.** A session without
+    /// `--trap-openat` installs no filter and has no listener to hand over, and
+    /// it is still a session the daemon must know about: it has a cgroup, and
+    /// somebody has to release it (`docs/10` point 2). Making the descriptor
+    /// the message is what made unfiltered sessions invisible.
+    pub listener: Option<std::os::fd::OwnedFd>,
+    /// The session's own cgroup, for the daemon to release when it empties.
+    ///
+    /// `exec` has no after, so the process that created the directory is the
+    /// supervised command by the time it could clean up. The daemon waits on
+    /// `cgroup.events` instead and removes it when the kernel says it is empty.
+    pub cgroup: Option<String>,
 }
 
 /// The descriptor that arrived with a request, and the session it registered.
@@ -875,16 +966,19 @@ mod tests {
         .unwrap()
     }
 
-    /// `registerSession` is the descriptor, not the line.
+    /// A **filtered** session without its listener is refused; an unfiltered
+    /// one is not.
     ///
-    /// A registration without its listener is **refused**, because accepting it
-    /// would leave a filtered process with nobody to answer its syscalls: every
-    /// `openat` in that session would fail with `ENOSYS` and the daemon would
-    /// have reported success.
+    /// The refusal exists because accepting a filtered registration with no
+    /// descriptor would leave a process with nobody to answer its syscalls:
+    /// every `openat` in it would fail with `ENOSYS` and the daemon would have
+    /// reported success. It must not extend to a session that installed no
+    /// filter — that session has no listener to carry, and refusing it is what
+    /// made unfiltered sessions invisible to the daemon and left their cgroups
+    /// behind for ever.
     #[test]
-    fn a_session_registration_without_its_listener_is_refused() {
-        let line =
-            r#"{"jsonrpc":"2.0","id":1,"method":"registerSession","params":{"session_id":7}}"#;
+    fn a_trapping_session_without_its_listener_is_refused() {
+        let line = r#"{"jsonrpc":"2.0","id":1,"method":"registerSession","params":{"session_id":7,"trapping":true}}"#;
 
         let mut empty = Ancillary::default();
         let refused = json::parse(&serve_line(
@@ -931,6 +1025,113 @@ mod tests {
         assert!(
             carried.received.is_none(),
             "the descriptor was left behind as well as taken"
+        );
+
+        // And a session that installed no filter is accepted with no
+        // descriptor at all: it is watched, not supervised.
+        let watched =
+            r#"{"jsonrpc":"2.0","id":1,"method":"registerSession","params":{"session_id":8}}"#;
+        let mut bare = Ancillary::default();
+        let accepted = json::parse(&serve_line(
+            watched,
+            &user(),
+            OWNER,
+            &mut Declarations::new(),
+            &mut None,
+            &mut bare,
+        ))
+        .unwrap();
+        assert!(
+            accepted.get("error").is_none(),
+            "an unfiltered session was refused for having no listener: {accepted:?}"
+        );
+        let session = bare
+            .registered
+            .expect("the watched session reached the caller");
+        assert!(
+            session.listener.is_none(),
+            "a watched session carries no listener, and that is the state itself"
+        );
+    }
+
+    /// The one place a client's string becomes a filesystem operation, and the
+    /// only shape the daemon will ever `rmdir`.
+    ///
+    /// Driven through `serve_line`, so what runs is the validator the daemon
+    /// runs and not a copy of its rules. Each rejected case is a different way
+    /// of naming something that is not a session cgroup, and the accepted one
+    /// is the shape `aisme run` actually prints.
+    #[test]
+    fn a_cgroup_that_is_not_a_session_directory_is_refused_and_named() {
+        let root = "/sys/fs/cgroup/user.slice/aisme-0123456789abcdef";
+        for (cgroup, why) in [
+            ("/etc", "outside the hierarchy"),
+            ("/sys/fs/cgroup", "the hierarchy root itself"),
+            ("/sys/fs/cgroup/user.slice", "a slice, not a session"),
+            (
+                "/sys/fs/cgroup/user.slice/../../../etc",
+                "dot-dot traversal",
+            ),
+            (
+                "/sys/fs/cgroup/user.slice/aisme-nothex0123456",
+                "sixteen characters that are not hexadecimal",
+            ),
+            (
+                "/sys/fs/cgroup/user.slice/aisme-0123456789abcde",
+                "fifteen digits, one short",
+            ),
+            (
+                "/sys/fs/cgroup/user.slice//aisme-0123456789abcdef",
+                "an empty component",
+            ),
+        ] {
+            let line = format!(
+                r#"{{"jsonrpc":"2.0","id":1,"method":"registerSession","params":{{"session_id":7,"cgroup":"{cgroup}"}}}}"#
+            );
+            let mut carried = Ancillary::default();
+            let answer = json::parse(&serve_line(
+                &line,
+                &user(),
+                OWNER,
+                &mut Declarations::new(),
+                &mut None,
+                &mut carried,
+            ))
+            .unwrap();
+            assert!(
+                answer.get("error").is_some(),
+                "accepted {cgroup} ({why}): {answer:?}"
+            );
+            assert!(
+                carried.registered.is_none(),
+                "{cgroup} ({why}) reached the caller anyway"
+            );
+        }
+
+        let line = format!(
+            r#"{{"jsonrpc":"2.0","id":1,"method":"registerSession","params":{{"session_id":7,"cgroup":"{root}"}}}}"#
+        );
+        let mut carried = Ancillary::default();
+        let accepted = json::parse(&serve_line(
+            &line,
+            &user(),
+            OWNER,
+            &mut Declarations::new(),
+            &mut None,
+            &mut carried,
+        ))
+        .unwrap();
+        assert!(
+            accepted.get("error").is_none(),
+            "a real session cgroup was refused: {accepted:?}"
+        );
+        assert_eq!(
+            carried
+                .registered
+                .expect("the session reached the caller")
+                .cgroup
+                .as_deref(),
+            Some(root)
         );
     }
 

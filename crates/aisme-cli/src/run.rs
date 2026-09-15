@@ -270,46 +270,80 @@ fn apply_write_scope(scopes: &[PathBuf]) -> Result<(), String> {
 /// Anything that stopped the session being supervised, with its reason. The
 /// caller refuses to `exec` rather than running unsupervised: a command the
 /// caller asked to have watched must not run unwatched without being told.
-fn pre_exec(invocation: &Invocation, session_id: u64) -> Result<(), String> {
+fn pre_exec(invocation: &Invocation, session_id: u64, cgroup: &Path) -> Result<(), String> {
     use std::fmt::Write as _;
     use std::os::fd::AsFd as _;
 
-    // 0. The write scope, in kernel (`F2.WS.11`). It runs **before** the early
-    //    return below, because Landlock is not part of the trap: a session
-    //    without `--trap-openat` is still a session, and step 5 of
-    //    `docs/design/02_aisme-run.md` applies to every one of them.
+    // 1. The daemon, **before anything irreversible**, and that now covers two
+    //    things rather than one: the seccomp filter and the Landlock ruleset.
+    //    Reaching the daemon first is what keeps a trapping session from being
+    //    confined and filtered and then discovering nobody can answer it.
     //
-    //    It also runs **before** the seccomp filter, and that ordering is a
-    //    correction to the design note rather than a reading of it. The note
-    //    lists the filter as step 4 and this as step 5, which looks like an
-    //    order and is not one: `landlock_add_rule` needs an `O_PATH`
-    //    descriptor for each allowed directory, so applying the ruleset under
-    //    a filter that traps every `openat` would send the session's own setup
-    //    to the supervisor to be answered — and `I-28` forbids permitting an
-    //    `O_PATH` open, so the supervisor would have to refuse it. The filter
-    //    is also irreversible, and everything that can still fail belongs
-    //    above it.
+    //    **Every** session registers, not only a trapping one: an unregistered
+    //    session is one whose cgroup nothing will ever release, because `exec`
+    //    has no after and this process is the supervised command from then on
+    //    (`docs/10` point 2).
+    let socket_path = agentd_socket();
+    let socket = match std::os::unix::net::UnixStream::connect(&socket_path) {
+        Ok(socket) => Some(socket),
+        Err(e) if invocation.trap_openat => {
+            return Err(format!(
+                "{socket_path}: {e} — --trap-openat needs aisme-agentd running"
+            ));
+        }
+        Err(e) => {
+            // A warning, not a refusal. Refusing here would invent a new reason
+            // for `aisme run` to fail that it never had: this session asked for
+            // no supervision, and the cost of no daemon is a directory left
+            // behind, which is worth saying and not worth stopping for. The
+            // write scope below is still applied — a session without a daemon
+            // is unwatched, not unconfined.
+            eprintln!(
+                "aisme run: {socket_path}: {e} — this session is unregistered; \
+                 its cgroup will be left behind"
+            );
+            None
+        }
+    };
+
+    // 2. The write scope, in kernel (`F2.WS.11`), for **every** session:
+    //    Landlock is not part of the trap, and step 5 of
+    //    `docs/design/02_aisme-run.md` applies to all of them.
+    //
+    //    It goes **before** the seccomp filter, and that is a correction to the
+    //    design note rather than a reading of it. The note lists the filter as
+    //    step 4 and this as step 5, which looks like an order and is not one:
+    //    `landlock_add_rule` needs an `O_PATH` descriptor for each allowed
+    //    directory, so applying the ruleset under a filter that traps every
+    //    `openat` would send the session's own setup to the supervisor to be
+    //    answered — and `I-28` forbids permitting an `O_PATH` open, so the
+    //    supervisor would have to refuse it.
     apply_write_scope(&invocation.scopes)?;
 
-    if !invocation.trap_openat {
+    let Some(socket) = socket else {
         return Ok(());
-    }
-    // 1. The daemon, before anything irreversible.
-    let socket_path = agentd_socket();
-    let socket = std::os::unix::net::UnixStream::connect(&socket_path)
-        .map_err(|e| format!("{socket_path}: {e} — --trap-openat needs aisme-agentd running"))?;
+    };
 
-    // 2. The grant, before the filter, because it can still fail. The
+    // 3. The grant, before the filter, because it can still fail. The
     //    supervisor reads the path argument of each trapped `openat` with
     //    `process_vm_readv`, which needs ptrace permission that Yama's default
     //    scope gives only to an ancestor — and the daemon is this session's
     //    sibling. Measured: without it every open was denied and `cat` reported
     //    "libc.so.6: Permission denied", fourteen times.
-    let supervisor = platform::allow_supervision_by(socket.as_fd())?;
-
-    // 3. The filter. From here the session is trapped whatever happens next,
-    //    which is why nothing above may fail after it.
-    let listener = platform::install_filter()?;
+    //
+    //    **It covers this process and nothing it forks.** Yama keys the
+    //    exception to the declaring task, so a session that runs a shell has
+    //    the shell supervised and the commands it runs denied. That is the one
+    //    open decision in F2 (`docs/10`, step 2 as executed); nothing here can
+    //    close it.
+    // 4. The filter. From there the session is trapped whatever happens next,
+    //    which is why nothing that can fail belongs after it.
+    let supervision = if invocation.trap_openat {
+        let supervisor = platform::allow_supervision_by(socket.as_fd())?;
+        Some((supervisor, platform::install_filter()?))
+    } else {
+        None
+    };
 
     // 4. The listener, to the daemon that will answer it. The method name comes
     //    from `aisme-proto` rather than a literal so the two cannot drift.
@@ -337,6 +371,12 @@ fn pre_exec(invocation: &Invocation, session_id: u64) -> Result<(), String> {
     if let Some(answer) = &unattended {
         let _ = write!(params, r#","unattended":"{answer}""#);
     }
+    // The daemon releases this when the kernel says it is empty, and refuses
+    // any path that is not a session cgroup under the unified hierarchy.
+    let _ = write!(params, r#","cgroup":"{}""#, cgroup.display());
+    // Said rather than inferred. The daemon must refuse a filtered session that
+    // carries no listener, and nothing else on the wire tells it which this is.
+    let _ = write!(params, r#","trapping":{}"#, invocation.trap_openat);
     if !invocation.escalate.is_empty() {
         let list = invocation
             .escalate
@@ -354,7 +394,13 @@ fn pre_exec(invocation: &Invocation, session_id: u64) -> Result<(), String> {
     // filler byte in the daemon's stream ahead of the line.
     let mut request = line.into_bytes();
     request.push(b'\n');
-    platform::send_listener(socket.as_fd(), listener.as_fd(), &request)?;
+    match &supervision {
+        Some((_, listener)) => platform::send_listener(socket.as_fd(), listener.as_fd(), &request)?,
+        // No descriptor to carry: an ordinary write on the same socket, so the
+        // daemon's reader sees one line either way.
+        None => std::io::Write::write_all(&mut (&socket), &request)
+            .map_err(|e| format!("registering the session: {e}"))?,
+    }
 
     // Read the answer. A registration the daemon refused must not be mistaken
     // for one it accepted: the filter is already installed, so proceeding would
@@ -363,13 +409,29 @@ fn pre_exec(invocation: &Invocation, session_id: u64) -> Result<(), String> {
     let mut reply = String::new();
     std::io::BufRead::read_line(&mut std::io::BufReader::new(&socket), &mut reply)
         .map_err(|e| format!("registering the session: {e}"))?;
-    if !reply.contains("\"accepted\"") {
-        return Err(format!("the daemon refused the session: {}", reply.trim()));
+    match &supervision {
+        Some((supervisor, _)) => {
+            if !reply.contains("\"accepted\"") {
+                return Err(format!("the daemon refused the session: {}", reply.trim()));
+            }
+            eprintln!("aisme run: supervised by pid {supervisor}");
+        }
+        None => {
+            // Same distinction as the connect above: nothing was asked of the
+            // daemon that this session depends on, so a refusal costs the
+            // cgroup release and not the run.
+            if !reply.contains("\"accepted\"") {
+                eprintln!(
+                    "aisme run: the daemon refused the registration: {} — \
+                     this session's cgroup will be left behind",
+                    reply.trim()
+                );
+            }
+        }
     }
-    eprintln!("aisme run: supervised by pid {supervisor}");
     // The daemon holds its own copy now; ours would keep the notification alive
     // after this process is replaced by the supervised command.
-    drop(listener);
+    drop(supervision);
     Ok(())
 }
 
@@ -404,7 +466,7 @@ pub fn run(args: &[String]) -> u8 {
         invocation.scopes[0].display(),
         cgroup.display()
     );
-    if let Err(e) = pre_exec(&invocation, id) {
+    if let Err(e) = pre_exec(&invocation, id, &cgroup) {
         eprintln!("aisme run: {e}");
         return 1;
     }
@@ -472,7 +534,13 @@ mod tests {
     #[test]
     fn trapping_without_a_daemon_refuses_before_installing_the_filter() {
         let invocation = parse(&argv(&["--trap-openat", "--", "true"])).unwrap();
-        let problem = super::pre_exec(&invocation, 1).unwrap_err();
+        // The scope is this crate's own directory and never reaches Landlock:
+        // `pre_exec` refuses at the connect, which is above the ruleset. A
+        // version that applied the ruleset first would confine **the test
+        // harness** for the rest of the run, and the tests that ran after it
+        // would fail in whatever order the runner chose.
+        let problem =
+            super::pre_exec(&invocation, 1, std::path::Path::new("/sys/fs/cgroup")).unwrap_err();
         assert!(problem.contains("aisme-agentd"), "{problem}");
         // And this process is still unfiltered: if the filter had gone in
         // first, the test binary would wear it for the rest of the run.

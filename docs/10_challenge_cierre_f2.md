@@ -558,3 +558,65 @@ privilege.
 tried first and they point in two directions at once, which is the signal that a decision is owed
 rather than a lookup. Until it is taken, `F2.WS.11`'s Landlock half stands measured and GATE F2's
 `sh -c` lines cannot pass.
+
+---
+
+## Step 3, as executed — releasing the session cgroup
+
+`aisme run` registers **every** session and sends the cgroup it just created; `agentd` waits on
+`poll` of `cgroup.events` for the kernel to say the session is empty, then removes the directory.
+No sweeper and no interval.
+
+**Before:** 22 session cgroups left behind on this machine, one per run since `F2.WS.08` landed.
+**After**, measured through the shipped binaries:
+
+| Case | Result |
+|---|---|
+| `aisme run -- true` | `watched; no filter`, then `cgroup released` |
+| `aisme run --trap-openat -- cat /etc/hostname` | `4 delivered, 0 denied`, then `cgroup released` |
+| `aisme run -- sleep 4` | directory **present while it runs**, released after |
+| no daemon reachable | warns, runs anyway, **and stays confined** |
+
+The third case is the one that gives the others meaning: a release that simply removed the
+directory at once would pass the first two and destroy a running session's accounting.
+
+### Three claims of point 2 that were corrected
+
+1. **"Its last component must match `aisme-<16 hex>` and it must be under the daemon's own
+   delegated subtree."** The second half would refuse every real session. `aisme run` creates the
+   cgroup under **its own**, read from `/proc/self/cgroup` — in production the developer's
+   `user@1000.service` scope, while `agentd` lives in `/system.slice/aisme-agentd.service`. The
+   two only coincide in a development setup where both were launched from the same shell, which is
+   exactly where the rule would have looked correct. What is kept is the part that bounds the
+   damage: the daemon will `rmdir` an `aisme-<16 hex>` directory under `/sys/fs/cgroup` and nothing
+   else — never a slice, a scope, or the delegated root. The socket is uid-matched, so no check
+   here takes an ability away from the peer; what it does is bound what *the daemon* can be asked
+   to delete.
+2. **"The refusal moves to: a session that declares an escalate class must carry its listener."**
+   That proxy accepts a filtered session that escalates nothing, and then answers none of its
+   syscalls. The session says `trapping` instead, and the daemon refuses a filtered registration
+   with no listener — exact rather than inferred.
+3. **`Registered.trapping` was then not kept.** Once the refusal is decided in
+   `register_session`, `listener.is_some()` tells every later reader the same thing, and a field
+   nobody reads is a field that will disagree with reality eventually.
+
+### One defect found in a neighbouring line, and closed
+
+`in_session_cgroup` — which decides whether a peer is the **human** or the agent for
+`AuthClass::HumanPrincipal` — looked for `/aisme.slice` or `/aisme-session-`. `aisme run` creates
+`aisme-<16 hex>`, and the deployed unit delegates a `sessions` subgroup. **Neither pattern matches
+anything that exists**, so every supervised agent was classified as the user. **No damage today**:
+the three methods behind that class — `setPolicy`, `manageGrant`, `manageSuppression` — are not
+dispatched yet, so the misclassification reached a "method not implemented" and stopped. It is an
+open path straight at `F7.PS.08`, it was one line, and the direction of the fix is the conservative
+one: more processes are now classified as agent, never fewer.
+
+### One risk this step introduced and removed again
+
+`pre_exec` applied the Landlock ruleset first, before reaching the daemon. A unit test calls
+`pre_exec` directly, so **the test harness would have been confined** to the crate directory for
+the rest of the run, and every later test writing to a temporary directory would have failed in
+whatever order the runner chose. The fix is the ordering rule the function already documented and
+which now covers both irreversible steps: reach the daemon first, *then* confine, *then* filter. A
+session with no daemon still gets its write scope — it is unwatched, not unconfined — which the
+measurement above checks explicitly.

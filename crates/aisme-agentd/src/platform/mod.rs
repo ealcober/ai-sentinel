@@ -192,14 +192,116 @@ pub fn sensors(caps: &CapabilitySet) -> Vec<Box<dyn Sensor>> {
     sensors
 }
 
-/// Answer the seccomp notifications of one registered session, until its
-/// listener closes.
+/// Serve one registered session for its whole life: answer its notifications
+/// if it is filtered, and release its cgroup when it empties.
 ///
-/// The composition root names the adapter; the caller passes an `OwnedFd` and
-/// gets back nothing platform-specific, which is what keeps `A-05` true with a
-/// second engine in the tree.
+/// **Both halves, because a session is not only a filter.** A session without
+/// `--trap-openat` has no listener and still has a cgroup that nothing else
+/// will remove: `exec` has no after, so the process that created the directory
+/// is the supervised command by the time it could clean up (`docs/10` point 2).
+///
+/// The composition root names the adapter; the caller passes an `Option<OwnedFd>`
+/// and gets back nothing platform-specific, which is what keeps `A-05` true
+/// with a second engine in the tree.
 #[cfg(target_os = "linux")]
 pub fn serve_session_notifications(
+    listener: Option<std::os::fd::OwnedFd>,
+    session_id: u64,
+    tty: Option<&str>,
+    escalate: &[String],
+    unattended: Option<&str>,
+    policy: Option<&aisme_core::policy::CompiledPolicy>,
+    cgroup: Option<&str>,
+) {
+    if let Some(listener) = listener {
+        answer_notifications(listener, session_id, tty, escalate, unattended, policy);
+    } else {
+        // Not an error and not a silence: an unfiltered session is one the
+        // daemon watches rather than supervises, and saying so is what stops a
+        // reader concluding the filter failed.
+        println!("session {session_id:016x} watched; no filter, nothing to answer");
+    }
+    release_session_cgroup(session_id, cgroup);
+}
+
+/// Wait for a session's cgroup to empty, then remove it.
+///
+/// **No sweeper and no interval.** cgroup v2 publishes `cgroup.events` with a
+/// `populated` line and that file is pollable: `poll(2)` returns `POLLPRI` when
+/// it changes, so the daemon waits for the kernel to say the session is empty
+/// instead of guessing how often to look. A sweeper would either run too often
+/// or leave a window, and could not tell a new empty session from a finished
+/// one.
+///
+/// The state is **read before it is waited on**, because the session may have
+/// ended already and an edge that has passed never arrives again.
+///
+/// Nothing here is recursive. `rmdir` on a cgroup with processes in it fails
+/// with `EBUSY`, which the kernel enforces and this code therefore does not
+/// have to; and a session subtree with children of its own is not F2's, so
+/// removing one would be removing something nobody asked about.
+#[cfg(target_os = "linux")]
+fn release_session_cgroup(session_id: u64, cgroup: Option<&str>) {
+    use std::os::fd::AsRawFd as _;
+
+    let Some(path) = cgroup else {
+        return;
+    };
+    let events = std::path::Path::new(path).join("cgroup.events");
+    let Ok(watch) = std::fs::File::open(&events) else {
+        eprintln!(
+            "session {session_id:016x}: {} cannot be read; its cgroup stays",
+            events.display()
+        );
+        return;
+    };
+
+    loop {
+        // Re-opened each turn rather than seeking: `cgroup.events` is a few
+        // bytes, and a seek that was forgotten would read an empty string and
+        // be taken for "not populated" — an absence read as a value.
+        match std::fs::read_to_string(&events) {
+            Ok(text) => {
+                if text.lines().any(|line| line.trim() == "populated 0") {
+                    break;
+                }
+            }
+            Err(e) => {
+                // The directory went away under us: somebody else removed it,
+                // which is the outcome this function wanted anyway.
+                eprintln!("session {session_id:016x}: {} : {e}", events.display());
+                return;
+            }
+        }
+        let mut fds = [libc::pollfd {
+            fd: watch.as_raw_fd(),
+            events: libc::POLLPRI,
+            revents: 0,
+        }];
+        // `-1`: a session may run for days, and the event this waits for is the
+        // only thing that ends it. The thread is this session's own and the
+        // daemon does not join it, so a session that never ends costs one
+        // parked thread and nothing else.
+        // SAFETY: one live descriptor in an array we own, for the length given.
+        let rc = unsafe { libc::poll(fds.as_mut_ptr(), 1, -1) };
+        if rc < 0 {
+            let e = std::io::Error::last_os_error();
+            if e.kind() == std::io::ErrorKind::Interrupted {
+                continue;
+            }
+            eprintln!("session {session_id:016x}: waiting on cgroup.events: {e}; its cgroup stays");
+            return;
+        }
+    }
+
+    match std::fs::remove_dir(path) {
+        Ok(()) => println!("session {session_id:016x} cgroup released: {path}"),
+        Err(e) => eprintln!("session {session_id:016x}: {path} could not be removed: {e}"),
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn answer_notifications(
     listener: std::os::fd::OwnedFd,
     session_id: u64,
     tty: Option<&str>,
@@ -328,15 +430,16 @@ pub fn serve_session_notifications(
     );
 }
 
-/// Off Linux there are no notifications to answer.
+/// Off Linux there are no notifications to answer and no cgroup to release.
 #[cfg(not(target_os = "linux"))]
 pub fn serve_session_notifications(
-    _listener: std::os::fd::OwnedFd,
+    _listener: Option<std::os::fd::OwnedFd>,
     _session_id: u64,
     _tty: Option<&str>,
     _escalate: &[String],
     _unattended: Option<&str>,
     _policy: Option<&aisme_core::policy::CompiledPolicy>,
+    _cgroup: Option<&str>,
 ) {
 }
 
@@ -390,6 +493,100 @@ mod tests {
     use super::*;
     use aisme_core::adjudicate::AdjudicationChannel;
     use aisme_core::enforce::EnforcementTier;
+
+    /// This process's own cgroup, when the kernel has delegated it to us.
+    ///
+    /// The release tests need a **real** cgroup: `cgroup.events` exists nowhere
+    /// else, and a plain file would make `poll` return immediately and turn the
+    /// wait into a spin. Where the subtree is not delegated the tests say so
+    /// and stop, rather than passing without having tested anything.
+    #[cfg(target_os = "linux")]
+    fn delegated_cgroup() -> Option<std::path::PathBuf> {
+        let text = std::fs::read_to_string("/proc/self/cgroup").ok()?;
+        let relative = text.lines().find_map(|l| l.strip_prefix("0::"))?;
+        let dir =
+            std::path::Path::new("/sys/fs/cgroup").join(relative.trim().trim_start_matches('/'));
+        let probe = dir.join(format!("aisme-probe-{}", std::process::id()));
+        std::fs::create_dir(&probe).ok()?;
+        let _ = std::fs::remove_dir(&probe);
+        Some(dir)
+    }
+
+    /// A session cgroup that is already empty is removed.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn an_empty_session_cgroup_is_released() {
+        let Some(parent) = delegated_cgroup() else {
+            eprintln!("skipped: this process's cgroup subtree is not delegated");
+            return;
+        };
+        let id = 0x0123_4567_89ab_cdef_u64 ^ u64::from(std::process::id());
+        let dir = parent.join(format!("aisme-{id:016x}"));
+        let _ = std::fs::remove_dir(&dir);
+        std::fs::create_dir(&dir).expect("a session cgroup");
+
+        release_session_cgroup(id, dir.to_str());
+
+        assert!(
+            !dir.exists(),
+            "an empty session cgroup was left behind: {}",
+            dir.display()
+        );
+    }
+
+    /// A session cgroup with a process in it is **not** removed until that
+    /// process leaves.
+    ///
+    /// This is the test that makes the one above mean something: a release that
+    /// simply removed the directory at once would pass that one and destroy a
+    /// running session's accounting here. `rmdir` would also fail with `EBUSY`
+    /// — which is the kernel refusing, not this code deciding — so the
+    /// assertion is on the directory still being there *while* the process
+    /// runs.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn a_populated_session_cgroup_is_released_only_once_it_empties() {
+        let Some(parent) = delegated_cgroup() else {
+            eprintln!("skipped: this process's cgroup subtree is not delegated");
+            return;
+        };
+        let id = 0xfedc_ba98_7654_3210_u64 ^ u64::from(std::process::id());
+        let dir = parent.join(format!("aisme-{id:016x}"));
+        let _ = std::fs::remove_dir(&dir);
+        std::fs::create_dir(&dir).expect("a session cgroup");
+
+        // A real process, moved in by writing its pid to `cgroup.procs` — which
+        // is what `aisme run` does to itself.
+        let mut child = std::process::Command::new("sleep")
+            .arg("2")
+            .spawn()
+            .expect("a process to occupy the cgroup");
+        std::fs::write(dir.join("cgroup.procs"), child.id().to_string())
+            .expect("moving the child into the session cgroup");
+
+        let watcher = {
+            let path = dir.clone();
+            std::thread::spawn(move || release_session_cgroup(id, path.to_str()))
+        };
+
+        // While it runs the directory stands. Read from the filesystem and not
+        // from anything the daemon says, because the daemon reports what it
+        // believes.
+        std::thread::sleep(std::time::Duration::from_millis(600));
+        assert!(
+            dir.exists(),
+            "the cgroup of a running session was removed: {}",
+            dir.display()
+        );
+
+        let _ = child.wait();
+        watcher.join().expect("the release thread");
+        assert!(
+            !dir.exists(),
+            "the cgroup was not released after its last process left: {}",
+            dir.display()
+        );
+    }
 
     #[test]
     fn the_composition_always_yields_a_sensor_an_enforcer_and_an_answer() {

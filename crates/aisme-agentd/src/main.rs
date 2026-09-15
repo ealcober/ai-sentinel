@@ -163,6 +163,7 @@ fn run_slice(dir: &std::path::Path, rest: &[String]) -> std::io::Result<()> {
                     let tty = session.tty;
                     let escalate = session.escalate;
                     let unattended = session.unattended;
+                    let cgroup = session.cgroup;
                     let policy = policy.clone();
                     std::thread::spawn(move || {
                         platform::serve_session_notifications(
@@ -172,6 +173,7 @@ fn run_slice(dir: &std::path::Path, rest: &[String]) -> std::io::Result<()> {
                             &escalate,
                             unattended.as_deref(),
                             policy.as_deref(),
+                            cgroup.as_deref(),
                         );
                     });
                 },

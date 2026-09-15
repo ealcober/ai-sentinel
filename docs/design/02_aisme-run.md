@@ -46,6 +46,8 @@ The same socket carries **`declareToolCall`** (`F2.WS.03`): an agent volunteers 
 | 8 | Serve terminal adjudication on the controlling TTY for the life of the session | `F2.WS.06` |
 | 9 | On exit: close the session, release the cgroup, flush the WAL, print a one-line summary | — |
 
+**Step 9 is `agentd`'s, not this command's, and `exec` is the reason.** From step 7 this process *is* the supervised command, so it has no "on exit" of its own: the summary is printed before `exec` and the cgroup is released by the daemon, which waits on `poll` of `cgroup.events` for the kernel to say the session is empty and then removes the directory. That is why **every** session registers, not only a filtered one — an unregistered session is one whose cgroup nothing will ever remove.
+
 Steps 4–6 happen **before** `exec`, so there is no window in which the child runs unsupervised.
 
 **F2 implements steps 1 (one scope, from `--scope` or the working directory), 2, 7 and the

@@ -1656,10 +1656,15 @@ test $(grep -rn 'cfg(target_os' crates/aisme-core/src --include='*.rs' | grep -v
 #                --policy /etc/aisme/policy.aisme &     # deny /etc/shadow, escalate **/.aws/credentials, allow
 
 cargo xtask test-skeleton              # full slice against MockSensor, no kernel
-cargo xtask vm run <image> --with-dist -- aisme run --trap-openat -- sh -c 'cat /etc/hostname'   # allowed: a descriptor the supervisor opened
-cargo xtask vm run <image> --with-dist -- aisme run --trap-openat -- sh -c 'cat /etc/shadow'     # compiled deny: -EACCES, and nobody was asked
-AISME_TERMINAL_ANSWER=d cargo xtask vm run <image> --with-dist -- aisme run --trap-openat -- sh -c 'cat ~/.aws/credentials'  # ESCALATE -> terminal prompt -> answer obeyed
-cargo xtask vm run <image> --with-dist -- aisme run --trap-openat -- sh -c 'touch /tmp/outside'  # Landlock deny, zero notifications (if F0.VER.04)
+
+# The five enforcement lines below belong in **one** guest boot, as `test-policy-publish`
+# already does for its three: four boots cost twenty minutes and measure the same daemon.
+cargo xtask vm run <image> --with-dist -- '<the script below>'
+#   aisme run --trap-openat -- sh -c 'cat /etc/hostname'          # allowed: a descriptor the supervisor opened
+#   aisme run --trap-openat -- sh -c 'cat /etc/shadow'            # compiled deny: -EACCES, and nobody was asked
+#   AISME_TERMINAL_ANSWER=d aisme run --trap-openat -- sh -c "cat $HOME/.aws/credentials"   # ESCALATE -> denied
+#   AISME_TERMINAL_ANSWER=1 aisme run --trap-openat -- sh -c "cat $HOME/.aws/credentials"   # ESCALATE -> allowed
+#   aisme run --scope /tmp/ws -- sh -c 'touch /tmp/outside'       # Landlock deny, zero notifications (if F0.VER.04)
 cargo xtask verify-budgets --profile skeleton                  # measuring real code now
 cargo xtask bench-t0 --syscalls 100000                         # baseline recorded
 ```
@@ -1677,6 +1682,15 @@ syscall (`I-28`). A session under a filter is therefore answered open by open, a
 policy would be answered by nobody. An earlier revision of this block omitted the flag, which would
 have made three of these lines **pass by enforcing nothing** — the worst outcome a gate can have,
 because it reports the property it did not test.
+
+**Three corrections the first run of this block produced, each measured rather than argued.**
+`$HOME`, never `~`: the tilde did not survive the wrapper, `cat` was handed the literal string
+`~/.aws/credentials`, and the line tested a path no process ever opens — the same defect the policy
+compiler now refuses by name. The escalate line is **two** lines, `d` and `1`: "the answer is
+obeyed" is a claim about both directions, and a run that only answers *deny* passes while
+everything is being denied for some other reason — which is exactly what the first run did. And the
+Landlock line carries **no `--trap-openat`**: with the filter installed the denial could be the
+supervisor's rather than the kernel's, and this line exists to prove the in-kernel one.
 
 **The three verdicts are three different mechanisms, and the gate is written to tell them apart.**
 `/etc/hostname` is allowed and arrives as a descriptor *the supervisor opened* — never as permission

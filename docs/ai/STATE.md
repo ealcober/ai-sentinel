@@ -139,6 +139,97 @@
 | **`F0.REPO.01`** / **`F0.REPO.05`** — Cargo workspace: 19 members, each in its `layers.toml` layer, `aisme-ebpf` and `aisme-windows` excluded. `cargo check --workspace` and `cargo clippy -- -D warnings` both pass clean; the only inter-crate edge is `aisme-core → aisme-ebpf-common` (L1→L0) | `Cargo.toml`, `.cargo/config.toml`, 20 manifests |
 | **`F0.WSL.01`** — WSL2 capability probe. Landlock **ABI 7 and enforcing**; `CONFIG_BPF_LSM=y` compiled but `bpf` absent from the active LSM list; cgroup v2 only; BTF present; systemd PID 1; **no TPM**; `/dev/kvm` present, user not in group `kvm` | `docs/ai/memory/wsl2-capabilities.md`, `docs/reports/01_f0-verification.md` |
 
+## GATE F2 — the output, verbatim
+
+Run 2026-09-15. Two halves: the host lines below, and five enforcement lines in **one** guest boot
+rather than four (`ubuntu-24.04`, kernel 6.8, KVM), which is the correction the first run produced.
+
+```
+$ cargo xtask test-skeleton
+policy: 3 rule(s) compiled
+  verdict /etc/shadow = Deny
+  verdict /home/agent/.aws/credentials = Escalate
+  verdict /etc/hostname = Allow
+  trace: 3 event(s) replayed
+  wal: /etc/shadow
+  wal: /home/agent/.aws/credentials
+  wal: /etc/hostname
+test-skeleton: 72 ms
+PASS test-skeleton — the whole slice ran with no kernel
+
+$ cargo xtask vm run ubuntu-24.04 --with-dist -- '<the five enforcement lines>'
+  policy: 2 rule(s) in force from /etc/aisme/policy.aisme
+  === line 2: an allowed open arrives as a descriptor the supervisor opened
+  aisme-vm
+    ok: the file was read, exit=0
+  === line 3: the compiled deny, and NOBODY is asked
+  cat: /etc/shadow: Permission denied
+    ok: denied, exit=1
+  === line 4a: the escalate class, answered DENY
+  cat: /root/.aws/credentials: Permission denied
+    ok: refused, exit=1
+  === line 4b: the SAME open, answered ALLOW — the answer must be obeyed both ways
+  SECRETVALUE
+    ok: allowed, exit=0
+  === line 5: a write outside the scope, with NO filter — so only Landlock can deny it
+  touch: cannot touch '/tmp/outside': Permission denied
+    ok: denied in kernel, exit=1
+    ok: and a write inside the scope still works
+  GATE-F2-ENFORCEMENT: PASS
+PASS vm run ubuntu-24.04
+
+$ cargo xtask verify-budgets --profile skeleton
+    ok      latency.skeleton_baseline_open_p99_us = 1.80 µs (hard 50)
+    ok      latency.skeleton_t2_scripted_p99_us = 39.32 µs (hard 2000)
+    ok      latency.t0_l2_p99_us = 2.42 µs (hard 20)
+    skipped: no artefact — latency.t0_p999_us
+    skipped: no artefact — latency.t0_p99_us
+    ok      latency.t1_p99_us = 46.63 µs (hard 1000)
+    skipped: no artefact — latency.t2_p95_ms
+  PASS  no measured metric breaches its hard ceiling
+PASS verify-budgets
+
+$ cargo xtask bench-t0 --syscalls 100000
+T0 at L3 is not measured at this shape: the L3 layer is BPF-LSM and F2 has none, so F3 measures it.
+T0 at **L2** is measured below — budgets.toml defines it as the in-kernel deny, which at this tier
+is Landlock.
+T-tel is not measured on a host: it times a tracepoint's event reaching the hot loop, and that needs
+a loaded BPF program, which `I-12` keeps off a developer's machine.
+
+  one openat, unsupervised — the floor every figure below stands on
+    ... samples=100000 p50_us=1.537 p95_us=1.792 p99_us=3.087 p999_us=11.146
+  T1 — openat held, supervisor answered with a validated descriptor, no human
+    ... samples=100000 p50_us=21.302 p95_us=33.592 p99_us=64.021 p999_us=751.096
+  T2 path with a scripted answer over 2000 opens
+    ... samples=2000 p50_us=32.191 p95_us=45.151 p99_us=186.930 p999_us=1700.828
+  T0 at L2 — a write outside the scope, denied in kernel by Landlock, with no supervisor woken
+    ... samples=20000 p50_us=2.112 p95_us=2.529 p99_us=3.184 p999_us=60.247
+PASS bench-t0 — 4 leg(s) measured; T0 at L3 and T-tel named as absent, not as zero
+```
+
+### What this output does and does not say, and the gate does not close on it
+
+**It does not close F2**, and the reason is in the output itself rather than beside it.
+
+1. **The guest daemon runs as `uid 0`, and the shipped one does not.** Every trapped line above went
+   through `sh -c` — a grandchild — and was supervised correctly, because a root supervisor has
+   `CAP_SYS_PTRACE` and Yama does not apply to it. `deploy/systemd/aisme-agentd.service` runs as
+   `User=aisme` with an empty `CapabilityBoundingSet=`, and on that configuration the same five
+   lines deny everything the shell runs (measured on the host: 2 delivered, 13 denied, all the
+   grandchild's). **So this gate passes on a configuration the product does not ship**, which is
+   worse than a gate that fails: it is a gate that reports the property of a different system. The
+   decision that closes it is in *Blocked* above.
+2. **The `asked` column could not be read in the guest.** The daemon logged summaries only for the
+   two unfiltered sessions, so "the compiled deny asks nobody" is **not** demonstrated by this run.
+   It is demonstrated on the host, where `/etc/shadow` was refused with `0 asked` and the escalate
+   rule reported `1 asked` with the answer obeyed both ways.
+3. **`F0.ASSET.02`'s recording is still owed**, and plan `:1360` places it before this gate.
+
+`PASS` and `PENDING` are acceptable in a gate; a gate whose passing lines measure a configuration
+nobody deploys is not. F2 closes when the decision in *Blocked* is taken and these five lines are
+re-run against the configuration that ships.
+
+
 ## Next up
 
 **Phase F2 — the walking skeleton.** F0 and F1 are closed; what follows records how, then what is next. Task IDs from Plan Part III.
@@ -157,7 +248,7 @@ Task order, top to bottom of Plan §F2: `F2.WS.01` (`BpfSensor`, one tracepoint,
 
 1. **`F2.WS.11`'s second half** — zero notification traffic, observed via `sys_exit_openat` with `inferred_from = sys_exit` (`docs/05` point 11). The Landlock half is done and measured; this needs the exit-tracepoint program, `FLAG_INFERRED_FROM_EXIT` on the wire, and the join by `(tgid, seq)` in correlate. **Blocked behind the ptrace decision below**, because the traffic it must count to zero is the traffic the `sh -c` lines cannot produce today. **It also owns one defect**: `deploy/policy/skeleton.aisme`'s write-scope rule writes `$workspace`, which the grammar reads as a literal rather than as the variable `${workspace}`, so the rule is inert. It cannot be corrected on its own — `Bindings` is per session and the daemon compiles at startup, so the spelling and the binding are one change, and it is this task's (`docs/10`, step 1 as executed).
 2. **The reference-trace recording** (`F0.ASSET.02`, plan `:1360`). **Blocked, and it is the owner's** — see `docs/10`, "Step 6". Two independent reasons, both measured: observe-only mode records **0 lines** on a host, because `probe()` reports nothing present so that no BPF program loads outside a VM (`I-12`), and a guest cannot host a real Claude Code session; and the specified mechanism cannot produce the format's ground truth at all, because every action line carries a `correlation_token` that only the agent knows — a kernel sensor sees an `openat` and not the intent behind it, so a recording made that way would carry `0` in every token column and be worthless to the correlation gate, which is half the task's done-condition. What unblocks it: the owner records a session on a kernel where the sensor loads (satisfies the CPU gate only), or authorises deriving the trace from the agent's own session record (satisfies both, and changes the asset's stated provenance).
-3. **GATE F2**, whose output goes into this file verbatim.
+3. **GATE F2** — **run on 2026-09-15; its output is in this file verbatim, and it does not close the phase.** Every line passes, and the guest daemon runs as `uid 0` while the shipped unit runs as `User=aisme` with an empty capability set: the five enforcement lines therefore pass on a configuration the product does not ship. Re-run them against the shipped configuration once the ptrace decision above is taken.
 
 **Three errors in the plan are corrected** (`docs/10` point 1, and `docs/09` finding 4): GATE F2's guest lines carried no policy, so three of them would have **passed by enforcing nothing**; §3.2's composition line showed an `Engine::new` signature the code has never had, hiding that the enforcers live on the control thread and not in the hot loop; and `docs/06` point 3 claimed `agentd` does not evaluate, which contradicted plan `:1638` and `docs/05` §5.3. **Nothing is open for the owner**: the policy question was answered by the specs, and by the fact that a compiled `deny` cannot be answered away while a timeout-deny depends on nobody answering.
 

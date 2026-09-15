@@ -440,7 +440,7 @@ properties the first draft of this point would have lost.
    existe el archivo` without it, which is where the 12 denies in the failing runs come from:
    `cat`'s error path loading locale files that are not there. But it is **not undiscovered**.
    `crates/aisme-linux/src/seccomp.rs:934` already states it as the conservative choice, says it is
-   visible in the record, and assigns the widening to `F3.EN.12` — which exists (plan `:1753`).
+   visible in the record, and assigns the widening to `F3.EN.12` — which exists (plan `:1767`).
    Nothing to fix here. The lesson is the ordinary one: read the comment before filing the bug.
 2. **The shipped policy's write-scope rule was inert, and the daemon said so with exit 0.** Both
    real, both fixed below.
@@ -850,3 +850,52 @@ condition; every run after took 79–108 ms. The first execution of a freshly li
 the dynamic loader and for faulting its pages in, which is the build's cost and not the slice's, so
 each binary is touched once before the clock starts. A gate that fails the first time it is run
 after a build and passes the second is a gate people learn to re-run.
+
+---
+
+## Step 7, as executed — GATE F2, and why its `PASS` does not close the phase
+
+The output is in `STATE.md`, verbatim, as plan §3.7.1's F2 row requires. Four host lines and five
+enforcement lines in **one** guest boot (`ubuntu-24.04`, 6.8, KVM) rather than four, which is what
+`test-policy-publish` already does for its three and what four boots of the same daemon do not earn.
+
+**Every line passes. The gate still does not close F2, for a reason that is in the output.**
+
+### The first run reported PASS and the PASS was false
+
+Worth recording in full, because it is the fourth time this phase has produced a check that reported
+a property it did not test — and this time the check was mine, written the same day I fixed the
+other three.
+
+* `cat: '~/.aws/credentials': Permission denied` — the tilde **did not survive the wrapper**, so
+  `cat` was handed the literal string and the line tested a path no process ever opens. The policy
+  compiler refuses that form now; the gate's own command line still had it.
+* The escalate line answered only **`d`**. Everything was being denied for an unrelated reason, so
+  "answer obeyed" passed while the opposite direction was broken: re-run with `1`, the read was
+  **still denied**. One direction is not an answer being obeyed.
+* The `asked` column was never read — `grep ended:` matched nothing and the script did not care.
+* The Landlock line carried `--trap-openat`, so its denial could have been the supervisor's rather
+  than the kernel's. The line exists to prove the in-kernel one.
+
+Rewritten so each assertion can fail — the content must appear, the content must **not** appear,
+the file must not exist, the daemon must have logged something — the five lines pass for real:
+`SECRETVALUE` is read under answer `1` and refused under `d`, `/etc/shadow` is refused with no
+content leaked, and a write outside the scope is denied **with no filter installed**, while one
+inside still works. The plan's gate block is corrected in all four ways.
+
+### Why `PASS` is not `closed`
+
+**The guest daemon runs as `uid 0`. The shipped daemon does not.** Every trapped line went through
+`sh -c` — a grandchild — and was supervised correctly, because a root supervisor holds
+`CAP_SYS_PTRACE` and Yama's exception never comes into it.
+`deploy/systemd/aisme-agentd.service` runs as `User=aisme` with an empty `CapabilityBoundingSet=`,
+and on that configuration the same five lines deny everything the shell runs: 2 delivered, 13
+denied, all the grandchild's, measured on the host.
+
+**So GATE F2 passes on a configuration the product does not ship.** That is worse than a gate that
+fails: a failing gate says something is wrong, while this one reports the properties of a different
+system. It is the same defect class as the three this document already found — a check that
+reports what it did not test — arriving one level up, in the environment rather than in the command.
+
+F2 closes when the ptrace decision is taken and these five lines are re-run against the
+configuration that ships.

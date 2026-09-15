@@ -201,7 +201,7 @@ fn session_id() -> u64 {
 /// scaffolding: the unit's `RuntimeDirectory=aisme` puts the default under
 /// `/run`, which a developer running both halves by hand cannot write to.
 /// `F8.CLI.01` gives it a proper configuration file.
-fn agentd_socket() -> String {
+pub(crate) fn agentd_socket() -> String {
     std::env::var("AISME_AGENTD_SOCKET").unwrap_or_else(|_| "/run/aisme/agentd.sock".to_owned())
 }
 

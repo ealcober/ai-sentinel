@@ -411,8 +411,14 @@ naming because somebody will propose it, and it fails on the sentence `F0.ASSET.
 *"recorded in observe-only mode before any enforcement rule is loaded, **so recording it perturbs
 nothing**"*. A trapped open costs **46.6 µs against 1.8 µs unsupervised** — twenty-six times — and
 §2.22 replays the fixture *"at 1× with its recorded inter-arrival timing"* because *"totals are not
-a workload"*. A recording made through the trap would preserve the counts and destroy the timings
-the fixture exists for. It also sees only opens: `file_write`, `exec` and `https_request` are not
+a workload"*.
+
+*(Corrected by measurement in `docs/12`, Finding 4. This said the trap "would preserve the counts
+and destroy the timings", which was a ratio read as a conclusion. Measured, the trap adds **17 µs
+per open**, so a real tool call doing 1 713 opens pays **+29 ms** — a few percent of a command that
+runs for a second, not a destruction. The weaker claim survives and is the one that matters: the
+overhead is proportional to **open density**, so it flattens exactly the short bursty commands the
+workload is made of.)* It also sees only opens: `file_write`, `exec` and `https_request` are not
 `openat`, so three of the five action kinds would be missing anyway.
 
 **2. Point 1 does give point 2 the action stream, at the daemon, for free.** `decideOpen` carries

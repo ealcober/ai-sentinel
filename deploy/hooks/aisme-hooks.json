@@ -1,0 +1,37 @@
+{
+  "//": "AISME declaration hook — NOT installed by anything. Merge the `hooks` key into",
+  "//1": "~/.claude/settings.json, .claude/settings.json or .claude/settings.local.json by hand.",
+  "//2": "It is deliberately not installed for you: the point of a hook is that the supervised",
+  "//3": "party does not choose it, and that includes an agent editing this repository.",
+  "//4": "",
+  "//5": "What it does: on every tool call, `aisme declare` reads the hook payload on stdin and",
+  "//6": "tells the daemon which tool is starting. That is the intent plane — the only place",
+  "//7": "the intent exists, since 91% of tool calls are a shell string that expands into",
+  "//8": "~1700 syscalls the harness never sees (docs/12, M1 and M2).",
+  "//9": "",
+  "//10": "It declares and never blocks. `aisme declare` exits 0 on every path, including when",
+  "//11": "no daemon is listening: a declaration authorizes nothing (DT-04), so a failure has",
+  "//12": "nothing to protect, and enforcement lives in the kernel where failure is closed.",
+  "//13": "",
+  "//14": "Protect this configuration. An agent that can write the settings file can disable",
+  "//15": "its own hooks mid-session, because the file watcher reloads them. Running the",
+  "//16": "session under `aisme run` denies that write in kernel (docs/12, M5), and DT-14",
+  "//17": "records the attempt.",
+  "//18": "",
+  "//19": "Cost: 1 ms per tool call, measured on a debug build.",
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": ".*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "aisme declare",
+            "timeout": 5,
+            "statusMessage": "Declaring to AISME..."
+          }
+        ]
+      }
+    ]
+  }
+}

@@ -478,7 +478,21 @@ spelling"* failure. Both were closed the same day:
 # Part V — Decisions and roadmap
 
 This is the part the ordering hangs on. Each item states the evidence, what it implies, and what it
-would change. **None of them is applied.**
+would change — and, since 2026-09-15, **what became of it**. A research document whose proposals have
+no recorded fate is a document that gets re-litigated.
+
+| | Fate |
+|---|---|
+| `D-1` | **Applied.** `F2.WS.05`: the decision is taken on what the descriptor names. Test: `the_decision_is_taken_on_the_resolved_path_and_not_the_spelling` |
+| `D-2` | **Applied.** `F2.WS.05`: the filter traps `open`, `openat` and `openat2` |
+| `D-3` | **Applied as a plan row.** `F3.EN.12` is ordered after `F3.EN.09` and `F3.EN.11`, with the +17 µs and 2.42 µs figures on the row |
+| `D-4` | **Measured, and open — the owner's.** The gap is real (all four files writable inside the scope), the three routes are costed in `docs/14` point 4, and it carries a test asserting it is open. `F3.EN.11` names it |
+| `D-5` | **Applied.** The threat model gains a trust-handoff boundary, an attack-surface entry and a non-goal, each marked `[RISK]` |
+| `D-6` | **Open — the owner's.** Whether the escalate class is a control or a friction-and-recording mechanism changes what F2 claims, and that is not an implementation decision |
+| `D-7` | **Applied.** `F2.WS.05`: an absence answers `ENOENT`, a refusal answers `EACCES`. Test: `a_missing_file_says_missing_and_a_refused_one_says_refused`. Its *effect* on evasion stays unmeasured and the plan row says so |
+| `D-8` | **Applied.** A `GATE F2` line and `enforcement_does_not_move_when_the_agent_disables_its_own_approvals` |
+| `D-9` | **Applied as a plan row.** `F0.ASSET.02` is reframed as a deliverable with an audience outside this repository. The **recording** it needs is still the owner's (`docs/14` point 7) |
+| `D-10` | **Recorded as an argument against reordering**, which is the opposite of what its heading suggests and is why the row exists. See its own entry below |
 
 ## D-1. The compiled path policy must never be matched against a requested spelling
 

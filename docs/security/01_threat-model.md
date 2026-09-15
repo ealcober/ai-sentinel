@@ -32,6 +32,7 @@
 | Kernel → `agentd` | `RawEvent` over a ring buffer | Fixed layout, wire version, fuzzed decode path (`T4.2.12`); drops counted, never silent |
 | `agentd` → `forensicd` | The WAL, append-only, offset-addressed | Segment header with wire version and schema hash; either process may restart independently |
 | Engine → control plane | JSON-RPC over UDS or the relay | Three authorization classes (Annex I.1); the **human-principal** test is what separates the user from the agent |
+| **Session → host, deferred** `[RISK]` | A file the agent writes that the *host* executes later — `.claude/settings.json`, `.vscode/tasks.json`, `.mcp.json`, `.git/config` | **Nothing, today.** `DT-14` detects it; `F3.EN.11` is the task that would deny it |
 | Device → device | Ciphertext only | Noise `XX` on a software X25519 static; every remote `ALLOW` signed by a hardware P-256 key (`I-06`); the relay is blind (`I-07`) |
 
 ## 4. Attack surface
@@ -44,6 +45,7 @@ Enumerated, each with what defends it:
 - **The offset scanner** — a sacrificial seccomp-jailed process with a time limit; disassembling untrusted input never happens inside `agentd` (`H-07`).
 - **The pairing handshake** — constant-time, indistinguishable failures (Annex I.2), or it becomes an oracle.
 - **The SDK transport** — per-install key authentication; loopback on iOS because App Groups cannot span vendors.
+- **Host-executed configuration the agent can write** `[RISK]`. AISME supervises a cgroup and a process tree. A file the agent writes inside its own workspace and the IDE, the shell or the next `git` invocation executes **tomorrow** is outside both — the write is supervised, the execution is not, because it happens after the session ends and in the host's process tree. Measured 2026-09-15: a supervised session creates all four of the files above inside its declared scope, and the scope cannot refuse them because Landlock rules only *grant*. Three of the seven July 2026 sandbox escapes in `docs/research/01` are this shape, with no agent involvement at the moment of execution, and the CHAINDROP worm is it in the wild. **This is honest scope today and it is stated here rather than left to be inferred**: a product that says it supervises a session without saying where the session ends is making a claim it does not hold.
 - **The prompt itself.** `I-05`: a prompt is an attack surface. If a tired user can be induced to click Allow on `/etc/shadow`, the architecture is decorative — which is why three groups are never promptable and never suppressible.
 
 ## 5. Non-goals
@@ -60,6 +62,7 @@ Collected from the eight places they otherwise live. AISME does **not**:
 - Let the Observer LLM authorize anything, ever (`I-04`).
 - Collect third-party network traffic for its corpora (§4.14.1, tier 3 `[CUT]`).
 - Let a suppression rule remove a record or weaken enforcement (`I-26`).
+- Supervise what the **host** does with a file after the session ends — see the trust-handoff row in §3 and §4. The boundary is the session's process tree and cgroup; execution outside it, later, by the IDE or the shell, is `F3.EN.11`'s to deny at the write and nobody's to observe at the run.
 
 ## 6. Mappings
 

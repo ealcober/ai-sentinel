@@ -5,15 +5,28 @@ because they have been sitting in one list and reading as one weight.
 
 ## The short version
 
-| # | Decision | Blocks F2? | Whose |
-|---|---|---|---|
-| 1 | The daemon serves one connection at a time | **Yes** — directly | Mine, with your nod. A route is recommended below |
-| 2 | May the sensor load once on this machine | **Yes** | Yours — you said yes; what is owed is the ADR |
-| 3 | What the escalate class *claims* (`D-6`) | **Only the wording** | Yours |
-| 4 | Host-executed configuration (`D-4`) | No — it is F3's | Yours, and it can wait |
+| # | Decision | Blocks F2? | Whose | Fate |
+|---|---|---|---|---|
+| 1 | The daemon serves one connection at a time | **Yes** — directly | Mine, with your nod | **Done.** Route A, bounded at 64 |
+| 2 | May the sensor load once on this machine | **Yes** | Yours | **ADR-10 proposed**, awaiting your approval and one `sudo` |
+| 3 | What the escalate class *claims* (`D-6`) | **Only the wording** | Yours | **Done**, in the shape recommended below |
+| 4 | Host-executed configuration (`D-4`) | No — it is F3's | Yours, and it can wait | Deferred, deliberately |
+| 5 | **New** — a declaration cannot be joined to an action made by its **sibling** | **Yes** | Yours | Open; found by measuring point 1's result |
+
+**Point 5 was not in this skeleton and is the reason it is worth re-reading.** Once point 1 landed
+and both planes reached the same WAL, the trace still reported **55 of 55 actions unattributed**:
+`record::attribute` walks the action's *ancestry* for a declaration made by an **ancestor**, and in a
+real agent's topology the hook and the tool are two **children** of the agent. Siblings, never
+ancestors. The declaration also carries `ppid = 0`, so the chain that would let them meet is not
+recorded. The proposal and its one risk are in `docs/ai/STATE.md` under *Blocked*; it changes what a
+declaration binds to, which is `F2.WS.03`'s stated design, so it is yours.
 
 **The recommendation, in one line:** take point 1 (a thread per connection), then point 2's ADR,
 then record. Point 3 is a paragraph you dictate and I write. Point 4 should not be decided now.
+
+**Status, 2026-09-15.** Points 1 and 3 are implemented and their measurements are in
+`docs/CHANGELOG.md`; point 2 is drafted as `ADR-10` and waits on you. Point 5 above replaced point 1
+as the thing that blocks the recording.
 
 **What this changes versus what I told you last message:** I said point 1 "touches `F1.RT.02`'s
 two-worker cap". **It does not**, and the challenge below says why with the line numbers. That makes

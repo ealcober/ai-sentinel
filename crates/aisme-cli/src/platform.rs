@@ -69,3 +69,31 @@ pub fn send_listener(
 ) -> Result<(), String> {
     Err("SCM_RIGHTS needs a Unix socket".to_owned())
 }
+
+/// Deny writes outside `scopes`, in kernel, for this process and everything it
+/// `exec`s (`F2.WS.11`).
+///
+/// `Ok(None)` means this kernel has no Landlock — the caller degrades and says
+/// so. `Ok(Some(abi))` is the version the ruleset was applied at, which is what
+/// decides which rights it could handle.
+///
+/// # Errors
+///
+/// An available Landlock that refused: a scope that cannot be opened, or a
+/// ruleset the kernel rejected.
+#[cfg(target_os = "linux")]
+pub fn restrict_writes_to(scopes: &[std::path::PathBuf]) -> Result<Option<u8>, String> {
+    if !aisme_linux::probe_landlock().available() {
+        return Ok(None);
+    }
+    aisme_linux::restrict_writes_to(scopes)
+        .map(Some)
+        .map_err(|e| e.detail)
+}
+
+/// Off Linux there is no Landlock; the caller degrades exactly as it does on a
+/// Linux kernel too old for one.
+#[cfg(not(target_os = "linux"))]
+pub fn restrict_writes_to(_scopes: &[std::path::PathBuf]) -> Result<Option<u8>, String> {
+    Ok(None)
+}

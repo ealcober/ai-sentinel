@@ -16,6 +16,17 @@ Order matters: grant **before** installing the filter. A seccomp filter is irrev
 
 On a kernel with no Yama, `PR_SET_PTRACER` fails with `EINVAL` and that is **not** an error: nothing was blocking the read there.
 
+**The grant covers that process and no child of it.** Yama keys the exception to the declaring task's thread-group leader; it survives `execve`, and it is not inherited by anything the declarer forks. Measured on 2026-09-15 with a sibling supervisor, which is the only topology that tests this — a supervisor that is an *ancestor* is permitted by a different Yama rule and will report success for both:
+
+| target | sibling supervisor's `process_vm_readv` |
+|---|---|
+| the declaring process, after `exec` | permitted |
+| a process it forked | `EPERM` |
+
+Through the product, on the same day: `aisme run --trap-openat -- cat /etc/hostname` delivers 4 opens and denies none, while `aisme run --trap-openat -- sh -c 'cat /etc/hostname'` denies **13**, all of them the grandchild's, all *"the path argument could not be read"*. The shell is supervised; the command it runs is not.
+
+**How to apply:** do not read a `PR_SET_PTRACER` grant as covering a session. It covers one process. Anything that supervises a *tree* needs either `CAP_SYS_PTRACE` on the supervisor or a supervisor that is the tree's ancestor, and choosing between those is an architectural decision, not a patch.
+
 **Source:** `F2.WS.05`, measured 2026-09-15
 
 Related: [[seccomp-unotify-toctou]], [[seccomp-args-are-32-bit]]

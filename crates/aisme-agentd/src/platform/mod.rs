@@ -38,10 +38,18 @@ pub fn probe() -> CapabilitySet {
         // is irreversible, so the process that asks must not be the one that
         // wears the answer.
         //
-        // The rest is still unprobed and still `F3.LD.01`'s: securityfs, the
-        // Landlock ABI syscall, /proc/config.gz, an attach test for the connect
-        // hook. Nothing else is claimed present, which is why the banner keeps
-        // reporting those as degraded rather than absent-and-fine.
+        // The Landlock ABI is measured too, because `F2.WS.11` gates on it:
+        // the ruleset is applied when the kernel has one and skipped with the
+        // lost function named when it does not, and a set reporting 0
+        // unconditionally would report `L2-` on a kernel that enforces. It is
+        // asked of the kernel — `landlock_create_ruleset(NULL, 0, VERSION)` —
+        // and not read off the LSM list, which says Landlock is compiled in
+        // and not which rights it accepts.
+        //
+        // The rest is still unprobed and still `F3.LD.01`'s: securityfs,
+        // /proc/config.gz, an attach test for the connect hook. Nothing else is
+        // claimed present, which is why the banner keeps reporting those as
+        // degraded rather than absent-and-fine.
         // `CapabilitySet` is `#[non_exhaustive]` (`ADR-08`), so it is built by
         // starting from `NONE` and setting what was measured — which is also
         // the honest shape: everything is absent until something measured it.
@@ -49,6 +57,7 @@ pub fn probe() -> CapabilitySet {
         let mut caps = CapabilitySet::NONE;
         caps.seccomp_unotify = seccomp.unotify;
         caps.seccomp_addfd = seccomp.addfd;
+        caps.landlock_abi = aisme_linux::probe_landlock().abi;
         caps
     }
     #[cfg(not(target_os = "linux"))]

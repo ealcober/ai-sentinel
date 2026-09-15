@@ -37,6 +37,10 @@ The same socket carries **`declareToolCall`** (`F2.WS.03`): an agent volunteers 
 
 | 4 | Install the seccomp filter for the escalate class, passing everything else | `F2.WS.05` (`Q-13`); `F3.EN.12` widens it |
 | 5 | Apply the Landlock ruleset compiled from the session policy — deny writes outside scope, deny the never-promptable classes, deny AISME's own files | `F2.WS.11`, `F3.EN.09`, `F3.EN.11` |
+
+**Steps 4 and 5 run in the opposite order to their numbers, and the reason is measured.** `landlock_add_rule` needs an `O_PATH` descriptor for each allowed directory, so building the ruleset *under* a filter that traps every `openat` sends the session's own setup to the supervisor to be answered — and `I-28` forbids permitting an `O_PATH` open, so the supervisor would have to refuse it. The filter is also irreversible, and anything that can still fail belongs above it. The numbering is the order of the *concerns*, not of the calls. What matters for both is only that they are before `exec`.
+
+**F2's subset of step 5** is the write scope: one ruleset built from the session's declared scope, handling every write-shaped right the running ABI knows. The never-promptable classes and AISME's own files are `F3.EN.09` and `F3.EN.11`, and they need the daemon's policy rather than the invocation's scope.
 | 6 | Set the environment: export the key-log variables for known runtimes pointing at the `agentd` socket; strip variables that would defeat observation | `F4.CO.04` |
 | 7 | `exec` the command. Landlock and the cgroup are inherited; nothing the child does can relax them | — |
 | 8 | Serve terminal adjudication on the controlling TTY for the life of the session | `F2.WS.06` |

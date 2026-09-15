@@ -5,6 +5,8 @@
 //! here, never in the core (plan §3.1).
 
 #[cfg(target_os = "linux")]
+mod landlock;
+#[cfg(target_os = "linux")]
 mod policy;
 #[cfg(target_os = "linux")]
 mod resolve;
@@ -13,6 +15,10 @@ mod seccomp;
 #[cfg(target_os = "linux")]
 mod sensor;
 
+#[cfg(target_os = "linux")]
+pub use landlock::{
+    probe as probe_landlock, restrict_writes_to, write_access_for, LandlockSupport,
+};
 #[cfg(target_os = "linux")]
 pub use policy::{
     load_policy_maps, publish, BpfTrieBackend, PolicyReader, Sample, TrieEntry, TrieImage,

@@ -205,6 +205,53 @@ fn agentd_socket() -> String {
     std::env::var("AISME_AGENTD_SOCKET").unwrap_or_else(|_| "/run/aisme/agentd.sock".to_owned())
 }
 
+/// Deny writes outside the session's declared scope, in kernel (`F2.WS.11`).
+///
+/// **A denial here produces no notification traffic at all**, which is the
+/// second half of the task's done-condition and the whole performance argument
+/// for L2 (§2.2.1): the kernel refuses the syscall and no supervisor is woken.
+/// The denial is recorded from the syscall's return value instead, by the
+/// exit tracepoint, so that a denial nobody was notified about is still a
+/// denial somebody can audit.
+///
+/// **A kernel without Landlock is a named degradation, not a failure** (`I-19`,
+/// and `docs/design/02_aisme-run.md` §5): the step is skipped, the lost
+/// function is stated once on stderr, and the session runs. The alternative —
+/// refusing to start — would make the product unusable on exactly the kernels
+/// the degradation ladder exists for.
+///
+/// # Errors
+///
+/// Anything that stopped an available Landlock from being applied: a scope
+/// that cannot be opened, a ruleset the kernel refused. A write scope that
+/// silently failed to apply is worse than none, because the session believes
+/// it is confined.
+fn apply_write_scope(scopes: &[PathBuf]) -> Result<(), String> {
+    match platform::restrict_writes_to(scopes) {
+        Ok(Some(abi)) => {
+            // One line, at the moment it takes effect, naming what is in force.
+            // A confinement nobody can see is one nobody can debug.
+            println!(
+                "landlock: ABI {abi} — writes are denied outside {}",
+                scopes
+                    .iter()
+                    .map(|p| p.display().to_string())
+                    .collect::<Vec<String>>()
+                    .join(", ")
+            );
+            Ok(())
+        }
+        Ok(None) => {
+            eprintln!(
+                "landlock: unavailable on this kernel — writes outside the scope are not denied \
+                 in kernel (tier L2-); they arrive one syscall late through seccomp, if at all"
+            );
+            Ok(())
+        }
+        Err(e) => Err(e),
+    }
+}
+
 /// Everything that must happen between the cgroup and `exec`.
 ///
 /// `F2.WS.05` installs the seccomp filter here; `F2.WS.11`'s Landlock ruleset
@@ -226,6 +273,23 @@ fn agentd_socket() -> String {
 fn pre_exec(invocation: &Invocation, session_id: u64) -> Result<(), String> {
     use std::fmt::Write as _;
     use std::os::fd::AsFd as _;
+
+    // 0. The write scope, in kernel (`F2.WS.11`). It runs **before** the early
+    //    return below, because Landlock is not part of the trap: a session
+    //    without `--trap-openat` is still a session, and step 5 of
+    //    `docs/design/02_aisme-run.md` applies to every one of them.
+    //
+    //    It also runs **before** the seccomp filter, and that ordering is a
+    //    correction to the design note rather than a reading of it. The note
+    //    lists the filter as step 4 and this as step 5, which looks like an
+    //    order and is not one: `landlock_add_rule` needs an `O_PATH`
+    //    descriptor for each allowed directory, so applying the ruleset under
+    //    a filter that traps every `openat` would send the session's own setup
+    //    to the supervisor to be answered — and `I-28` forbids permitting an
+    //    `O_PATH` open, so the supervisor would have to refuse it. The filter
+    //    is also irreversible, and everything that can still fail belongs
+    //    above it.
+    apply_write_scope(&invocation.scopes)?;
 
     if !invocation.trap_openat {
         return Ok(());

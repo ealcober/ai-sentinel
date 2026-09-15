@@ -472,3 +472,89 @@ properties the first draft of this point would have lost.
 `the_shipped_policy_keeps_all_three_of_its_rules` evaluates the shipped file and asserts deny,
 escalate-through-the-glob and default-allow; `an_unbound_variable_refuses_the_daemon_and_names_the_rule`
 asserts `${nowhere}` is refused with the variable and the rule named.
+
+---
+
+## Step 2, as executed — `F2.WS.11`'s write scope, and what it uncovered
+
+`aisme run` builds one Landlock ruleset from the session's declared scope and applies it before
+`exec`. Measured on this host at **ABI 9**, through the shipped binary:
+
+| Command | Result |
+|---|---|
+| `aisme run --scope $W -- sh -c 'touch /tmp/outside'` | `EACCES`, exit 1, and the file does not exist |
+| `aisme run --scope $W -- sh -c 'touch $W/inside'` | created, exit 0 |
+
+Four unit tests fix it, each forking because a Landlock domain cannot be left: the ABI and its
+rights agree, a write outside is denied while one inside is not, **a second and broader ruleset
+does not restore what the first denied**, and a symlink or a directory outside the scope is refused
+too.
+
+### Three claims of `docs/05` point 11 that were corrected before any code
+
+1. **"`LandlockEnforcer` … implementing the `Enforcer` trait."** The frozen L1 trait is
+   `publish` / `respond` / `suspend` / `resume` — a daemon-side contract. A ruleset applied once,
+   irreversibly, in a process about to `exec` answers none of the four. It is a module, and
+   `F3.EN.09` is where an `Enforcer` impl belongs, because that is where the daemon publishes into
+   Landlock domains.
+2. **"`landlock_restrict_self` in `aisme run` after the seccomp filter."** The design note numbers
+   the filter 4 and the ruleset 5, which reads as an order and is not one. `landlock_add_rule`
+   needs an `O_PATH` descriptor per allowed directory, so building the ruleset under a filter that
+   traps every `openat` sends the session's own setup to the supervisor — and `I-28` requires the
+   supervisor to refuse an `O_PATH` open. The filter is also irreversible, so anything that can
+   still fail belongs above it. Corrected in `docs/design/02_aisme-run.md` where it was written.
+3. **"`WRITE_FILE|MAKE_REG|MAKE_DIR|REMOVE_FILE`."** That list denies `touch` and permits
+   `ln -s`, `mkfifo`, `mknod` and `rmdir` outside the scope. Every write-shaped right the running
+   ABI knows is handled instead, `TRUNCATE` included from ABI 3 — truncating a file is a write, and
+   asking for the right below that ABI is `EINVAL` rather than a degradation. A test creates a
+   symlink and a directory outside the scope and asserts both are refused.
+
+### The blocker this step uncovered, and it is not Landlock's
+
+**`aisme run --trap-openat -- sh -c 'cat /etc/hostname'` fails: 2 opens delivered, 13 denied, every
+one of them *"the path argument could not be read"*, and every one of them the **grandchild's**.**
+The shell is supervised; the command the shell runs is not.
+
+The cause is `PR_SET_PTRACER`, and it took three measurements because the first two were wrong:
+
+* Landlock was not involved. The same command without a shell — `aisme run --trap-openat -- cat
+  /etc/hostname` — delivers 4 and denies 0 with the ruleset applied.
+* A first reproducer said descendants were readable. **It was invalid**: its supervisor was the
+  *ancestor* of both processes, and Yama permits an ancestor by a different rule entirely. A
+  supervisor that is an ancestor will report success no matter what the grant does.
+* With a **sibling** supervisor, which is `agentd`'s actual topology, the answer is sharp: the
+  declaring process is readable after `exec`, and a process it forks returns `EPERM`. Yama keys the
+  exception to the declaring task, and nothing inherits it.
+
+**Why this is architectural rather than a patch.** Reading a supervised *tree* needs either
+`CAP_SYS_PTRACE` on the supervisor or a supervisor that is the tree's ancestor, and the project has
+already decided against the first in a neighbouring case: `docs/06` point 3 refused `agentd` a
+writable policy-map descriptor precisely because it would leave `CapabilityBoundingSet=`
+decorative — *"the capability gone and the authority kept"*. `CAP_SYS_PTRACE` is broader than what
+was refused there, not narrower: it reads any process's memory on the machine.
+`deploy/systemd/aisme-agentd.service` states the position plainly — *"the unprivileged half
+(`F1.RT.07`). agentd runs the hot loop with no capabilities at all"* — while plan `:321` says the
+engine *"runs as root under systemd"*. Those two were written for different jobs and F2 is the
+phase in which they collide, because `F2.WS.05` gave the unprivileged daemon a job that needs
+privilege.
+
+**The options, with what each costs:**
+
+1. **`AmbientCapabilities=CAP_SYS_PTRACE` on `aisme-agentd`.** One line, and it contradicts the
+   unit's own reason for existing.
+2. **A small privileged supervisor process, as `aisme-loaderd` already is for `CAP_BPF`.** It
+   follows the project's own precedent for privilege splitting and keeps the hot loop clean; it
+   costs a new binary, a new unit and a new socket.
+3. **`aisme run` stops `exec`-ing and stays as the session's parent**, resolving paths itself. It
+   is then the tree's ancestor, so Yama permits every descendant and no daemon gains a capability.
+   It also restores two things the design note already asks for and F2 had to move elsewhere:
+   step 8 (*"serve terminal adjudication … for the life of the session"*) and step 9 (*"on exit:
+   close the session, release the cgroup"*), both of which assume `aisme run` outlives `exec`. It
+   costs the decision recorded in `F2.WS.08` — *"`exec`, not `fork`+`wait`, so the exit status is
+   the child's with nothing between"* — which would have to be reversed and its exit-status
+   handling written by hand.
+
+**This is the owner's, and it is the only thing in F2 that is.** Every reading of the specs was
+tried first and they point in two directions at once, which is the signal that a decision is owed
+rather than a lookup. Until it is taken, `F2.WS.11`'s Landlock half stands measured and GATE F2's
+`sh -c` lines cannot pass.

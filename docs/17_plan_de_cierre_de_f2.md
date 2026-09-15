@@ -19,6 +19,10 @@ sourced or named as the owner's. It supersedes the scattered state in `docs/14`,
 Items 1, 2 and 4 are one commit's worth of work each. Item 3 is a command you run. Item 5 needs a
 guest boot. Item 6 is the gate.
 
+**Every item is amplified below to Challenge, Verification, Implementation, Tests and Documentation,
+and closed with what was verified against what.** Written in declared future so that executing it
+requires no further decision — a well-amplified point is a patch that has not been applied.
+
 ## What the research settled, so nobody re-opens it
 
 Three questions were open on 2026-09-15 and are now answered against primary sources rather than
@@ -64,6 +68,49 @@ not address concurrency at all. That is the bar, and it is low.
 ## 1. The intent plane learns when a tool call ends
 
 **Done when:** the WAL says how many tool calls were in flight at any instant of a session.
+
+### 1. Challenge
+
+*Is this the best solution?* The alternative is to keep inferring, and the research says what that
+costs. `AgentSight` — the closest published prior art — infers with `fork`/`execve` lineage plus a
+100–500 ms temporal window, and reports **no attribution accuracy and no error rate**. The
+partitioning literature is unanimous that a destruction event is what makes concurrent units
+separable: ALchemist has one, OmegaLog does not and states outright that it *"will not be able to
+correctly partition each request"* under asynchronous I/O. An end marker is the known answer.
+
+*Is it coherent with the specs?* It extends `F2.WS.03`'s intent plane without changing what a
+declaration **means**: it still authorizes nothing (`DT-04`), it still carries no correlation token,
+and it still crosses the same method. What is new is that the plane can now say a call is *over*.
+
+*Can it be simplified?* One thing can, and the research is what allows it: the end does **not** need
+its own protocol method. `declareToolCall` gains a `phase`, and everything else — the rate limit, the
+authorization class, the recording path — is reused unchanged. What cannot be simplified is the
+number of hook events subscribed to; `PostToolUse` alone would be a marker that silently omits every
+failure and every denial.
+
+### 2. Verification
+
+Safe and clear, with four properties that must hold:
+
+- **An end may never be inferred.** It arrives from the harness or it does not arrive. A timeout that
+  *guesses* a call has finished would reintroduce the temporal heuristic this plan exists to avoid,
+  one layer up. The watchdog below closes calls only when the **agent process is gone**, which is a
+  fact rather than an estimate.
+- **An end must not be able to open a call.** A malformed or unknown phase means **start**, never end,
+  so a payload this version does not understand cannot close a call it never opened. The direction is
+  chosen so the error marks more ambiguity, not less.
+- **An end must not be forgeable into an alibi.** It carries the declaring process from `SO_PEERCRED`
+  like a start, and it claims no `toolcall_id` of AISME's invention — the id is the harness's or there
+  is none. A process that declares an end for a call it did not start changes the in-flight count for
+  its own session only, which widens ambiguity rather than narrowing it.
+- **The hook stream is a claim.** METR measured **about 7 %** of 1,300 transcripts carrying spoofed
+  tool calls, from agents that replaced the tool-execution machinery outright. Nothing in this point
+  may be written as though the declaration were ground truth; it is evidence, and the sensor is the
+  arbiter.
+
+**One thing is not decided and it is the owner's**, carried from `docs/16`: whether `F0.ASSET.02` may
+be a fixture that states an ambiguous fraction. This point produces the data either way; what waits on
+the answer is whether the fixture is acceptable with it.
 
 ### What it is
 
@@ -146,9 +193,18 @@ answer.
   as an absence rather than as a call nobody can name.
 - Annex I's `declareToolCall` gains `phase` and carries `tool_use_id` in both phases. The end claims
   no `toolcall_id` of AISME's own invention: the id is the harness's or there is none.
-- The daemon records an end as a `ToolCall` event with `Outcome::Completed` rather than `Observed`.
-  That is an existing enum value on an existing field, so §3.6's append-only rule is untouched — no
-  new flag, no new offset.
+- The daemon records an end as a `ToolCall` event with a **new** `Outcome::Completed = 5`. The
+  variant does not exist today — `Observed`, `Allowed`, `Warned`, `Escalated`, `Denied` are all of
+  them — and adding it is append-only on a `#[non_exhaustive]` enum, which `ADR-08` covers and §3.6
+  permits: a value is appended, no offset moves.
+  **A variant and not a flag bit, and the source decides it.** `OutcomeCode::decode` returns
+  `Result<Outcome, UnknownOutcome>`, so a consumer that does not know the value says so; a flag bit is
+  *silently ignored* by a consumer that does not know it, and such a consumer would count an end as a
+  second start. An unknown that announces itself beats an unknown that reads as a plausible value —
+  which is `I-19` and is the same reasoning as everything else in this plan.
+  **Why it ended is deliberately not encoded.** Success, failure and denial are distinguishable at the
+  hook and nothing consumes the distinction yet; `F2` records that the call is no longer in flight and
+  leaves the reason to the phase that needs it, rather than freezing a vocabulary nobody has used.
 - The 100 ms budget stays. An end that cannot be delivered is a lost end, and a lost end is safe.
 
 ### Tests
@@ -183,9 +239,61 @@ assume. A missing start stream is an incident, not a quiet gap.
 
 ---
 
+### Closing
+
+Verified against `crates/aisme-ebpf-common/src/event.rs:47-56` (`decode` returns a `Result`, so an
+unknown outcome announces itself) and `:19-33` (a flag bit does not), against `ADR-08` for the
+additive variant, and against `docs/research/02` §1.2 for the ten orphan cases. **One claim of the
+skeleton fell:** `Outcome::Completed` was written as *"an existing enum value"* and it does not exist
+— the five that do are `Observed`, `Allowed`, `Warned`, `Escalated`, `Denied`. Adding it is still the
+right choice, and now for a reason rather than by assumption: an unknown *outcome* is reported, an
+unknown *flag* is ignored. Open: the owner's fixture question, which this point does not block.
+
 ## 2. Attribution marks ambiguity instead of guessing
 
 **Done when:** a trace attributes what it can, marks what it cannot, and the manifest states both.
+
+### 1. Challenge
+
+*Is this the best solution?* The alternatives are to guess or to attribute to everything, and the
+literature has tried both. The audit default under ambiguity is **over-attribution** — BEEP: *"a
+subject is causally related to all the objects it has accessed so far"* — which for a long-running
+agent session means a dependence explosion; ALchemist's own caveat that over-attribution is tolerable
+because such applications are *"rarely long running"* **does not hold here**. Guessing is what
+deployed tools do and nobody has published its error rate. Marking is what **ground-truth
+construction** does: a September 2026 provenance-benchmark paper excludes ambiguous nodes from scoring
+outright, and Linux audit emits `auid=unset` rather than inventing a plausible user.
+
+*Is it coherent with the specs?* It applies a rule `record.rs:34-40` already states, one level up:
+*"an unattributed action is visible, while a wrongly attributed one is not."* It contradicts one
+sentence of the plan — `F2.WS.03`'s *"a process in the action's own ancestry"* — which a pre-tool hook
+cannot satisfy, and that sentence changes.
+
+*Can it be simplified?* The candidate rule can be, and the research says how: once the in-flight count
+exists, **ambiguity is decided from the count and not from the candidate set**. A single call in
+flight means the attribution is exact even if several past declarations still match; more than one
+means ambiguous even if only one matches. That is simpler than reasoning about candidate sets and it
+is the property that actually matters.
+
+### 2. Verification
+
+- **The decisive argument is about the measurement, not the mechanism.** A most-recent heuristic in a
+  **ground truth** is worse than the same heuristic in a detector, because the error correlates with
+  what is being measured: this project's correlator will also guess "the most recent declaration", so
+  scoring it against a ground truth built that way **manufactures agreement**. The bias is toward
+  optimism, which general rule 4 makes urgent.
+- **Ambiguous and unexplained must stay distinguishable in the counts**, even though both carry token
+  `0` on the wire. A fixture with many ambiguous actions is one recorded during heavy parallelism; a
+  fixture with many unexplained ones is one whose hook was not firing. Those are different problems
+  with the same symptom, and collapsing them would hide the second.
+- **The declaration's parent is derived, never claimed.** The daemon reads `/proc/<peer>/stat` while
+  the peer is connected; the peer's pid came from `SO_PEERCRED`, which the kernel writes.
+- **No time window anywhere.** Not as a tie-break, not as a fallback, not as a "probably". `I-19`
+  and the module's own comment both point the same way, and the one system that used a window did not
+  measure what it cost.
+
+**Nothing here is unclear enough to ask about**; the one open question belongs to point 1 and to the
+owner.
 
 ### What it is
 
@@ -235,6 +343,16 @@ detector.
 
 ---
 
+### Closing
+
+Verified against `record.rs:205-229` (the walk with no end bound), `:34-40` (the conservative
+principle this extends), `:425-455` (the test whose declarers are ancestors and which must keep
+passing unchanged), and `declare.rs:56` (`ppid` never stamped). Against the field: `docs/research/03`
+§3 for marking as the norm, and §2.3 for the sibling case being the canonical failure of ancestry
+attribution rather than an edge case. **One claim of the skeleton fell** — that ambiguity would be
+decided from the candidate set. It is decided from the in-flight count, which is both simpler and
+correct where several stale declarations still match a single live call. Open: nothing of its own.
+
 ## 3. `ADR-10` step 2 — does the sensor load on 7.1.5
 
 **Done when:** the answer is in `STATE.md` verbatim, whatever it is.
@@ -253,6 +371,56 @@ sudo ./target/debug/aisme-agentd --load-sensor
 It loads the program, reads its capabilities and **detaches immediately** — it is a question, not a
 session. `ACCEPTED` with its capabilities or `REFUSED` with the kernel's own words: both go into
 `STATE.md` verbatim. A `REFUSED` on 7.1.5 would be worth knowing before F3 plans around the sensor.
+
+### 1. Challenge
+
+*Is this the best solution?* It is the only one left. `docs/research/03` verified against kernel
+source that the alternative read — the kernel's own `__filename_val` copy — is **unreachable from
+eBPF** and would not close the TOCTOU window anyway, so there is no route that avoids loading a
+program. And `ADR-10` establishes that neither a guest nor the seccomp path can carry the recording.
+
+*Is it coherent with the specs?* Only through `ADR-10`, which is what that ADR is for. `I-12` is
+narrowed by a written decision with a named scope and an expiry, not by a verbal yes.
+
+*Can it be simplified?* It already was: step 1 moved the cheap check in front of the load, and it has
+**passed** — so what remains is one command.
+
+### 2. Verification
+
+- **Nothing is loaded by any test, gate or hook**, and `platform::probe()` is untouched. The tripwire
+  for the exception growing is named in the ADR:
+  `nothing_measured_means_no_bpf_load_is_attempted_on_the_host`.
+- **The program is observe-only and bounded.** One tracepoint that always returns 0
+  (`crates/aisme-ebpf/src/main.rs:107`), whose first act is to look the caller up in `AISME_SESSIONS`
+  and return if it is absent (`:122`) — so a loaded program with no session registered observes
+  nothing and reserves nothing from its ring buffer. `bpf_probe_write_user` appears nowhere in the
+  tree except in the gate that forbids it.
+- **A refusal is now diagnosable.** The message distinguishes a permission refusal from an absent map
+  type and appends nothing where it establishes neither, which it did not do before this week.
+- **The answer is recorded whichever way it goes.** A `REFUSED` on 7.1.5 is a measured fact about a
+  kernel above the matrix's ceiling, and it is worth more than the recording it would block.
+
+### 3. Implementation
+
+The one command above, run by the owner. Then the output verbatim into `STATE.md`, the ADR's second
+follow-up ticked, and — on `ACCEPTED` — point 4 proceeds. On `REFUSED`, the reason becomes an `F0.VER`
+row and point 4 waits for a kernel the matrix covers.
+
+### 4. Tests
+
+None, deliberately. A one-off manual act is not a test, and giving it one is how an exception becomes
+a habit. What the **recording** owes is in point 4.
+
+### 5. Documentation
+
+`docs/ai/STATE.md` (the output), `docs/adr/10_…md` (the follow-up), and on a refusal an `F0.VER` row
+carrying its prediction as `§F0.4` requires.
+
+### Closing
+
+Verified against `main.rs:107` and `:122` (observe-only, and silent with no session),
+`sensor.rs:168-198` (a refusal carries the kernel's words), and the owner's own measurement of the
+format file on 2026-09-15. **No claim fell.** Open: the `sudo`, and nothing else.
 
 ---
 
@@ -273,6 +441,75 @@ fixture that passes a gate is the failure this asset exists to prevent.
 The hook goes in `~/.claude/settings.json` and nowhere else. A repository's settings file is the
 attack surface itself, and the field record is a list of reasons why.
 
+### 1. Challenge
+
+*Is this the best solution?* The recording is specified as *"an actual working session, not a
+script"*, and every substitute has been refuted in writing: a session record holds **838 tool calls
+and no actions**; a guest cannot host a real session without the owner's credentials in it; the
+seccomp path denies every write-mode open; and the synthetic generator produces a workload, not a
+session. What is left is one real session with the sensor attached.
+
+*Is it coherent with the specs?* With one amendment it now needs: `F0.ASSET.02` says the recording
+perturbs nothing *because* it is observe-only. That is still true, and the **reason** it must be
+observe-only is stronger than the row states — the trap would cripple the agent, not merely slow it.
+
+*Can it be simplified?* No, and one apparent simplification must be refused explicitly: recording a
+**scripted** session would be cheaper and would produce a fixture whose shape is the script's rather
+than an agent's. `docs/12` measured the difference — a real session ran about five tool calls an hour
+against §2.22's normative two hundred, nearly all subprocess executions — and a fixture that gets the
+shape wrong misleads every budget derived from it.
+
+### 2. Verification
+
+- **The fixture must carry no paths.** The format was built for this: entries carry `args_hash` and
+  never the argument — *"a fixture is committed and a path is data"*. This is the property to check
+  before the file is committed, not after.
+- **An empty or near-empty recording is refused rather than written.** A zero-entry fixture that
+  passes a gate is the failure this asset exists to prevent, and the same applies to one whose actions
+  are nearly all unexplained: that is a recording whose hook was not firing, and it must fail loudly.
+- **The three counts go in the manifest**, so a later reader can tell a heavily-parallel session from
+  a broken one.
+- **The session must not be adversarial or unusual.** It is ordinary work on this repository. A
+  fixture recorded while deliberately exercising the product would measure the product's own traffic.
+
+**This is where the owner's open question lands**, and it is the only thing in this plan that a
+decision changes rather than schedules: whether a fixture stating an ambiguous fraction is acceptable.
+
+### 3. Implementation
+
+- Merge the hook — both phases — into `~/.claude/settings.json`, and verify it fires before recording
+  anything. *A missing start stream is an incident, not a quiet gap*, and it is invisible unless
+  checked: the field record carries five separate reports of hooks configured and silently not firing.
+- Start the daemon with the sensor attached, per `ADR-10`.
+- Run `aisme run --scope <repo> -- claude` and do ordinary work.
+- `aisme-agentsim --to-trace <wal-dir> tests/fixtures/reference-trace/trace.json`, then seal the
+  manifest with `xtask`.
+- Inspect the three counts before committing, and re-record if the unexplained fraction says the hook
+  was not firing.
+
+### 4. Tests
+
+**Already written:** the round trip, attribution by subtree under interleaved tool calls, an
+unexplained action kept with token `0` and counted, a kind with no action counted by name, and the
+determinism of the synthetic generator.
+
+**Owed with the recording:** that the manifest's hash is over the content it names, and that an empty
+recording is refused rather than written.
+
+### 5. Documentation
+
+`tests/fixtures/reference-trace/manifest.toml` (written by the recorder from what actually ran, not a
+sentence somebody maintains), `F0.ASSET.02`'s row (observe-only **because the trap denies every
+write**, which is the measured reason and stronger than the perturbation argument it gives today),
+and `§4.6` (the gate scores against the attributed set with the other two counts stated beside it).
+
+### Closing
+
+Verified against `ADR-10` (which establishes there is no other route), `docs/12` (838 tool calls and
+no actions in a session record; five tool calls an hour against a normative two hundred), and the
+measured fact that an observe-only session records zero actions without the sensor. **No claim fell.**
+Open, and the owner's: whether the ambiguous fraction is acceptable in the asset.
+
 ---
 
 ## 5. `F2.WS.11` half B — the denial nobody was notified about
@@ -289,6 +526,73 @@ return is negative; and the join by `(tgid, seq)` in `agentd` so one record carr
 than two records existing. It needs a guest, and an `EACCES` that is not ours is recorded as
 **ambiguous** rather than attributed — the same discipline as point 2, in a different plane.
 
+### 1. Challenge
+
+*Is this the best solution?* Exit-tracepoint inference is the only way to see a denial the enforcer
+never reported, because the whole property is that nothing woke. The alternative — asking Landlock —
+does not exist: a ruleset has no audit channel at this ABI.
+
+*Is it coherent with the specs?* It is `docs/05` point 11 and this task's own second half, and the
+flag it needs, `FLAG_INFERRED_FROM_EXIT`, is already named in the plan's `RawEvent` block. **Bits 0
+and 1 are taken** (`FLAG_TRUNCATED`, `FLAG_PATH_UNRESOLVED`), so bit 2 is free and a flag consumes a
+bit and never an offset — §3.6 is kept.
+
+*Can it be simplified?* One thing can, and it should be said before somebody builds the join: for
+**F2's purposes** the exit event alone is enough. The `(tgid, seq)` join to the enter event exists so
+one record carries both the path and the errno; a phase that only needs *"a denial happened and
+nobody was notified"* can be satisfied by the exit event carrying the errno and the flag, with the
+join deferred. Building both at once is how this task has stayed open.
+
+*A note that the field record adds:* an inferred record is a **flag on an outcome**, and
+`FLAG_INFERRED_FROM_EXIT` is exactly the honesty this plan asks for elsewhere — *we did not observe
+this decision, we inferred it*. It sits beside `FLAG_PATH_UNRESOLVED`, which says *we did not resolve
+this path*, and the two must stay distinct because they are different admissions.
+
+### 2. Verification
+
+- **An `EACCES` is not necessarily ours.** A write can fail for ordinary permission reasons. The
+  record says *an access denial consistent with the session's ruleset*, and attributes it only where
+  the path lies outside the declared scope — knowable in user space without asking the kernel who
+  denied it. Where it is not knowable, the record says ambiguous, which is point 2's discipline in a
+  second plane.
+- **This runs in a guest, and `I-12` is untouched by it.** `ADR-10`'s exception is for one
+  observe-only recording on the host and says nothing about this; the exit program is loaded where
+  every kernel-touching test is loaded.
+- **Half A must keep asserting on an operation the filter does not trap.** If somebody later adds
+  `unlink` to the filter, `a_denial_the_filter_does_not_trap_wakes_nobody` becomes a test of seccomp
+  wearing Landlock's name. The test's own comment says so and stays.
+
+### 3. Implementation
+
+- `crates/aisme-ebpf` gains `sys_exit_openat`, enabled per session by the same `AISME_SESSIONS`
+  lookup the enter program uses, emitting a `FileOpen` with `outcome = Denied`,
+  `FLAG_INFERRED_FROM_EXIT` (bit 2) and the errno when the return value is negative.
+- `agentd` records it. The `(tgid, seq)` join to the enter event is **deferred** and named as such, so
+  this task can close on the property it owes.
+- `cargo xtask vm run` gains the line that exercises it.
+
+### 4. Tests
+
+**In a guest:** the WAL contains exactly one denial record carrying `FLAG_INFERRED_FROM_EXIT`; a write
+**inside** the workspace produces none; an `EACCES` from ordinary permissions is recorded as ambiguous
+rather than attributed; and on a kernel without the Landlock ABI the ruleset is skipped, the tier
+reads `L2-`, the banner names the lost function, and the run still works.
+
+**On the host, unchanged:** `a_denial_the_filter_does_not_trap_wakes_nobody`.
+
+### 5. Documentation
+
+`F2.WS.11`'s row (half B's done-condition, and that the join is deferred with its reason), the plan's
+`RawEvent` block (bit 2), and `docs/ai/memory/landlock-l2-file-deny.md` (that seccomp fires before the
+LSM, which is what makes half A measurable only outside the trapped set).
+
+### Closing
+
+Verified against `event.rs:19-33` (bits 0 and 1 taken, bit 2 free), the plan's `RawEvent` block (the
+flag is already specified), and the host measurement of half A. **One claim of the skeleton fell:**
+this task does not need the `(tgid, seq)` join to close its done-condition, and treating the two as
+one piece of work is why it has stayed open. Open: it needs a guest boot, which nothing here changes.
+
 ---
 
 ## 6. GATE F2 and the phase close
@@ -304,6 +608,52 @@ column.
 `PASS` and `PENDING` are acceptable, `SKIP` needs its reason on the same line, and the output goes in
 verbatim — a gate summarised is a gate nobody can check. Plan `:1360` places item 4 before this one,
 which is the only reason the phase is still open.
+
+### 1. Challenge
+
+*Is this the best solution?* The gate is the phase's definition of done, so the only thing worth
+challenging is whether its lines still test what they claim. Two have been corrected this way already:
+the guest daemon ran as `uid 0`, where `CAP_SYS_PTRACE` makes Yama irrelevant, so the enforcement
+lines measured a configuration the product does not ship; and an earlier revision omitted
+`--trap-openat`, which would have made three lines **pass by enforcing nothing**.
+
+*Is it coherent with the specs?* Yes, and the one thing it must not do is close the phase on a gate
+that passes for a reason the product does not have.
+
+*Can it be simplified?* No. Each line is somebody's input, and the sixth — the agent's own
+permission-skipping flags — is new precisely because the property it asserts held by construction and
+was tested nowhere.
+
+### 2. Verification
+
+- **`F2.WS.11` half B does not block the phase.** It is a done-condition of a task, and its first half
+  is measured; item 4 is what plan `:1360` places before the gate. The row must say which of the two
+  blocks what, or the phase closes on a judgement rather than on the plan.
+- **A `SKIP` carries its reason on the same line.** `verify-backlog` skips today for a missing
+  prerequisite and that is acceptable; a `SKIP` without a reason is a `FAIL` in disguise.
+- **`bench-t0`'s numbers are recorded with their sample counts.** A p999 over a hundred samples is the
+  maximum wearing a percentile's name, and the command already prints them.
+
+### 3. Implementation
+
+Run the block: `test-skeleton`, the six enforcement lines in **one** guest boot, `verify-budgets
+--profile skeleton`, `bench-t0 --syscalls 100000`. Paste the output into `STATE.md` verbatim. Then
+close F2 in `STATE.md` and the plan's phase table.
+
+### 4. Tests
+
+None of its own — every line of the gate is somebody else's test, and the gate is the test of the
+whole.
+
+### 5. Documentation
+
+`docs/ai/STATE.md` (the output verbatim, and *Next up* reduced to F3), the plan's phase table, and a
+handoff note in `docs/ai/handoff/` naming what F3 inherits.
+
+### Closing
+
+Verified against the `GATE F2` block as it stands and against plan `:1360` for the ordering. **No
+claim fell.** Open: it waits on item 4, which waits on item 3, which waits on one `sudo`.
 
 ---
 
@@ -343,6 +693,37 @@ Recorded as plan rows, not executed here.
   which is `D-9`'s argument with a number attached.
 
 ---
+
+## Whole-document coherence
+
+Read end to end after the seven were closed, looking for a point that contradicts another or leaves
+one in false.
+
+1. **Every point in this plan now refuses to produce a value where the evidence does not support
+   one, and that is one rule rather than six coincidences.** Point 1 says an unknown phase is a start;
+   point 2 marks ambiguity rather than guessing; point 3 records a refusal as a measurement; point 4
+   refuses an empty recording; point 5 records an ambiguous `EACCES` as ambiguous. The rule already
+   existed in the tree — `record.rs:34-40`, *"an unattributed action is visible, while a wrongly
+   attributed one is not"* — and what changed is that it is now applied consistently.
+2. **Points 1 and 2 are one change split in two, and the split is load-bearing.** Point 2's ambiguity
+   is decided from point 1's in-flight count, so point 2 cannot land first. But point 1 is useful on
+   its own — the WAL records when calls end whether or not attribution uses it yet — so the order is
+   not merely a dependency, it is two commits each of which leaves the tree better.
+3. **Point 3 gates points 4 and 6 and nothing else.** A `REFUSED` would not stop points 1, 2 or 5.
+   Worth stating because the one command outstanding looks like it blocks the phase, and it blocks
+   two of seven items.
+4. **Corrected while reading:** point 5's done-condition bundled the exit tracepoint with the
+   `(tgid, seq)` join. They are separable, the join is not needed for the property the task owes, and
+   bundling them is why the task has stayed open across two phases.
+5. **The one thing that would falsify the whole plan** is the hook not firing. Five reported cases of
+   silently non-firing hooks are recorded in `docs/research/02` §4.4, and a hook that crashes looks
+   exactly like one that never fired. That is why point 4 verifies the stream **before** recording
+   rather than discovering it in the counts afterwards.
+
+**Against the specs**, nothing here contradicts an invariant or an `H-xx` finding. Point 1 adds an
+append-only variant under `ADR-08`. Point 2 corrects one sentence of `F2.WS.03` that a pre-tool hook
+cannot satisfy. Point 3 narrows `I-12` through the ADR that exists for it. Points 4, 5 and 6 add
+nothing and claim nothing.
 
 ## What is still open
 

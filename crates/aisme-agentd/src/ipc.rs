@@ -2549,23 +2549,53 @@ mod tests {
 
         // And the daemon is still a daemon: free one slot, and the next caller
         // is served.
+        //
+        // **The retry tolerates a refused connection rather than unwrapping
+        // through it.** A connection the server has already closed answers a
+        // write with `EPIPE`, and the slot is released by a thread this test
+        // does not synchronise with — so under load the first attempt after the
+        // `pop` is often still at the bound. Panicking there would report a
+        // product defect where there is a race in the test, which is the flake
+        // this suite has already paid for twice.
         held.pop();
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
         loop {
-            let client = connect(&path);
-            let answer = ask(
-                &client,
-                r#"{"jsonrpc":"2.0","id":7,"method":"getCapabilities"}"#,
-            );
-            if answer.get("result").is_some() {
+            if served(&connect(&path)) {
                 break;
             }
             assert!(
                 std::time::Instant::now() < deadline,
-                "the bound never released after a connection closed: {answer:?}"
+                "the bound never released after a connection closed"
             );
             std::thread::sleep(std::time::Duration::from_millis(5));
         }
+    }
+
+    /// Whether this connection was served rather than refused at the bound.
+    ///
+    /// Every failure is a "no": a refused connection is closed, so the write
+    /// may fail, the read may return nothing, or the answer may be the bound's
+    /// own error.
+    fn served(client: &UnixStream) -> bool {
+        let Ok(mut writer) = client.try_clone() else {
+            return false;
+        };
+        if writeln!(
+            writer,
+            r#"{{"jsonrpc":"2.0","id":7,"method":"getCapabilities"}}"#
+        )
+        .is_err()
+        {
+            return false;
+        }
+        let Ok(reader) = client.try_clone() else {
+            return false;
+        };
+        let mut reply = String::new();
+        if BufReader::new(reader).read_line(&mut reply).is_err() {
+            return false;
+        }
+        json::parse(reply.trim()).is_ok_and(|answer| answer.get("result").is_some())
     }
 
     /// A pty, for a test that needs a terminal nobody is typing into.

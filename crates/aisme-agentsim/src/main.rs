@@ -195,7 +195,11 @@ fn to_trace(wal: &str, out: &str) -> ExitCode {
     );
     // Both numbers are printed even when zero: a reader must be able to tell
     // "nothing was skipped" from "nobody looked".
+    // Both counts, always, and never collapsed into one. They are different
+    // problems with the same symptom: many ambiguous is a session with heavy
+    // parallelism, many unattributed is a hook that was not firing.
     println!("unattributed: {}", recorded.unattributed);
+    println!("ambiguous: {}", recorded.ambiguous);
     println!(
         "skipped by kind: {}",
         if recorded.skipped.is_empty() {

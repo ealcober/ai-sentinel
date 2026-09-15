@@ -340,7 +340,13 @@ and the authority would remain. **The plan's `F1.RT.07` will be cited for this i
 paraphrased.
 
 *Can it be simplified?* Yes, in one place that matters: `agentd` will not open the maps at all in
-F2. It has no reason to — it neither publishes (that is the loader) nor evaluates (that is F3) —
+F2. It has no reason to — it does not publish (that is the loader), and it does not evaluate **from
+the maps**: kernel-side evaluation of the trie is `F3.PT.02`'s, and at F2's shape the kernel never
+reads it (plan `:1638`). The supervisor *does* evaluate the compiled policy, in user space, because
+plan `:1638` says enforcement at this shape **is** seccomp and `docs/05` §5.3 makes it a step of
+the allow path — it simply does not get the policy from a map. An earlier wording of this sentence
+said "nor evaluates (that is F3)", which slid from *the maps* to *evaluation* and contradicted
+both; it is corrected here rather than elsewhere, because this is the sentence that was wrong —
 so the simplest correct thing is that it never holds a policy-map fd of any kind, readable or not.
 What it needs is the **generation number**, which is a `u64` and travels over the socket.
 

@@ -327,7 +327,7 @@ resolver's LRU is sized the same way, by a named constructor carrying its own ju
 is what "reuse the interner's shape rather than invent a second policy" actually means. Inventing
 a budget key would have been the second policy.
 
-**Closing.** Verified against the plan's `F2.WS.02` row (`:1620`), the scope table's Hot-loop row
+**Closing.** Verified against the plan's `F2.WS.02` row (`:1630`), the scope table's Hot-loop row
 (`:1607`), `A-01` as `xtask/src/rules.rs:62` enforces it, and the existing measurement in
 `crates/aisme-core/tests/hot_loop_allocations.rs`. The skeleton's phrase "verified by `dhat`"
 falls: the property is measured by a counting allocator and will stay that way, for the reasons
@@ -412,7 +412,7 @@ test gains a third writer — the socket — and asserts the token is absent fro
 - `docs/design/02_aisme-run.md`: step 3 already registers the session over the socket; a line
   will note that the same socket carries declarations.
 
-**Closing.** Verified against the plan's `F2.WS.03` row (`:1621`), the F2 scope table (which
+**Closing.** Verified against the plan's `F2.WS.03` row (`:1631`), the F2 scope table (which
 excludes the cooperative sensor), Annex I.1's method list, and `crates/aisme-agentsim/src/replay.rs`
 as it stands. Nothing of the skeleton fell; what was missing was named: the task said "emits"
 without a channel, and this point fixes the channel as one new Annex I method with an explicit
@@ -549,7 +549,7 @@ What **is** built and verified: the policy file an operator edits
 prefix too long for the key rather than truncating it — a truncated key matches
 a *shorter* prefix, which is a broader rule than the one written.
 
-**Closing.** Verified against the plan's `F2.WS.04` row (`:1622`), the "Why each seam matters"
+**Closing.** Verified against the plan's `F2.WS.04` row (`:1632`), the "Why each seam matters"
 table that scopes kernel-side evaluation out of F2, §B.2 `PL-04`, and `F1.PL.03`'s
 `PolicyBackend` as implemented. Nothing of the skeleton fell; one silence was filled: "published
 atomically" had no mechanism anywhere in the plan, and this point fixes it as an array-of-maps
@@ -709,7 +709,7 @@ notifier (`SECCOMP_GET_NOTIF_SIZES`, present since 5.0) and reported `yes` on 5.
   first becomes code, and that the directory-rename form is why a freezer does not substitute.
 - `docs/ai/STATE.md`: `Q-13` moved from open to answered, with the date and the answer.
 
-**Closing.** Verified against the plan's `F2.WS.05` row (`:1623`), `F3.EN.12` (`:1718`), `H-01`,
+**Closing.** Verified against the plan's `F2.WS.05` row (`:1633`), `F3.EN.12` (`:1745`), `H-01`,
 `docs/ai/memory/seccomp-unotify-toctou.md:7`, §2.23's capability annotation, and the kernel
 versions of `ADDFD` (5.9) and `SECCOMP_ADDFD_FLAG_SEND` (5.14). `Q-13` is **answered**: the
 mechanism moves into F2, bounded to read-only `openat` at matching credentials, with everything
@@ -818,7 +818,7 @@ adjudicator, asserting the terminal outranks it.
   the reason.
 - Plan §F1.1's `DecisionPayload`: the new flag.
 
-**Closing.** Verified against the plan's `F2.WS.06` row (`:1624`),
+**Closing.** Verified against the plan's `F2.WS.06` row (`:1634`),
 `docs/design/01_permission-model.md` §7.3's prompt, §2.20.5's budgets, `F1.PA.03`'s ladder as
 implemented, and §4 of the `aisme run` note. The skeleton's claim that
 `AISME_TERMINAL_ANSWER` is "accepted for unattended gates" survives but not unconditionally: as
@@ -904,7 +904,7 @@ Safe and clear once three rules are fixed:
 - `docs/ops/`: the first runbook entry — where the WAL and the checkpoint live, and what to do
   when a segment is refused as foreign.
 
-**Closing.** Verified against the plan's `F2.WS.07` row (`:1625`), `F1.RT.05` as implemented in
+**Closing.** Verified against the plan's `F2.WS.07` row (`:1635`), `F1.RT.05` as implemented in
 `crates/aisme-core/src/wal.rs`, and §3.6's rule for the `agentd`↔`forensicd` pairing. Nothing of
 the skeleton fell; two silences were filled — where the resume point lives and when it is written
 — and the ordering chosen (checkpoint after work) makes the failure mode duplicate delivery
@@ -999,7 +999,7 @@ Safe and clear, with three properties pinned and one refusal:
 - `docs/design/02_aisme-run.md`: §3's table gains the method names, and §6's open item — a shell
   that later launches the agent — gains the note that F2 leaves it open deliberately.
 
-**Closing.** Verified against the plan's `F2.WS.08` row (`:1626`), `docs/design/02_aisme-run.md`
+**Closing.** Verified against the plan's `F2.WS.08` row (`:1636`), `docs/design/02_aisme-run.md`
 §3–§5, `F1.RT.07`'s delegated subtree as shipped in `deploy/systemd/aisme-agentd.service`, and
 `F7.PS.07`'s narrowing decision. Nothing fell; one silence was filled — the CLI cannot create the
 cgroup and must ask, which changes the protocol rather than the CLI's privileges — and one
@@ -1077,7 +1077,7 @@ Safe and clear with three rules:
 - `budgets.toml`: keys for the four figures under a `latency` section that already exists,
   with the F2 profile's ceilings drawn from §2.22's T1/T2 rows.
 
-**Closing.** Verified against the plan's `F2.WS.09` row (`:1627`), §2.22's latency rows,
+**Closing.** Verified against the plan's `F2.WS.09` row (`:1637`), §2.22's latency rows,
 Annex H's `bench-t0` ownership (`xtask/src/annex_h.rs:74`), and `F1.ON.03`'s clock normalization.
 The skeleton's row survives; what fell is the *name*: `bench-t0` at F2 measures no T0, and the
 command will say so in its own output rather than leaving a reader to infer a figure that does
@@ -1153,7 +1153,7 @@ Safe and clear, with two properties named:
 - `docs/ai/AGENTS.md`: `test-skeleton` added to the commands a session runs before claiming F2
   work is done.
 
-**Closing.** Verified against the plan's `F2.WS.10` row (`:1628`), §3.2's first consequence, and
+**Closing.** Verified against the plan's `F2.WS.10` row (`:1638`), §3.2's first consequence, and
 `F1.PA.02`/`F1.PA.06` as implemented. Nothing fell; the trap named — a gate that reimplements the
 slice proves only itself — is the reason the point fixes the substitution point at the composition
 root. Open: nothing.
@@ -1246,7 +1246,7 @@ Safe and clear, with four properties that must be explicit:
 - `docs/design/02_aisme-run.md` §3, step 5: the F2 subset named, so a reader knows what is
   implemented and what is `F3.EN.09`'s widening.
 
-**Closing.** Verified against the plan's `F2.WS.11` row (`:1629`), §2.2.1's argument for why L2
+**Closing.** Verified against the plan's `F2.WS.11` row (`:1639`), §2.2.1's argument for why L2
 cannot trap everything, `F0.VER.04`'s measurement (`docs/reports/01_f0-verification.md`), and
 `docs/design/02_aisme-run.md` §5's degradation table. Nothing of the skeleton fell; two silences
 were filled — how a denial nobody was notified about gets recorded honestly (a wire flag, not a

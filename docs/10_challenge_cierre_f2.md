@@ -270,23 +270,33 @@ one parameter and one `poll`. Open: nothing.
 *Is this the best order?* Three tasks remain, plus point 2, plus a recording, plus the gate. The
 order is decided by what unblocks what and by what would otherwise be measured twice:
 
-1. **`F2.WS.11` — Landlock.** First, because it is the last thing that changes what the gate
-   observes, and because its seam already exists: `pre_exec` in `crates/aisme-cli/src/run.rs` runs
-   after the cgroup and before `exec`, which is the only place a ruleset is inherited from.
-   `docs/05` point 11 specifies it and nothing under it has changed.
-2. **`docs/09` point 6 / this document's point 2 — the cgroup release.** Second, because it
+1. **`F2.WS.05`'s missing half — the compiled policy reaches the supervisor.** First, because
+   every later measurement is taken against whatever the enforcer decides, and because it is the
+   difference between a gate that demonstrates enforcement and one that demonstrates a flag.
+   `aisme run --policy <file>` parses and compiles with `aisme_core::policy::{parse, compile}` —
+   the same F1 compiler `aisme-loaderd --publish` uses, so a policy that compiles for one compiles
+   for the other — lowers it, and carries the lowered `(prefix, verdict)` table in
+   `registerSession`. The supervisor matches **longest prefix**: `deny` refuses with `-EACCES` and
+   **asks nobody**; `escalate` asks the adjudicator; anything else is answered with a validated
+   descriptor. `--escalate <prefix>` stays as the shorthand it is, documented as expressing a
+   subset of what `--policy` expresses, and the gate uses `--policy`.
+2. **`F2.WS.11` — Landlock.** Because it is the last thing that changes what the gate observes, and
+   because its seam already exists: `pre_exec` in `crates/aisme-cli/src/run.rs` runs after the
+   cgroup and before `exec`, which is the only place a ruleset is inherited from. `docs/05`
+   point 11 specifies it and nothing under it has changed.
+3. **`docs/09` point 6 / this document's point 2 — the cgroup release.** Because it
    touches `registerSession`, and doing it after `F2.WS.10` would mean writing the skeleton's
    fixture twice.
-3. **`F2.WS.10` — the whole slice on `MockSensor`.** Third. It is the gate's first line and the
+4. **`F2.WS.10` — the whole slice on `MockSensor`.** It is the gate's first line and the
    thing that makes every later phase testable in milliseconds, so it should see the finished
    shape, not an interim one. `docs/05` point 10 specifies it.
-4. **`F2.WS.09` — latency.** Fourth, because a baseline is only worth recording once the code it
+5. **`F2.WS.09` — latency.** Because a baseline is only worth recording once the code it
    measures has stopped changing. `docs/05` point 9 specifies it, and Annex H already assigns it
    `bench-t0`.
-5. **The reference-trace recording** (`F0.ASSET.02`, finding 4). Fifth, and it must be **before**
+6. **The reference-trace recording** (`F0.ASSET.02`, finding 4). It must be **before**
    the gate: plan `:1360` says so, and it is recorded in observe-only mode so that making it
    perturbs nothing.
-6. **GATE F2.**
+7. **GATE F2.**
 
 *Is it coherent with the specs?* Yes, with one correction the gate itself needs, which is
 finding 2 and finding 3.
@@ -296,47 +306,41 @@ that is the decision below.
 
 ### 2. Verification
 
-**The decision finding 3 asked for: the gate's lines gain the flags, and F2's policy stays where
-F2 put it.**
+**Finding 3's question is answered by the specs, and it was never the owner's to take.** Three
+sentences settle it:
 
-The alternative — making the compiled policy reach the enforcer so `aisme run` needs no flags —
-is a real design and it is **F3's**: `F3.PT.02` puts the trie in the kernel and the enforcer reads
-it there. Building a user-space copy of that in F2, so a gate line can be shorter, would be
-building the thing `docs/06` point 3 refused: a policy the daemon holds. F2's escalate class is
-declared by the session, and the gate should say so.
+- **Plan `:1638`** — *"**Kernel-side** evaluation of that artefact is F3's first gate: at this shape
+  the sensor is a tracepoint and **enforcement is seccomp**, so the kernel never reads the trie."*
+  What `F3.PT.02` owns is evaluation **in the kernel**, not evaluation.
+- **`docs/05` §5.3** — the allow path, step by step: *"… `openat2` with `RESOLVE_NO_MAGICLINKS` →
+  **evaluate the opened file against the compiled policy** → `ADDFD`"*. The supervisor evaluating
+  the compiled policy **is** `F2.WS.05`'s specified behaviour.
+- **`docs/06` point 3** said *"it neither publishes (that is the loader) nor evaluates (that is
+  F3)"*. **That sentence was the defect.** Its paragraph is about *the maps*, and it slid from
+  "`agentd` does not open the maps" to "`agentd` does not evaluate", contradicting the two above.
+  It is corrected where it was written rather than worked around here.
 
-So GATE F2's guest lines become, with the reasons written beside them in the plan:
+So: **the supervisor evaluates the compiled policy, in user space, and that is not a copy of
+`F3.PT.02`** — F3's copy is the kernel-side reader of the trie. What `docs/06` point 3 refused was
+`agentd` holding a policy **map**; it never refused `agentd` knowing a policy. The policy reaches
+the supervisor from the session, which compiled it with the same F1 compiler the loader uses.
 
-```bash
-cargo xtask vm run <image> --with-dist -- \
-    aisme run --trap-openat -- sh -c 'cat /etc/hostname'      # allowed: a validated descriptor
-cargo xtask vm run <image> --with-dist -- \
-    aisme run --trap-openat --escalate /etc/shadow -- sh -c 'cat /etc/shadow'   # no answer -> deny
-AISME_TERMINAL_ANSWER=d cargo xtask vm run <image> --with-dist -- \
-    aisme run --trap-openat --escalate "$HOME/.aws" -- sh -c 'cat ~/.aws/credentials'
-```
+**And the security argument agrees, which is the test that matters.** A compiled `deny` **cannot be
+answered away**: nobody is asked, so no answer exists to get wrong, and no timeout has to expire
+for it to hold. An escalation that denies on timeout is strictly weaker — it depends on nobody
+answering, and it spends a budget before it is safe. For a credential store the policy says *deny*,
+and a policy deny that could be turned into a prompt is a policy deny that can be argued with. The
+session-declared escalate list this document was going to enshrine is the weaker of the two, and
+it was built because the implementation was narrower than the specification, not because anyone
+chose it.
 
-**Three properties this keeps, and they are why it is not a weakening:**
+**What this makes owed, and it is a correction to a task already reported done:** `F2.WS.05`'s
+done-condition — *a denied `openat` returns `-EACCES`* — is met and measured. But `docs/05` §5.3's
+allow path is not: the supervisor applies a **session-declared prefix list**, not the compiled
+policy. That is step 1 of the closing plan below, before anything else, because every later
+measurement is taken against whatever the enforcer decides.
 
-- The **exit criterion is unchanged**: an engineer types `aisme run`, the terminal asks, they
-  answer, the syscall obeys. Line three is that, and it already passes on the host.
-- The denial in line two is a **real** denial: the supervisor is asked, has no answer within the
-  budget, and the kernel returns `-EACCES` to the caller. It is not a filter that happens to be
-  off.
-- A line that passes because nothing was enforced is impossible to write this way, because the
-  flags that enable enforcement are on the line.
-
-**What is deliberately not done**: the gate is not made to pass by lowering it. Line two asks for
-the same observable outcome the plan asked for — `cat /etc/shadow` returns `-EACCES` — and gets it
-by the mechanism F2 actually has.
-
-**One thing to ask the owner rather than decide**, because it changes what F2 claims: plan `:1609`
-lists F2's policy as `deny /etc/shadow`, `escalate ~/.aws/**`, default allow. After this, F2
-demonstrates **escalate and its two answers**, and `deny` is what an unanswered escalation
-produces. The compiled `deny` verdict — a rule that is refused without anybody being asked —
-reaches the kernel in `F3.PT.02`. **Is F2's scope row rewritten to say that, or is a user-space
-deny added to the enforcer?** This point does not choose: the first is honest about what F2 is, the
-second is the copy of F3 that `docs/06` refused.
+GATE F2's guest lines therefore carry `--policy`, and the plan's block now says why.
 
 ### 3. Implementation
 
@@ -379,8 +383,9 @@ user-space deny is added to the enforcer, which is the copy of F3 `docs/06` poin
 |---|---|
 | 1 | Three of the four things it was asked to amplify **already are**, in `docs/05` points 9–11; the gate would **deny nothing** as written, because trapping became opt-in after it; the gate asks for two verdicts the daemon cannot reach; and `F0.ASSET.02`'s recording is due now and invisible |
 | 2 | The cgroup is released by **`agentd`**, on `poll` of `cgroup.events` — not by a sweeper and not by the process `exec` replaced. The listener becomes optional so an unsupervised session is still watched, and the client's path is validated because it becomes a filesystem operation |
-| 3 | The order: `.11`, the cgroup, `.10`, `.09`, the recording, the gate. The gate's lines gain the flags F2's design requires rather than F2 gaining a policy copy `docs/06` refused |
+| 3 | The order: **`F2.WS.05`'s compiled-policy half first**, then `.11`, the cgroup, `.10`, `.09`, the recording, the gate. The supervisor evaluates the compiled policy — plan `:1638` reserves only *kernel-side* evaluation for F3, and a compiled `deny` cannot be answered away while a timeout-deny depends on nobody answering |
 
-**Still open for the owner:** whether F2's scope row says that F2 demonstrates *escalate* and its
-answers — with compiled `deny` arriving in `F3.PT.02` — or whether a user-space deny goes into the
-enforcer now.
+**Nothing is open for the owner.** The question point 3 first raised was answered by plan `:1638`,
+`docs/05` §5.3 and the correction of `docs/06` point 3's one wrong sentence — and the security
+argument points the same way: a compiled `deny` cannot be answered away, while an escalation that
+denies on timeout depends on nobody answering. F2's scope row stands as written.

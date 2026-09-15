@@ -71,7 +71,7 @@ twice, in the section the read order lists as item 5.
 `:1116` catalogues eight: `LsmEnforcer`, `LandlockEnforcer`, `CgroupConnectEnforcer`,
 `SeccompEnforcer`, `FreezerEnforcer`, `TunnelEnforcer`, `SdkEnforcer`, `NullEnforcer`. With many
 enforcers live at once, "wherever decisions are made" is **that enforcer's** decision point, and
-each renders the same `CompiledPolicy` into its own. The plan even shows one: `F3.EN.09` (`:1715`)
+each renders the same `CompiledPolicy` into its own. The plan even shows one: `F3.EN.09` (`:1742`)
 reads *"compile a Landlock ruleset from `CompiledPolicy`, apply it in `aisme run` before `exec`"* —
 that is `LandlockEnforcer::publish`, described without being named.
 

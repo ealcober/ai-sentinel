@@ -1128,8 +1128,18 @@ Three consequences that fall out of this and would not otherwise:
 let sensors:     Vec<Box<dyn Sensor>>      = platform::sensors(&caps);
 let enforcers:   Vec<Box<dyn Enforcer>>    = platform::enforcers(&caps);
 let adjudicators = AdjudicatorLadder::from(platform::adjudicators(&caps)); // preference-ordered
-Engine::new(sensors, enforcers, adjudicators, sink).run()
+
+Engine::new(sensors, sink, detectors, batch_capacity).run()   // the hot loop, and only it
+// the enforcers and the ladder live on agentd's CONTROL thread, never here
 ```
+
+**The engine holds neither the enforcers nor the ladder, and that is the design rather than an
+omission.** A human's answer takes seconds and the hot loop's budget is microseconds (§2.20.5), so
+an engine that owned an adjudicator would put a person on the T0 path. They are held by
+`aisme-agentd`'s control thread — the one that already serves Annex I — and each supervised session
+gets a thread of its own there. An earlier revision of this block showed
+`Engine::new(sensors, enforcers, adjudicators, sink)`; the code has never had that signature, and
+the line is corrected here rather than the code being changed to match a diagram.
 
 `aisme-agentd::platform` is the **composition root**: the only module allowed to know which OS it is on and the only one allowed to name a concrete adapter. Adapters export constructors; `aisme-core` never names an adapter. A `cfg(target_os)` anywhere else is a defect, and `verify-layering` fails on a second composition root.
 
@@ -1641,14 +1651,31 @@ test $(grep -rn 'cfg(target_os' crates/aisme-core/src --include='*.rs' | grep -v
 
 **GATE F2** — the product runs:
 ```bash
+P=/etc/aisme/policy.aisme       # deny /etc/shadow, escalate ~/.aws/**, default allow
+
 cargo xtask test-skeleton              # full slice against MockSensor, no kernel
-cargo xtask vm run <image> --with-dist -- aisme run -- sh -c 'cat /etc/hostname'   # real kernel, allowed
-cargo xtask vm run <image> --with-dist -- aisme run -- sh -c 'cat /etc/shadow'     # real kernel, denied -EACCES
-AISME_TERMINAL_ANSWER=d cargo xtask vm run <image> --with-dist -- aisme run -- sh -c 'cat ~/.aws/credentials'  # ESCALATE -> terminal prompt -> answer obeyed
-cargo xtask vm run <image> --with-dist -- aisme run -- sh -c 'touch /tmp/outside'  # Landlock deny, zero notifications (if F0.VER.04)
+cargo xtask vm run <image> --with-dist -- aisme run --policy $P -- sh -c 'cat /etc/hostname'   # allowed: a descriptor the supervisor opened
+cargo xtask vm run <image> --with-dist -- aisme run --policy $P -- sh -c 'cat /etc/shadow'     # compiled deny: -EACCES, and nobody was asked
+AISME_TERMINAL_ANSWER=d cargo xtask vm run <image> --with-dist -- aisme run --policy $P -- sh -c 'cat ~/.aws/credentials'  # ESCALATE -> terminal prompt -> answer obeyed
+cargo xtask vm run <image> --with-dist -- aisme run --policy $P -- sh -c 'touch /tmp/outside'  # Landlock deny, zero notifications (if F0.VER.04)
 cargo xtask verify-budgets --profile skeleton                  # measuring real code now
 cargo xtask bench-t0 --syscalls 100000                         # baseline recorded
 ```
+
+**`--policy` is on every guest line, and its absence was a defect.** `aisme run` installs no seccomp
+filter unless it is given a policy, because a filter traps *every* `openat` and the only "permit
+unchanged" the kernel offers — `SECCOMP_USER_NOTIF_FLAG_CONTINUE` — is forbidden for a path-bearing
+syscall (`I-28`). A session under a filter is therefore answered open by open, and one without a
+policy would be answered by nobody. An earlier revision of this block omitted the flag, which would
+have made three of these lines **pass by enforcing nothing** — the worst outcome a gate can have,
+because it reports the property it did not test.
+
+**The three verdicts are three different mechanisms, and the gate is written to tell them apart.**
+`/etc/hostname` is allowed and arrives as a descriptor *the supervisor opened* — never as permission
+to re-resolve the path. `/etc/shadow` is a **compiled deny**: refused without anybody being asked,
+which is what makes it stronger than an escalation nobody answers. `~/.aws/credentials` escalates,
+and the line asserts the answer is obeyed. A gate that could not distinguish a compiled deny from a
+timed-out prompt would let the first silently become the second.
 
 **Exit criterion, stated as a demo rather than a checklist:** an engineer types `aisme run -- bash`, the terminal asks whether to allow reading a protected file, they answer, and the syscall obeys. If that works, the architecture is sound and everything after this is widening.
 

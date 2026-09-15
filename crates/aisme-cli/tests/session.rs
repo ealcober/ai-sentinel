@@ -168,9 +168,14 @@ fn delivered(summary: &str) -> u64 {
 /// sibling of `aisme`. Looked up rather than assumed: a run without it skips
 /// with its reason instead of failing for a reason that is not the product's.
 fn agentd() -> Option<std::path::PathBuf> {
+    sibling("aisme-agentd")
+}
+
+/// Any binary of this workspace, beside the one under test.
+fn sibling(name: &str) -> Option<std::path::PathBuf> {
     let path = std::path::Path::new(env!("CARGO_BIN_EXE_aisme"))
         .parent()?
-        .join("aisme-agentd");
+        .join(name);
     path.is_file().then_some(path)
 }
 
@@ -299,6 +304,87 @@ fn counts(summary: &str) -> (u64, u64, u64) {
             .unwrap_or(u64::MAX)
     };
     (of("delivered"), of("denied"), of("asked"))
+}
+
+/// **Both planes exist in one session**: the hook's declarations and the
+/// session's actions reach the same WAL.
+///
+/// They never had. Measured before the daemon served connections concurrently:
+/// a hook declaring from inside a supervised session hung for ever, and with a
+/// budget on its socket, **one of five** declarations landed and each cost the
+/// whole budget. The daemon accepted connections serially and `aisme run` held
+/// one open for the session's whole life, so the hook queued behind it.
+///
+/// The topology is the one a real agent has — supervisor, agent, and the hook
+/// and the tool as two **children** of the agent — because that is the only
+/// shape in which the two planes meet.
+///
+/// It asserts that the declarations arrive, not that they attribute: joining a
+/// declaration to an action made by its *sibling* is a separate open point,
+/// recorded in `STATE.md`.
+#[test]
+fn a_hook_declares_from_inside_a_supervised_session_and_every_declaration_lands() {
+    if !delegation_available() {
+        eprintln!("SKIP: this host does not delegate a cgroup subtree to us");
+        return;
+    }
+    let Some(forensicd) = sibling("aisme-forensicd") else {
+        eprintln!("SKIP: aisme-forensicd is not beside the binary under test");
+        return;
+    };
+    let Some((mut server, socket)) = daemon("hook") else {
+        eprintln!("SKIP: aisme-agentd could not be started");
+        return;
+    };
+    let wal = socket.parent().expect("the daemon's directory").join("wal");
+
+    let dir = std::env::temp_dir().join(format!("aisme-hook-input-{}", std::process::id()));
+    let scope = dir.join("workspace");
+    std::fs::create_dir_all(&scope).expect("the scope");
+
+    let me = std::path::Path::new(env!("CARGO_BIN_EXE_aisme"));
+    // The binary's own path is **quoted**: this workspace lives under a
+    // directory with a space in its name, and an unquoted path is two words to
+    // a shell. The harness earned this comment by running zero declarations and
+    // reporting it as a product defect.
+    let script = format!(
+        "for i in 1 2 3 4 5; do echo '{{\"tool_name\":\"Bash\",\"session_id\":\"t\"}}' | \"{}\" declare; done; /bin/cat /etc/hostname",
+        me.display()
+    );
+    let out = aisme()
+        .env("AISME_AGENTD_SOCKET", &socket)
+        .env("LC_ALL", "C")
+        .args(["run", "--scope"])
+        .arg(&scope)
+        .args(["--trap-openat", "--", "/bin/sh", "-c", &script])
+        .output()
+        .expect("aisme run");
+    release(&String::from_utf8_lossy(&out.stdout));
+
+    // The daemon writes the WAL from its own loop; give it a tick to land.
+    std::thread::sleep(std::time::Duration::from_millis(500));
+    let tail = Command::new(&forensicd)
+        .arg("--tail")
+        .arg(&wal)
+        .arg("--once")
+        .output()
+        .expect("aisme-forensicd");
+    let _ = server.kill();
+    let _ = server.wait();
+    let records = String::from_utf8_lossy(&tail.stdout).into_owned();
+    let _ = std::fs::remove_dir_all(&dir);
+
+    let declared = records.lines().filter(|l| l.contains("ToolCall")).count();
+    assert_eq!(
+        declared, 5,
+        "{declared} of 5 declarations reached the WAL from inside a supervised session; \
+         served serially only the first did, and the rest spent their budget and were \
+         dropped:\n{records}"
+    );
+    assert!(
+        records.contains("FileOpen"),
+        "the session's own actions did not reach the WAL either:\n{records}"
+    );
 }
 
 /// **A declaration may be lost; it may never be a hang.**

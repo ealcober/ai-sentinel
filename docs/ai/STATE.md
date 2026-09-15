@@ -13,6 +13,9 @@
 
 | Item | Where |
 |---|---|
+| **The daemon serves connections concurrently, and the two planes exist in one session at last** (`F0.ASSET.02`). It accepted serially while `aisme run` holds one connection open for the session's whole life, so a hook declaring from inside a supervised session **hung for ever**; with a budget on its socket, five declarations cost **103 ms each** and **one** landed. Now: **9–22 ms** and **5 of 5**. A thread each and not one thread polling many, because `decide_open` calls the adjudicator **on the serving thread** and the terminal budget is ten seconds — a multiplexer would freeze every session for the length of one prompt, and `a_blocked_adjudication_does_not_freeze_the_daemon` is the test that says so. Fixing the accept loop moved the freeze one level down before that test caught it: the generation cell was locked across the whole request, so one prompt still blocked everyone for the full ten seconds. It is copied in and written back now, and **no lock spans a request**. Bounded at **64** connections with a named refusal (`I-19`), and a panic costs its connection rather than the daemon. Not `F1.RT.02`'s cap, which is Tokio's: the control plane always ran on its own thread. 375 tests | `crates/aisme-agentd/src/ipc.rs` |
+| **`ADR-10` — one sensor load on this host, for the reference recording only.** Proposed, and narrow by construction: one `--load-sensor` run by hand, and the sensor attached for **one** observe-only session. No BPF is loaded by any test, gate or hook, and `probe()` is not changed — the test that holds it is named in the ADR as the tripwire for the exception growing. It exists because three measurements leave no alternative: a guest cannot host a real session without the owner's credentials in it, the seccomp path denies **every write** so it cannot carry a working agent, and an observe-only session records **zero actions** without the sensor. | `docs/adr/10_one-sensor-load-on-the-host-for-the-reference-recording.md` |
+| **What an escalation claims is written down** (`D-6`). It is **friction and a record, not a control**: it slows the action, puts a person in the loop and writes down that it happened, and AISME does not claim the person will catch what is wrong — users approve **93 %** of prompts and miss **33.4 %** of exfiltrations and **35.0 %** of scope violations. What the product calls *enforcement* is what the kernel refuses without asking. The design always treated it that way — the `asked` column exists for exactly this — and now the threat model and the F2 scope table say it. | `docs/security/01_threat-model.md`, plan F2 scope table |
 | **An action reached the daemon with no actor, so nothing could ever be attributed to it** (`F0.ASSET.02`). Since `ADR-09`, `decideOpen` is the daemon's only sight of an action — and correlation attributes an action to the declaration whose process *subtree* contains it. Measured: every `FileOpen` in a real supervised session's WAL read `tgid=0`, and `--to-trace` reported **5 of 5 actions unattributed**. The same defect `F2.WS.03` closed for declarations, in the other plane. `decideOpen` carries `pid` and `ppid` now, and neither is claimed by the session: the pid is `seccomp_notif.pid`, written by the kernel when it suspended the call, and the parent is read by the supervisor **while the call is still suspended**, the only moment a short-lived process is certainly still there to be asked. Absent stays absent — `0` means *we were not told*. | `crates/aisme-agentd/src/ipc.rs`, `crates/aisme-cli/src/run.rs` |
 | **A declaration waited for ever on a busy daemon, in front of every tool call** (`F2.WS.03`). `aisme declare` is a pre-tool hook and authorizes nothing, so a daemon that does not answer must cost a dropped declaration and not the agent's turn — its own module note said exactly that, and the socket had no budget. Measured in the real topology, the session **hung for ever**. It now gives up after **100 ms**, a hundred times the 1 ms a declaration was measured to cost. The reason the daemon does not answer is the serial accept loop, which is under *Blocked* and is the owner's. | `crates/aisme-cli/src/declare.rs` |
 | **The pty helper used `ptsname`, which is not reentrant, and one test adjudicated against another's terminal.** Every test in a binary shares one process; `ptsname` returns a pointer into libc's own **static** storage. Measured under `--test-threads 8` with the machine loaded: one run in twelve failed `left: Deny, right: Allow` — the adjudicator had opened a pty nobody would type into and returned its timeout verdict. `ptsname_r` now, and zero failures in twelve stressed runs. Third instance today of one lesson: a shared name or a shared static, under tests that share a process. | `crates/aisme-agentd/src/terminal.rs` |
@@ -294,30 +297,20 @@ shipped configuration**, which is now what they measure.
 
 **What unblocks it:** the policy maps in a **second BPF object** that `aisme-loaderd` creates and owns, which keeps the sensor's verified program untouched and puts the maps where `F3.PT.02` reads them anyway. The compile and lowering halves are done and tested; what waits is the publication.
 
-**BLOCKING `F0.ASSET.02`: the daemon accepts connections serially, so the intent plane and the
-enforcement plane cannot both exist in one session.** `ipc::serve_with` is `for stream in
-listener.incoming()` with an inner read loop, and `aisme run` holds one connection open for the
-**whole session** — for `decideOpen` when it traps, and for the registration when it does not. A
-hook connecting from inside that session queues behind it and is never reached.
+**BLOCKING `F0.ASSET.02`: a declaration cannot be joined to an action made by its sibling.** The
+daemon serving connections concurrently made both planes land in one session — measured, 5 of 5
+declarations and 55 actions — and the trace still reports **55 unattributed**, because
+`record::attribute` walks the action's **ancestry** looking for a declaration made by an ancestor.
+In the topology a real agent has, the hook and the tool are two **children** of the agent: siblings,
+never ancestors. The declaration also carries `ppid = 0`, so even the chain that would let them meet
+is not recorded.
 
-Measured 2026-09-15, in the topology a real agent has (`aisme run` → agent → {hook, tool}):
-
-- with no budget on the hook's socket, the session **hung for ever**. The process tree read `aisme
-  run` in `recv_wait_event`, the shell in `do_wait`, and `aisme declare` in
-  `unix_stream_data_wait`.
-- with the 100 ms budget now in `aisme declare`, five declarations from inside an observe-only
-  session took **103 ms each** — every one hit the budget — and **one of five** reached the WAL.
-
-`F2.WS.03`'s measured *1 ms per call* was measured with **no session registered**. The two planes
-had never been exercised together, and the first time they were, they deadlocked. This blocks the
-reference recording directly: a fixture needs both planes at once, by definition.
-
-**What unblocks it** is a decision about the daemon's concurrency, and it is the owner's because it
-touches `F1.RT.02`'s two-worker cap and the 50 MB budget: a thread per connection with the shared
-state behind the mutexes `Supervision` already has, or the tokio runtime the daemon already
-carries, or a separate socket for the session's long-lived connection. The half that is fixed is
-the hook's: a declaration authorizes nothing, so it now gives up and is lost rather than costing
-the agent's turn.
+**What unblocks it** is a decision about what a declaration binds to, and it is the owner's because
+it changes what `F2.WS.03` states. The proposal: the daemon reads the declaring peer's parent from
+`/proc/<pid>/stat` while the peer is still connected — derived, not claimed, so still unforgeable —
+stamps it as `ppid`, and `attribute` accepts a declaration whose `tgid` **or** `ppid` is an ancestor
+of the action. The risk to weigh is over-attribution when one agent has two hooks in flight, which
+is the same ambiguity the current rule already has for two declarations by one process.
 
 **Nothing else is blocked.** `F2.WS.01`'s verifier clause was the open one and is now closed: `vm run --with-dist` stages the product's own loader into the guest, and the kernel answered — `ACCEPTED` on 6.8, `REFUSED` on 5.4 naming `BPF_MAP_TYPE_RINGBUF`. The two items below were blockers, are not now, and keep their reasoning because both recur.
 

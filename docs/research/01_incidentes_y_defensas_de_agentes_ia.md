@@ -488,7 +488,7 @@ no recorded fate is a document that gets re-litigated.
 | `D-3` | **Applied as a plan row.** `F3.EN.12` is ordered after `F3.EN.09` and `F3.EN.11`, with the +17 µs and 2.42 µs figures on the row |
 | `D-4` | **Measured, and open — the owner's.** The gap is real (all four files writable inside the scope), the three routes are costed in `docs/14` point 4, and it carries a test asserting it is open. `F3.EN.11` names it |
 | `D-5` | **Applied.** The threat model gains a trust-handoff boundary, an attack-surface entry and a non-goal, each marked `[RISK]` |
-| `D-6` | **Open — the owner's.** Whether the escalate class is a control or a friction-and-recording mechanism changes what F2 claims, and that is not an implementation decision |
+| `D-6` | **Applied.** The escalate class is **friction and a record, not a control**, and the threat model §4 and the plan's F2 scope table now say so. What AISME calls enforcement is what the kernel refuses without asking |
 | `D-7` | **Applied.** `F2.WS.05`: an absence answers `ENOENT`, a refusal answers `EACCES`. Test: `a_missing_file_says_missing_and_a_refused_one_says_refused`. Its *effect* on evasion stays unmeasured and the plan row says so |
 | `D-8` | **Applied.** A `GATE F2` line and `enforcement_does_not_move_when_the_agent_disables_its_own_approvals` |
 | `D-9` | **Applied as a plan row.** `F0.ASSET.02` is reframed as a deliverable with an audience outside this repository. The **recording** it needs is still the owner's (`docs/14` point 7) |

@@ -1056,7 +1056,7 @@ pub fn generation_cell() -> GenerationCell {
     std::sync::Arc::new(std::sync::Mutex::new(None))
 }
 
-/// Listen on `path`, serving one connection at a time.
+/// Listen on `path`, serving every connection concurrently.
 ///
 /// # Errors
 ///
@@ -1072,7 +1072,7 @@ pub fn serve(path: &Path, owner_uid: u32, until: impl FnMut() -> bool) -> std::i
         // No policy and no sessions: this surface answers `decideOpen` with
         // "no such session", which is the honest answer from a server that is
         // supervising nothing.
-        &Supervision::new(None),
+        &std::sync::Arc::new(Supervision::new(None)),
         Declarations::new,
         drop,
         until,
@@ -1089,8 +1089,8 @@ pub fn serve_feeding_sharing(
     owner_uid: u32,
     declared: crate::declare::Declared,
     generation: &GenerationCell,
-    supervision: &Supervision,
-    on_session: impl FnMut(Registered),
+    supervision: &std::sync::Arc<Supervision>,
+    on_session: impl Fn(Registered) + Send + Sync + 'static,
     until: impl FnMut() -> bool,
 ) -> std::io::Result<()> {
     serve_with(
@@ -1104,31 +1104,44 @@ pub fn serve_feeding_sharing(
     )
 }
 
-fn serve_with(
-    path: &Path,
+/// How many connections this daemon serves at once.
+///
+/// A bound rather than none, because the socket is uid-matched and an
+/// unbounded accept loop would let anything that can reach it spawn threads
+/// until the 50 MB budget breaks — a silent degradation where `I-19` wants a
+/// named refusal. Nothing in F2 comes near it: a session holds one connection
+/// and a hook holds one at a time.
+const MAX_CONNECTIONS: usize = 64;
+
+/// Decrements the live-connection count however the thread ends, panic
+/// included. A counter that only falls on the happy path is a leak with extra
+/// steps.
+struct Live(std::sync::Arc<std::sync::atomic::AtomicUsize>);
+
+impl Drop for Live {
+    fn drop(&mut self) {
+        self.0.fetch_sub(1, std::sync::atomic::Ordering::Release);
+    }
+}
+
+/// Serve one accepted connection until the peer closes it.
+///
+/// Everything here is per connection, which is what lets the connections run
+/// concurrently without sharing anything but the mutexes they already shared.
+fn serve_connection(
+    stream: std::os::unix::net::UnixStream,
+    peer: &Peer,
     owner_uid: u32,
     generation: &GenerationCell,
     supervision: &Supervision,
-    mut counter: impl FnMut() -> Declarations,
-    mut on_session: impl FnMut(Registered),
-    mut until: impl FnMut() -> bool,
+    declarations: &mut Declarations,
+    on_session: &(dyn Fn(Registered) + Send + Sync),
 ) -> std::io::Result<()> {
-    if path.exists() {
-        std::fs::remove_file(path)?;
-    }
-    let listener = UnixListener::bind(path)?;
-    for stream in listener.incoming() {
-        let stream = stream?;
-        let peer = peer_of(&stream)?;
-        let mut requests = Requests::new(std::os::fd::AsRawFd::as_raw_fd(&stream));
-        let mut writer = stream.try_clone()?;
-        // Held so the descriptor `requests` reads from stays open.
-        let _stream = stream;
-        // One counter per connection: a peer that reconnects to reset it has
-        // done the expensive part of the attack — a new connection, a new
-        // SO_PEERCRED check — for a new window, which is a far worse trade than
-        // sending declarations down one socket. F2.WS.08 keys it by session.
-        let mut declarations = counter();
+    let mut requests = Requests::new(std::os::fd::AsRawFd::as_raw_fd(&stream));
+    let mut writer = stream.try_clone()?;
+    // Held so the descriptor `requests` reads from stays open.
+    let _stream = stream;
+    {
         while let Some((line, received)) = requests.next()? {
             if line.trim().is_empty() {
                 continue;
@@ -1137,26 +1150,44 @@ fn serve_with(
                 received,
                 registered: None,
             };
-            writeln!(writer, "{}", {
-                // Held only across one request. A poisoned lock means a
-                // previous request panicked mid-write, and continuing with
-                // whatever was there would stamp an unknown number on a
-                // segment — so the value is taken either way and the caller
-                // sees the same answer.
-                let mut told = match generation.lock() {
-                    Ok(g) => g,
-                    Err(poisoned) => poisoned.into_inner(),
-                };
-                serve_line(
-                    &line,
-                    &peer,
-                    owner_uid,
-                    &mut declarations,
-                    &mut told,
-                    &mut ancillary,
-                    supervision,
-                )
-            })?;
+            // **The generation is copied in and written back, never held
+            // across the request.** `serve_line` can block for the length of an
+            // adjudication — `decide_open` calls `ask_a_human` on this thread
+            // and the terminal budget is ten seconds — so a lock spanning it
+            // would make one prompt freeze every other connection, which is the
+            // deadlock this server was just fixed for, moved one level down. It
+            // was measured doing exactly that: the second caller waited the
+            // full ten seconds.
+            //
+            // A poisoned lock means a previous request panicked mid-write, and
+            // continuing with whatever was there would stamp an unknown number
+            // on a segment — so the value is taken either way and the caller
+            // sees the same answer.
+            let taken = |cell: &GenerationCell| match cell.lock() {
+                Ok(g) => *g,
+                Err(poisoned) => *poisoned.into_inner(),
+            };
+            let before = taken(generation);
+            let mut told = before;
+            let answer = serve_line(
+                &line,
+                peer,
+                owner_uid,
+                declarations,
+                &mut told,
+                &mut ancillary,
+                supervision,
+            );
+            if told != before {
+                // Only `setPolicyGeneration` reaches here, and only the daemon's
+                // own loader calls it. Last writer wins, which is what a single
+                // cell meant before too.
+                match generation.lock() {
+                    Ok(mut g) => *g = told,
+                    Err(poisoned) => *poisoned.into_inner() = told,
+                }
+            }
+            writeln!(writer, "{answer}")?;
             // No method carries a descriptor any more — the seccomp listener
             // stays in the session, whose own parent answers it. One that
             // arrives is **closed**, not leaked and not ignored: the reader
@@ -1171,6 +1202,110 @@ fn serve_with(
                 on_session(session);
             }
         }
+    }
+    Ok(())
+}
+
+/// Listen on `path`, serving every connection **concurrently**, one thread
+/// each.
+///
+/// **Serially was a deadlock, and it was measured.** `aisme run` holds one
+/// connection open for the whole session — for `decideOpen` when it traps, for
+/// the registration when it does not — so a hook connecting from inside that
+/// session queued behind it and was never reached: the session hung for ever,
+/// with `aisme run` in `recv_wait_event`, the shell in `do_wait` and
+/// `aisme declare` in `unix_stream_data_wait`. The intent plane and the
+/// enforcement plane could not both exist in one session.
+///
+/// **A thread each, and not one thread polling many**, because this daemon's
+/// own handler blocks by the second: `decide_open` calls `ask_a_human` on the
+/// serving thread and the terminal budget is ten seconds. A multiplexer would
+/// have frozen every session and every hook for the length of one prompt.
+///
+/// Nothing new is shared. `Declarations` was already per connection, the
+/// generation cell was already an `Arc<Mutex<…>>`, and `Supervision` was
+/// already built out of mutexes. What changed is who runs the loop.
+fn serve_with(
+    path: &Path,
+    owner_uid: u32,
+    generation: &GenerationCell,
+    supervision: &std::sync::Arc<Supervision>,
+    counter: impl Fn() -> Declarations + Send + Sync + 'static,
+    on_session: impl Fn(Registered) + Send + Sync + 'static,
+    mut until: impl FnMut() -> bool,
+) -> std::io::Result<()> {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::Arc;
+
+    if path.exists() {
+        std::fs::remove_file(path)?;
+    }
+    let listener = UnixListener::bind(path)?;
+    let counter = Arc::new(counter);
+    let on_session = Arc::new(on_session);
+    let live = Arc::new(AtomicUsize::new(0));
+
+    for stream in listener.incoming() {
+        let stream = stream?;
+        let peer = peer_of(&stream)?;
+
+        if live.load(Ordering::Acquire) >= MAX_CONNECTIONS {
+            // Named and closed, never queued: a caller left waiting on a socket
+            // that will not be read cannot tell that from a slow answer, and a
+            // hook that cannot tell them apart spends its whole budget finding
+            // out (`I-19`).
+            let mut writer = stream;
+            let _ = writeln!(
+                writer,
+                "{}",
+                rpc::error(
+                    None,
+                    ErrorCode::InvalidRequest,
+                    &format!("the daemon is serving {MAX_CONNECTIONS} connections; try again"),
+                )
+            );
+            eprintln!("ipc: refused a connection at the {MAX_CONNECTIONS}-connection bound");
+            continue;
+        }
+
+        live.fetch_add(1, Ordering::Release);
+        let (generation, supervision) = (generation.clone(), Arc::clone(supervision));
+        let (counter, on_session) = (Arc::clone(&counter), Arc::clone(&on_session));
+        let live = Arc::clone(&live);
+        std::thread::spawn(move || {
+            // Dropped however this thread ends, so a panic below costs one
+            // connection's slot and not the bound.
+            let _slot = Live(live);
+            // One counter per connection: a peer that reconnects to reset it
+            // has done the expensive part of the attack — a new connection, a
+            // new `SO_PEERCRED` check — for a new window, which is a far worse
+            // trade than sending declarations down one socket. `F2.WS.08` keys
+            // it by session.
+            let mut declarations = counter();
+            // A panic must cost the connection that caused it and not the
+            // daemon. Serially it took the whole accept loop down with it;
+            // concurrently it would take every other session's supervisor too,
+            // which is a much worse trade for the same defect.
+            let served = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                serve_connection(
+                    stream,
+                    &peer,
+                    owner_uid,
+                    &generation,
+                    &supervision,
+                    &mut declarations,
+                    on_session.as_ref(),
+                )
+            }));
+            match served {
+                Ok(Ok(())) => {}
+                Ok(Err(e)) => eprintln!("ipc: connection ended: {e}"),
+                Err(_) => {
+                    eprintln!("ipc: a connection panicked; it was closed and the daemon runs");
+                }
+            }
+        });
+
         if until() {
             break;
         }
@@ -2070,6 +2205,257 @@ mod tests {
         // This test's own process is not in an AISME session cgroup.
         let me = std::process::id();
         assert!(!in_session_cgroup(i32::try_from(me).unwrap()));
+    }
+
+    /// A scratch server on its own thread, and a connected client.
+    ///
+    /// `until` is `|| false`, so the accept loop keeps accepting: a test about
+    /// concurrency cannot use a server that stops after one connection.
+    fn server(tag: &str) -> (std::path::PathBuf, std::sync::Arc<Supervision>) {
+        let dir = std::env::temp_dir().join(format!("aisme-{tag}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("control.sock");
+        let supervision = std::sync::Arc::new(Supervision::new(None));
+        let owner = Peer::from_current_uid();
+        let (server_path, shared) = (path.clone(), std::sync::Arc::clone(&supervision));
+        std::thread::spawn(move || {
+            let _ = serve_with(
+                &server_path,
+                owner.uid,
+                &generation_cell(),
+                &shared,
+                Declarations::new,
+                drop,
+                || false,
+            );
+        });
+        (path, supervision)
+    }
+
+    /// Connect, against a wall-clock deadline rather than a guess.
+    fn connect(path: &std::path::Path) -> UnixStream {
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        loop {
+            if let Ok(client) = UnixStream::connect(path) {
+                return client;
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "the server never accepted a connection on {}",
+                path.display()
+            );
+            std::thread::sleep(std::time::Duration::from_millis(1));
+        }
+    }
+
+    /// One request, one reply.
+    fn ask(client: &UnixStream, line: &str) -> json::Value {
+        writeln!(&mut client.try_clone().unwrap(), "{line}").unwrap();
+        let mut reply = String::new();
+        BufReader::new(client.try_clone().unwrap())
+            .read_line(&mut reply)
+            .unwrap();
+        json::parse(reply.trim()).unwrap()
+    }
+
+    /// **A connection held open does not stop the daemon serving another.**
+    ///
+    /// This is the measured deadlock, made deterministic. `aisme run` holds one
+    /// connection open for the whole session — for `decideOpen` when it traps,
+    /// for the registration when it does not — and served serially that meant a
+    /// hook connecting from inside the session queued behind it and was never
+    /// reached. Measured in the real topology: the session hung for ever, and
+    /// with a budget on the hook's socket five declarations took 103 ms each
+    /// and one of five landed.
+    ///
+    /// The first client here sends **nothing at all**, which is what a session
+    /// between two opens looks like from the server's side.
+    #[test]
+    fn a_connection_held_open_does_not_stop_another_being_served() {
+        let (path, _supervision) = server("ipc-concurrent");
+        let idle = connect(&path);
+        // Make the server commit to this connection: one request, answered, and
+        // then silence. Serially, the loop is now inside this connection's read.
+        let first = ask(
+            &idle,
+            r#"{"jsonrpc":"2.0","id":1,"method":"getCapabilities"}"#,
+        );
+        assert!(first.get("result").is_some(), "{first:?}");
+
+        let hook = connect(&path);
+        let answer = ask(
+            &hook,
+            r#"{"jsonrpc":"2.0","id":2,"method":"getCapabilities"}"#,
+        );
+        assert_eq!(
+            answer.get("id").and_then(json::Value::as_int),
+            Some(2),
+            "a second connection was not served while the first was held open, \
+             which is the deadlock the intent plane died of"
+        );
+        drop(idle);
+        drop(hook);
+    }
+
+    /// **And a handler that blocks does not freeze the daemon either.**
+    ///
+    /// This is the assertion that chooses a thread per connection over one
+    /// thread polling many. `decide_open` calls `ask_a_human` **on the serving
+    /// thread**, and the terminal budget is ten seconds: under a multiplexer,
+    /// one escalation prompt would freeze every other session and every hook
+    /// for the length of it. A design that assumes handlers are quick is wrong
+    /// in this daemon, and this test is what says so.
+    ///
+    /// The prompt is a real one, on a real pty, and it is answered at the end —
+    /// so the test costs milliseconds rather than the ten seconds it is about.
+    #[test]
+    fn a_blocked_adjudication_does_not_freeze_the_daemon() {
+        let (path, supervision) = server("ipc-prompt");
+
+        // A terminal nobody is typing into, yet.
+        let (mut master, tty) = scratch_pty();
+
+        let escalating = parsed(
+            "[[rule]]\nid = \"e\"\ngroup = \"CREDENTIALS\"\nmatch = { path_under = \"/etc/shadow\" }\nverdict = \"escalate\"\n",
+        );
+        let compiled = compile_for_session(&escalating, Some("/tmp"), Peer::from_current_uid().uid)
+            .expect("the test policy binds");
+        supervision.sessions.lock().unwrap().insert(
+            9,
+            SessionFacts {
+                tty: Some(tty),
+                escalate: Vec::new(),
+                unattended: None,
+                policy: Some(std::sync::Arc::new(compiled)),
+            },
+        );
+
+        // This connection will sit inside `ask_a_human` until a key is typed.
+        let prompting = connect(&path);
+        let waiting = std::thread::spawn(move || {
+            ask(
+                &prompting,
+                r#"{"jsonrpc":"2.0","id":1,"method":"decideOpen","params":{"session_id":9,"path":"/etc/shadow"}}"#,
+            )
+        });
+
+        // Meanwhile, somebody else is answered — and quickly.
+        let other = connect(&path);
+        let started = std::time::Instant::now();
+        let answer = ask(
+            &other,
+            r#"{"jsonrpc":"2.0","id":2,"method":"getCapabilities"}"#,
+        );
+        let took = started.elapsed();
+        assert_eq!(answer.get("id").and_then(json::Value::as_int), Some(2));
+        assert!(
+            took < std::time::Duration::from_secs(5),
+            "a second caller waited {took:?} behind an adjudication prompt; the prompt's \
+             own budget is ten seconds, so this is the whole of it"
+        );
+
+        // Now answer the prompt, so the test does not spend the budget.
+        master.write_all(b"d").unwrap();
+        master.flush().unwrap();
+        let verdict = waiting.join().unwrap();
+        assert_eq!(
+            verdict
+                .get("result")
+                .and_then(|r| r.get("verdict"))
+                .and_then(json::Value::as_int),
+            Some(3),
+            "the answer typed at the terminal was not the verdict: {verdict:?}"
+        );
+        drop(other);
+    }
+
+    /// The bound is a **named refusal**, not a silent queue.
+    ///
+    /// The socket is uid-matched, so the party that could exhaust it is the
+    /// owner rather than the agent — but an unbounded accept loop would let
+    /// anything reaching the socket spawn threads until the 50 MB budget broke,
+    /// which is a silent degradation where `I-19` wants a refusal that says so.
+    #[test]
+    fn the_connection_bound_refuses_by_name_and_the_daemon_keeps_serving() {
+        let (path, _supervision) = server("ipc-bound");
+
+        // Fill it. Each connection is made to commit the server to a thread by
+        // exchanging one request.
+        let mut held = Vec::new();
+        for _ in 0..MAX_CONNECTIONS {
+            let client = connect(&path);
+            let _ = ask(
+                &client,
+                r#"{"jsonrpc":"2.0","id":1,"method":"getCapabilities"}"#,
+            );
+            held.push(client);
+        }
+
+        let refused = connect(&path);
+        let mut reply = String::new();
+        BufReader::new(refused.try_clone().unwrap())
+            .read_line(&mut reply)
+            .unwrap();
+        let parsed = json::parse(reply.trim()).unwrap();
+        let message = parsed
+            .get("error")
+            .and_then(|e| e.get("message"))
+            .and_then(json::Value::as_str)
+            .unwrap_or_default()
+            .to_owned();
+        assert!(
+            message.contains(&MAX_CONNECTIONS.to_string()),
+            "the refusal does not say what the bound is: {parsed:?}"
+        );
+
+        // And the daemon is still a daemon: free one slot, and the next caller
+        // is served.
+        held.pop();
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        loop {
+            let client = connect(&path);
+            let answer = ask(
+                &client,
+                r#"{"jsonrpc":"2.0","id":7,"method":"getCapabilities"}"#,
+            );
+            if answer.get("result").is_some() {
+                break;
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "the bound never released after a connection closed: {answer:?}"
+            );
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+    }
+
+    /// A pty, for a test that needs a terminal nobody is typing into.
+    ///
+    /// `ptsname_r`, never `ptsname`: the plain form returns a pointer into
+    /// libc's own **static** storage and every test in this binary shares one
+    /// process, so two tests opening a pty at once would race on that buffer
+    /// and one would adjudicate against the other's terminal.
+    fn scratch_pty() -> (std::fs::File, String) {
+        use std::os::fd::FromRawFd as _;
+
+        // SAFETY: `posix_openpt` returns a descriptor we then own.
+        let master = unsafe { libc::posix_openpt(libc::O_RDWR | libc::O_NOCTTY) };
+        assert!(master >= 0, "posix_openpt");
+        // SAFETY: the descriptor just returned.
+        assert_eq!(unsafe { libc::grantpt(master) }, 0);
+        // SAFETY: as above.
+        assert_eq!(unsafe { libc::unlockpt(master) }, 0);
+        let mut buffer = [0 as libc::c_char; 256];
+        // SAFETY: `buffer` is ours, outlives the call, and its length is passed.
+        let rc = unsafe { libc::ptsname_r(master, buffer.as_mut_ptr(), buffer.len()) };
+        assert_eq!(rc, 0, "ptsname_r");
+        // SAFETY: on success the buffer holds a NUL-terminated name.
+        let name = unsafe { std::ffi::CStr::from_ptr(buffer.as_ptr()) }
+            .to_string_lossy()
+            .into_owned();
+        // SAFETY: we own `master` and nothing else does.
+        (unsafe { std::fs::File::from_raw_fd(master) }, name)
     }
 
     #[test]

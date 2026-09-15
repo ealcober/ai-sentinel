@@ -249,7 +249,7 @@ fn run_slice(dir: &std::path::Path, rest: &[String]) -> std::io::Result<()> {
         // session's own parent** now — only an ancestor may read a held open's
         // path argument without a capability — so the daemon decides and the
         // session enforces (`docs/11` point 1, `docs/12`).
-        let supervision = ipc::Supervision::new(policy.clone());
+        let supervision = std::sync::Arc::new(ipc::Supervision::new(policy.clone()));
         supervision.observing(declared.clone());
         std::thread::spawn(move || {
             if let Err(e) = ipc::serve_feeding_sharing(
@@ -700,7 +700,7 @@ mod slice_tests {
                 // No policy and no sessions: this test declares a tool call and
                 // registers nothing, so there is nothing for a supervisor to
                 // ask about.
-                &crate::ipc::Supervision::new(None),
+                &std::sync::Arc::new(crate::ipc::Supervision::new(None)),
                 // A registration arriving here would only be dropped; this test
                 // sends none.
                 drop,

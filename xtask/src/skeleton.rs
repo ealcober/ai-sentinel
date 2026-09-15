@@ -46,6 +46,9 @@ const EXPECTED: [(&str, Verdict); 3] = [
     // handed it that exact string — and which no kernel ever produces, because
     // the tilde is expanded by the shell long before the syscall. The assertion
     // passed while the rule it tested could not fire on a real machine.
+    //
+    // It lies under the `${home}` this gate binds, so what is asserted is the
+    // rule as an operator wrote it and as a session would resolve it.
     ("/home/agent/.aws/credentials", Verdict::Escalate),
     ("/etc/hostname", Verdict::Allow),
 ];
@@ -96,11 +99,20 @@ pub(crate) fn run(args: &[&str]) -> u8 {
         return 1;
     };
     // `compile`, not `compile_with`: the skeleton declares no grants, and this
-    // is the call `aisme-agentd --policy` makes — so what the gate compiles is
-    // what the daemon compiles, not a near-miss of it.
+    // is the call `aisme-agentd` makes for each session — so what the gate
+    // compiles is what the daemon compiles, not a near-miss of it.
+    //
+    // **Bound, and bound to the values this gate asserts against.** The daemon
+    // binds `${workspace}` from the session's declared scope and `${home}` from
+    // the peer's uid; a gate that compiled with neither would compile a policy
+    // no session ever runs, which is the state the shipped `${workspace}` rule
+    // was in when it matched a directory no machine has.
+    let bindings = Bindings::new()
+        .with("workspace", "/home/agent/project")
+        .with("home", "/home/agent");
     let compiled = match parse(&source)
         .map_err(|e| format!("{e:?}"))
-        .and_then(|p| compile(&p, &Bindings::new()).map_err(|e| format!("{e:?}")))
+        .and_then(|p| compile(&p, &bindings).map_err(|e| format!("{e:?}")))
     {
         Ok(compiled) => compiled,
         Err(why) => {

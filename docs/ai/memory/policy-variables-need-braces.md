@@ -12,6 +12,10 @@ type: domain
 
 **How to apply:** write `${name}`, and never trust the rule count as evidence a rule works. A rule is verified by evaluating a path against the compiled policy and asserting the verdict — which is what `the_shipped_policy_keeps_all_three_of_its_rules` does in `crates/aisme-agentd/src/main.rs`. The same test is why the `path_glob` rule is asserted and not just the `path_under` ones: lowering to the BPF trie keeps only prefixes (`crates/aisme-linux/src/policy.rs:157`), so a glob is the rule most likely to be dropped somewhere and least likely to be noticed.
 
-**Source:** `F2.WS.05`, measured 2026-09-15
+**And a variable needs something to bind to, which means a session.** The defect had a second half that the spelling hid: the daemon compiled its policy **once at startup**, with no bindings at all, before any session existed. Correcting `$workspace` to `${workspace}` alone would have turned a silently inert rule into a daemon that refuses to start. The compilation moved to the session registration — `${workspace}` from the scope that session declared, `${home}` from the peer's uid — which is what `Bindings`' own documentation said all along: *"what `${…}` variables resolve to for **one session**"*.
 
-Related: [[seccomp-unotify-toctou]]
+**Both bindings come from the system, never from the session.** A session that could name its own `${home}` would point every credential rule at a directory it had just created. The uid is written by the kernel into `SO_PEERCRED`; the scope is the operator's own `--scope`, which is the same trust position widening the scope already has.
+
+**Source:** `F2.WS.05` and `F2.WS.11`, measured 2026-09-15
+
+Related: [[seccomp-unotify-toctou]], [[a-path-is-a-spelling]]

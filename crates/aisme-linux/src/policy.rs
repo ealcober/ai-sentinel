@@ -513,7 +513,13 @@ mod tests {
     fn skeleton() -> CompiledPolicy {
         let policy =
             parse(SKELETON).unwrap_or_else(|e| panic!("the shipped policy parses: {e:#?}"));
-        let bindings = Bindings::new().with("workspace", "/home/u/proj");
+        // Both of the session-scoped variables, because the shipped policy
+        // uses both: `${workspace}` for the write scope and `${home}` for the
+        // credential store. A fixture that bound one would compile a policy no
+        // session ever runs.
+        let bindings = Bindings::new()
+            .with("workspace", "/home/u/proj")
+            .with("home", "/home/u");
         compile(&policy, &bindings)
             .unwrap_or_else(|e| panic!("the shipped policy compiles: {e:#?}"))
     }

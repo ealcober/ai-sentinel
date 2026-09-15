@@ -221,6 +221,31 @@ pub(crate) fn agentd_socket() -> String {
 /// Only for a session that asked to be trapped. One that did not is warned and
 /// runs: refusing it would invent a new reason for `aisme run` to fail that it
 /// never had, and the cost of no daemon there is a directory left behind.
+/// One JSON string body, escaped.
+///
+/// A path is not a safe thing to interpolate: `--scope` is the operator's own
+/// string, and a directory may legally contain a quote, a backslash or a
+/// **newline** — and this protocol is one JSON object per line, so a newline
+/// would not corrupt a field, it would split the frame and the daemon would
+/// read the remainder as a second request.
+fn json_string(raw: &str) -> String {
+    let mut out = String::with_capacity(raw.len());
+    for c in raw.chars() {
+        match c {
+            '"' => out.push_str("\\\""),
+            '\\' => out.push_str("\\\\"),
+            '\n' => out.push_str("\\n"),
+            '\r' => out.push_str("\\r"),
+            '\t' => out.push_str("\\t"),
+            c if (c as u32) < 0x20 => {
+                let _ = std::fmt::Write::write_fmt(&mut out, format_args!("\\u{:04x}", c as u32));
+            }
+            c => out.push(c),
+        }
+    }
+    out
+}
+
 fn register(
     invocation: &Invocation,
     session_id: u64,
@@ -261,22 +286,36 @@ fn register(
             let _ = write!(params, r#","unattended":"{answer}""#);
         }
     }
+    // What `${workspace}` resolves to in the operator's policy, which the
+    // daemon compiles **per session**: two sessions under one daemon have
+    // different workspaces, so a policy compiled once before either existed
+    // would be a policy about neither. The value is the scope this session
+    // declared, which the person launching the agent chose — never the agent.
+    let _ = write!(
+        params,
+        r#","scope":"{}""#,
+        json_string(&invocation.scopes[0].display().to_string())
+    );
     if let Some(tty) = std::fs::read_link("/proc/self/fd/0")
         .ok()
         .and_then(|p| p.to_str().map(ToOwned::to_owned))
         .filter(|p| p.starts_with("/dev/"))
     {
-        let _ = write!(params, r#","tty":"{tty}""#);
+        let _ = write!(params, r#","tty":"{}""#, json_string(&tty));
     }
     // The daemon releases this when the kernel says it is empty, and refuses
     // any path that is not a session cgroup under the unified hierarchy.
-    let _ = write!(params, r#","cgroup":"{}""#, cgroup.display());
+    let _ = write!(
+        params,
+        r#","cgroup":"{}""#,
+        json_string(&cgroup.display().to_string())
+    );
     let _ = write!(params, r#","trapping":{}"#, invocation.trap_openat);
     if !invocation.escalate.is_empty() {
         let list = invocation
             .escalate
             .iter()
-            .map(|p| format!("\"{p}\""))
+            .map(|p| format!("\"{}\"", json_string(p)))
             .collect::<Vec<String>>()
             .join(",");
         let _ = write!(params, r#","escalate":[{list}]"#);

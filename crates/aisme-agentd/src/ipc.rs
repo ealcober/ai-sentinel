@@ -239,6 +239,25 @@ pub struct SessionFacts {
     pub escalate: Vec<String>,
     /// An answer to use instead of asking, read once by `aisme run`.
     pub unattended: Option<String>,
+    /// The operator's policy compiled **for this session**, when one is in
+    /// force. `${…}` variables resolve to facts about *this* session, so the
+    /// compilation cannot happen once at startup before any session exists —
+    /// which is what `Bindings`' own documentation says and what the daemon
+    /// used to do anyway, leaving `${workspace}` matching a directory no
+    /// machine has.
+    pub policy: Option<std::sync::Arc<aisme_core::policy::CompiledPolicy>>,
+}
+
+/// A parsed policy and the file it was read from.
+///
+/// The daemon parses at startup, so a policy that is not a policy still refuses
+/// the daemon rather than the first session; the *binding* is what waits, and
+/// it waits because there is nothing to bind to until a session exists.
+pub struct PolicySource {
+    /// The policy as written.
+    pub policy: aisme_core::policy::Policy,
+    /// Where it was read from, for diagnostics.
+    pub path: String,
 }
 
 /// Everything the daemon needs to answer a supervisor.
@@ -247,8 +266,10 @@ pub struct SessionFacts {
 /// policy, the sessions and their counters would be a signature nobody reads
 /// before adding the fifth thing to it.
 pub struct Supervision {
-    /// The operator's compiled policy, when one was given.
-    pub policy: Option<std::sync::Arc<aisme_core::policy::CompiledPolicy>>,
+    /// The operator's **parsed** policy, when one was given, with the file it
+    /// came from so a diagnostic can name it. It is compiled once per session
+    /// registration and never here: see [`SessionFacts::policy`].
+    pub policy: Option<std::sync::Arc<PolicySource>>,
     /// The sessions that have registered, by id.
     pub sessions: std::sync::Mutex<std::collections::BTreeMap<u64, SessionFacts>>,
     /// Where an observed open goes, so the daemon still sees the actions after
@@ -259,7 +280,7 @@ pub struct Supervision {
 impl Supervision {
     /// A daemon with no policy and no sessions yet.
     #[must_use]
-    pub fn new(policy: Option<std::sync::Arc<aisme_core::policy::CompiledPolicy>>) -> Supervision {
+    pub fn new(policy: Option<std::sync::Arc<PolicySource>>) -> Supervision {
         Supervision {
             policy,
             sessions: std::sync::Mutex::new(std::collections::BTreeMap::new()),
@@ -315,10 +336,11 @@ fn decide_open(request: &rpc::Request, supervision: &Supervision) -> String {
                 facts.tty.clone(),
                 facts.escalate.clone(),
                 facts.unattended.clone(),
+                facts.policy.clone(),
             )
         })
     });
-    let Some((tty, escalate, unattended)) = facts else {
+    let Some((tty, escalate, unattended, policy)) = facts else {
         // An unregistered session is not a session this daemon is supervising,
         // and answering it would be answering for a policy nobody bound to it.
         return rpc::error(
@@ -328,7 +350,11 @@ fn decide_open(request: &rpc::Request, supervision: &Supervision) -> String {
         );
     };
 
-    let verdict = match &supervision.policy {
+    // **This session's** policy, not the daemon's: `${workspace}` and
+    // `${home}` mean different directories for two sessions running under the
+    // same daemon, so a verdict taken from a policy compiled before either of
+    // them existed would be a verdict about nobody.
+    let verdict = match &policy {
         Some(policy) => {
             let facts = aisme_core::policy::EventFacts {
                 path: Some(path),
@@ -572,8 +598,79 @@ fn checked_session_cgroup(path: &str) -> Result<String, &'static str> {
     Ok(path.to_owned())
 }
 
+/// The home directory of `uid`, as the system says it is.
+///
+/// **From the uid, never from a variable.** The uid comes from `SO_PEERCRED`
+/// and the kernel writes it, so it cannot be claimed; `HOME` in anyone's
+/// environment can. A session that named its own `${home}` would aim a
+/// credential rule at an empty directory and be allowed everywhere the rule was
+/// supposed to hold.
+fn home_of(uid: u32) -> Option<String> {
+    let mut buf = [0 as libc::c_char; 4096];
+    // SAFETY: an all-zero `passwd` is the documented starting point; it is
+    // filled by the call below or left unused.
+    let mut pwd: libc::passwd = unsafe { std::mem::zeroed() };
+    let mut found: *mut libc::passwd = std::ptr::null_mut();
+    // SAFETY: `pwd`, `buf` and `found` are ours and outlive the call, and the
+    // length passed is `buf`'s own. `getpwuid_r` is the reentrant form; the
+    // plain one returns a shared static this daemon's two workers could race.
+    let rc = unsafe {
+        libc::getpwuid_r(
+            uid,
+            std::ptr::addr_of_mut!(pwd),
+            buf.as_mut_ptr(),
+            buf.len(),
+            std::ptr::addr_of_mut!(found),
+        )
+    };
+    if rc != 0 || found.is_null() {
+        // No such user, or a name service that could not answer. Absent is
+        // reported as absent: binding `${home}` to something invented would
+        // silently move every rule that uses it.
+        return None;
+    }
+    // SAFETY: on success `pw_dir` points into `buf`, which is still alive.
+    let dir = unsafe { std::ffi::CStr::from_ptr(pwd.pw_dir) };
+    dir.to_str().ok().map(ToOwned::to_owned)
+}
+
+/// Compile the operator's policy for one session, with that session's own
+/// bindings.
+///
+/// Both bindings come from facts the **system** supplies: `${home}` from the
+/// peer's uid, and `${workspace}` from the scope the person who typed
+/// `aisme run --scope` chose — the same trust position `--scope` already has,
+/// where widening it is the operator's act and never the agent's.
+///
+/// A failure refuses **this session**, not the daemon: the other sessions
+/// running under it are governed by a policy that compiled, and taking them
+/// down with a new registration would make one bad launch an outage.
+fn compile_for_session(
+    source: &PolicySource,
+    scope: Option<&str>,
+    uid: u32,
+) -> Result<aisme_core::policy::CompiledPolicy, String> {
+    use aisme_core::policy::{compile, Bindings};
+
+    let mut bindings = Bindings::new();
+    if let Some(scope) = scope {
+        bindings = bindings.with("workspace", scope);
+    }
+    if let Some(home) = home_of(uid) {
+        bindings = bindings.with("home", &home);
+    }
+    compile(&source.policy, &bindings).map_err(|errors| {
+        errors
+            .iter()
+            .map(|e| format!("{}: {e}", source.path))
+            .collect::<Vec<String>>()
+            .join("; ")
+    })
+}
+
 fn register_session(
     request: &rpc::Request,
+    peer: &Peer,
     ancillary: &mut Ancillary,
     supervision: &Supervision,
 ) -> String {
@@ -606,6 +703,29 @@ fn register_session(
                 ErrorCode::InvalidParams,
                 "cgroup must be a string",
             )
+        }
+    };
+    // The session's declared scope, which is what `${workspace}` resolves to.
+    // With a policy in force it is **required**: a policy using `${workspace}`
+    // would not compile without it, and one that does not use it would silently
+    // become a different policy if the value were invented here.
+    let scope = request.params.get("scope").and_then(Value::as_str);
+    let compiled = match supervision.policy.as_ref() {
+        None => None,
+        Some(source) => {
+            if scope.is_none() {
+                return rpc::error(
+                    request.id,
+                    ErrorCode::InvalidParams,
+                    "scope is required while a policy is in force: it is what ${workspace} means",
+                );
+            }
+            match compile_for_session(source, scope, peer.uid) {
+                Ok(compiled) => Some(std::sync::Arc::new(compiled)),
+                // Named, and only this session is refused. The variable and the
+                // rule are in the compiler's own diagnostic.
+                Err(why) => return rpc::error(request.id, ErrorCode::InvalidParams, &why),
+            }
         }
     };
     ancillary.registered = Some(Registered {
@@ -649,6 +769,7 @@ fn register_session(
                 tty: registered.tty.clone(),
                 escalate: registered.escalate.clone(),
                 unattended: registered.unattended.clone(),
+                policy: compiled,
             },
         );
     }
@@ -692,7 +813,7 @@ pub fn serve_line(
         // for it. The descriptor is the message: a registration without one
         // would leave a filtered process with nobody to answer its syscalls,
         // and every `openat` in it would fail with ENOSYS.
-        Method::RegisterSession => register_session(&request, ancillary, supervision),
+        Method::RegisterSession => register_session(&request, peer, ancillary, supervision),
         // The session's own supervisor asking what the policy says about one
         // held open (`docs/11` point 1). The daemon decides; the session
         // enforces, because only an ancestor may read a held open's path
@@ -1204,6 +1325,52 @@ mod tests {
         }
     }
 
+    /// A policy parsed from source, for a test that needs one in force.
+    fn parsed(source: &str) -> PolicySource {
+        PolicySource {
+            policy: aisme_core::policy::parse(source).expect("the test policy parses"),
+            path: "<test>".to_owned(),
+        }
+    }
+
+    /// Register one session through the production path, with `extra` spliced
+    /// into its params, and return the daemon's answer.
+    fn register_with(supervision: &Supervision, id: i64, extra: &str) -> json::Value {
+        let line = format!(
+            r#"{{"jsonrpc":"2.0","id":1,"method":"registerSession","params":{{"session_id":{id},"trapping":true{extra}}}}}"#
+        );
+        json::parse(&serve_line(
+            &line,
+            &user(),
+            OWNER,
+            &mut Declarations::new(),
+            &mut None,
+            &mut Ancillary::default(),
+            supervision,
+        ))
+        .unwrap()
+    }
+
+    /// Ask `decideOpen` about one path, and return the wire verdict.
+    fn verdict_for(supervision: &Supervision, id: i64, path: &str) -> Option<i64> {
+        let line = format!(
+            r#"{{"jsonrpc":"2.0","id":1,"method":"decideOpen","params":{{"session_id":{id},"path":"{path}"}}}}"#
+        );
+        json::parse(&serve_line(
+            &line,
+            &user(),
+            OWNER,
+            &mut Declarations::new(),
+            &mut None,
+            &mut Ancillary::default(),
+            supervision,
+        ))
+        .unwrap()
+        .get("result")?
+        .get("verdict")?
+        .as_int()
+    }
+
     fn call(method: &str, peer: &Peer) -> json::Value {
         call_with(method, "{}", peer, &mut Declarations::new())
     }
@@ -1306,6 +1473,108 @@ mod tests {
         assert!(
             answer.get("error").is_some(),
             "a session the daemon never saw was decided for: {answer:?}"
+        );
+    }
+
+    /// A policy in force is compiled **per session**, and two sessions with
+    /// different scopes get different verdicts from the same file.
+    ///
+    /// This is the test the old daemon could not pass and would not have
+    /// failed: it compiled once at startup with no bindings at all, so
+    /// `${workspace}` matched a directory no machine has while every line it
+    /// printed said three rules were in force. A rule that cannot fire is
+    /// worse than no rule, because the gate that tests it still passes.
+    ///
+    /// `${home}` is not varied here and cannot be: it is derived from the
+    /// peer's uid, and one test process has one uid. That is the property, not
+    /// a gap in the test — a session that could choose its own `${home}` would
+    /// aim a credential rule at an empty directory.
+    #[test]
+    fn two_sessions_with_different_scopes_are_judged_by_different_policies() {
+        let source = parsed(
+            "[[rule]]\nid = \"scope\"\ngroup = \"FILES_OUTSIDE_WORKSPACE\"\nmatch = { path_under = \"${workspace}\" }\nverdict = \"escalate\"\n",
+        );
+        let supervision = Supervision::new(Some(std::sync::Arc::new(source)));
+        register_with(&supervision, 1, r#","scope":"/tmp/alpha","unattended":"d""#);
+        register_with(&supervision, 2, r#","scope":"/tmp/beta","unattended":"d""#);
+
+        assert_eq!(
+            verdict_for(&supervision, 1, "/tmp/alpha/file"),
+            Some(3),
+            "the first session's own workspace did not reach its rule"
+        );
+        assert_eq!(
+            verdict_for(&supervision, 2, "/tmp/alpha/file"),
+            Some(0),
+            "the second session was judged by the first session's workspace: \
+             the policy was compiled once and shared"
+        );
+    }
+
+    /// A session whose policy cannot be bound is refused, **and the daemon is
+    /// not**: another session registering afterwards still succeeds.
+    ///
+    /// The refusal names the variable and the rule, because the operator who
+    /// has to fix it is reading this line and nothing else.
+    #[test]
+    fn a_session_whose_policy_will_not_compile_is_refused_and_the_daemon_is_not() {
+        let source = parsed(
+            "[[rule]]\nid = \"nowhere\"\ngroup = \"FILES_OUTSIDE_WORKSPACE\"\nmatch = { path_under = \"${nowhere}\" }\nverdict = \"allow\"\n",
+        );
+        let supervision = Supervision::new(Some(std::sync::Arc::new(source)));
+        let refused = register_with(&supervision, 1, r#","scope":"/tmp/alpha""#);
+        let message = refused
+            .get("error")
+            .and_then(|e| e.get("message"))
+            .and_then(json::Value::as_str)
+            .unwrap_or_default()
+            .to_owned();
+        assert!(
+            message.contains("nowhere"),
+            "the refusal names neither the variable nor the rule: {refused:?}"
+        );
+
+        // The daemon is still serving, and a session it *can* bind still runs.
+        let source = parsed(
+            "[[rule]]\nid = \"scope\"\ngroup = \"FILES_OUTSIDE_WORKSPACE\"\nmatch = { path_under = \"${workspace}\" }\nverdict = \"allow\"\n",
+        );
+        let supervision = Supervision::new(Some(std::sync::Arc::new(source)));
+        let accepted = register_with(&supervision, 2, r#","scope":"/tmp/beta""#);
+        assert!(
+            accepted.get("result").is_some(),
+            "a later registration was refused too: {accepted:?}"
+        );
+    }
+
+    /// A session cannot choose what `${home}` means, and a registration that
+    /// tries is not obeyed.
+    ///
+    /// The binding comes from the peer's uid, which the kernel writes into
+    /// `SO_PEERCRED`. A session that could name its own home would point every
+    /// credential rule at a directory it had just created and be allowed
+    /// everywhere the rule was meant to hold.
+    #[test]
+    fn a_session_cannot_name_its_own_home() {
+        let source = parsed(
+            "[[rule]]\nid = \"creds\"\ngroup = \"CREDENTIALS\"\nmatch = { path_glob = \"${home}/.aws/**\" }\nverdict = \"deny\"\n",
+        );
+        let supervision = Supervision::new(Some(std::sync::Arc::new(source)));
+        register_with(
+            &supervision,
+            1,
+            r#","scope":"/tmp/alpha","home":"/tmp/not-my-home""#,
+        );
+
+        let real = home_of(user().uid).expect("this test's own user has a home");
+        assert_eq!(
+            verdict_for(&supervision, 1, &format!("{real}/.aws/credentials")),
+            Some(3),
+            "the rule stopped covering the peer's real home"
+        );
+        assert_eq!(
+            verdict_for(&supervision, 1, "/tmp/not-my-home/.aws/credentials"),
+            Some(0),
+            "the session's claimed home was bound: it chose what governed it"
         );
     }
 

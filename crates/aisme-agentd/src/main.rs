@@ -136,12 +136,17 @@ fn read_trace(path: &std::path::Path) -> std::io::Result<Vec<aisme_ebpf_common::
 /// sensors are whatever `platform::sensors` composed, the resolver is the
 /// platform's, and the sink is the file-backed WAL. Declarations arrive as a
 /// `Sensor` like any other producer, so the engine sees one stream.
-/// Parse and compile a policy file, with every error named and positioned.
+/// Parse a policy file, with every error named and positioned.
 ///
-/// The same two calls `aisme-loaderd --publish` makes, in the same order, so a
-/// policy the loader accepts is one the daemon accepts.
-fn compile_policy(path: &std::path::Path) -> Result<aisme_core::policy::CompiledPolicy, String> {
-    use aisme_core::policy::{compile, parse, Bindings};
+/// **Parsing is the daemon's; compiling is the session's.** A policy that is
+/// not a policy refuses the daemon here, at startup, where the operator is
+/// watching. What waits is the *binding*: `${workspace}` and `${home}` resolve
+/// to facts about one session, and at startup there is no session to resolve
+/// them against — so `aisme_core::policy::compile` runs once per registration,
+/// in `ipc::compile_for_session`, which is where `Bindings` always said it
+/// belonged.
+fn parse_policy(path: &std::path::Path) -> Result<crate::ipc::PolicySource, String> {
+    use aisme_core::policy::parse;
 
     let source = std::fs::read_to_string(path).map_err(|e| format!("{}: {e}", path.display()))?;
     let policy = parse(&source).map_err(|errors| {
@@ -151,12 +156,9 @@ fn compile_policy(path: &std::path::Path) -> Result<aisme_core::policy::Compiled
             .collect::<Vec<String>>()
             .join("; ")
     })?;
-    compile(&policy, &Bindings::new()).map_err(|errors| {
-        errors
-            .iter()
-            .map(|e| format!("{}: {e}", path.display()))
-            .collect::<Vec<String>>()
-            .join("; ")
+    Ok(crate::ipc::PolicySource {
+        policy,
+        path: path.display().to_string(),
     })
 }
 
@@ -172,16 +174,16 @@ fn compile_policy(path: &std::path::Path) -> Result<aisme_core::policy::Compiled
 /// The compiler's diagnostics, each with the file that produced it.
 fn policy_in_force(
     path: Option<&str>,
-) -> std::io::Result<Option<std::sync::Arc<aisme_core::policy::CompiledPolicy>>> {
+) -> std::io::Result<Option<std::sync::Arc<crate::ipc::PolicySource>>> {
     let Some(path) = path else {
         return Ok(None);
     };
-    let compiled = compile_policy(std::path::Path::new(path)).map_err(std::io::Error::other)?;
+    let source = parse_policy(std::path::Path::new(path)).map_err(std::io::Error::other)?;
     println!(
-        "policy: {} rule(s) in force from {path}",
-        compiled.rules.len()
+        "policy: {} rule(s) in force from {path}, bound per session",
+        source.policy.rules.len()
     );
-    Ok(Some(std::sync::Arc::new(compiled)))
+    Ok(Some(std::sync::Arc::new(source)))
 }
 
 fn run_slice(dir: &std::path::Path, rest: &[String]) -> std::io::Result<()> {
@@ -573,7 +575,18 @@ mod slice_tests {
 
         let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
             .join("../../deploy/policy/skeleton.aisme");
-        let compiled = super::compile_policy(&path).expect("the shipped policy compiles");
+        let source = super::parse_policy(&path).expect("the shipped policy parses");
+        // Bound as a session binds them, because that is the only state this
+        // policy is ever evaluated in: `${workspace}` and `${home}` are facts
+        // about one session, and compiling with neither is how the shipped
+        // `${workspace}` rule came to match a directory no machine has.
+        let compiled = aisme_core::policy::compile(
+            &source.policy,
+            &aisme_core::policy::Bindings::new()
+                .with("workspace", "/home/agent/project")
+                .with("home", "/home/agent"),
+        )
+        .expect("the shipped policy compiles once its variables are bound");
 
         let verdict_for = |p: &str| {
             aisme_core::policy::evaluate(
@@ -605,14 +618,22 @@ mod slice_tests {
         );
     }
 
-    /// A policy the daemon cannot compile refuses the daemon, and the refusal
-    /// names the rule.
+    /// A policy the compiler cannot bind is refused, and the refusal names the
+    /// variable and the rule.
     ///
-    /// The alternative — starting anyway — is the one failure this must not
-    /// have: a daemon supervising every session against nothing while every
-    /// line it prints says it is supervising.
+    /// The alternative — binding it to something invented, or carrying on with
+    /// the rule dropped — is the one failure this must not have: a daemon
+    /// supervising against a rule that cannot fire while every line it prints
+    /// says three rules are in force.
+    ///
+    /// **The refusal is the session's, not the daemon's** (`F2.WS.11`): the
+    /// daemon parses at startup and binds per registration, so an unbound
+    /// variable is discovered when a session registers and refuses **that
+    /// session**. `ipc`'s `a_session_whose_policy_will_not_compile_is_refused`
+    /// is the test for where the refusal lands; this one is the test for what
+    /// the diagnostic says.
     #[test]
-    fn an_unbound_variable_refuses_the_daemon_and_names_the_rule() {
+    fn an_unbound_variable_refuses_the_session_and_names_the_rule() {
         let dir = std::env::temp_dir().join(format!("aisme-policy-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let path = dir.join("unbound.aisme");
@@ -622,7 +643,18 @@ mod slice_tests {
         )
         .unwrap();
 
-        let err = super::compile_policy(&path).expect_err("an unbound variable does not compile");
+        let source = super::parse_policy(&path).expect("it parses; it is the binding that fails");
+        let err = aisme_core::policy::compile(
+            &source.policy,
+            &aisme_core::policy::Bindings::new().with("workspace", "/tmp"),
+        )
+        .map(|_| ())
+        .expect_err("an unbound variable does not compile");
+        let err = err
+            .iter()
+            .map(ToString::to_string)
+            .collect::<Vec<String>>()
+            .join("; ");
         assert!(
             err.contains("nowhere") && err.contains("scope"),
             "the refusal names the variable and the rule, got: {err}"

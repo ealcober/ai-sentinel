@@ -5,8 +5,11 @@
 # skeleton that published a hand-built `CompiledPolicy` would prove nothing
 # about the pipeline it exists to prove.
 #
-# `$workspace` is bound by `aisme run` at session start (`F2.WS.08`); nothing
-# here hard-codes a path that only holds on one machine.
+# `${workspace}` and `${home}` are bound by `aisme-agentd` when a session
+# registers (`F2.WS.11`): the workspace from the scope that session declared,
+# the home from the peer's uid. Nothing here hard-codes a path that only holds
+# on one machine, and nothing here is bound to a value the supervised process
+# chose.
 
 [session.defaults]
 # The shipped values (Annex B). Written out rather than left implicit, because
@@ -37,24 +40,31 @@ verdict = "deny"
 #    and the escalate path was never exercised. A rule that cannot fire is
 #    worse than no rule, because the gate that tests it still passes.
 #
-#    `**/.aws/credentials` is one `**`, which is the compiler's budget, and it
-#    matches any user's store rather than one machine's home. The precise form
-#    is `${home}/.aws/**`, and it arrives with the per-session bindings that
-#    rule 3 also waits for (`F2.WS.11`).
+#    `${home}` is bound per session by `aisme-agentd` from the **peer's uid**,
+#    which the kernel writes into `SO_PEERCRED` and no client can claim. It is
+#    not read from anyone's `HOME`: a session that named its own home would aim
+#    this rule at an empty directory and be allowed everywhere it was meant to
+#    hold. One `**` is the compiler's budget (`MAX_DOUBLE_STAR`), and this rule
+#    spends it on the subtree rather than on finding the home.
 [[rule]]
 id = "escalate-aws"
 group = "CREDENTIALS"
-match = { path_glob = "**/.aws/credentials" }
+match = { path_glob = "${home}/.aws/**" }
 verdict = "escalate"
 
 # 3. The write scope (`F2.WS.11`): a write outside the session's declared
 #    workspace is denied in kernel by one Landlock ruleset applied before
 #    `exec`. The rule is stated here so the policy — not the code — is what
 #    says where the boundary is.
+#
+#    **`${workspace}`, with braces.** `$workspace` is not a variable in this
+#    grammar, it is a literal — so the rule used to match a directory named
+#    `$workspace`, which no machine has, while the daemon still reported three
+#    rules in force. A rule that cannot fire is worse than no rule.
 [[rule]]
 id = "scope-writes"
 group = "FILES_OUTSIDE_WORKSPACE"
-match = { path_under = "$workspace" }
+match = { path_under = "${workspace}" }
 verdict = "allow"
 
 # Everything not named above is allowed: §B.10's default verdict, stated so a

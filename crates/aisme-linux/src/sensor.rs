@@ -164,6 +164,40 @@ impl Default for BpfSensor {
     }
 }
 
+/// The cause of a load failure, **only where one was actually established**.
+///
+/// A cause asserted rather than measured is the thing this project treats as a
+/// defect everywhere else, and this message has produced two of them. It once
+/// blamed `BPF_MAP_TYPE_RINGBUF` for every failure, and a run on 6.8 reported a
+/// missing-BTF parse error dressed as a ring-buffer problem. It then blamed the
+/// ring buffer for **any** map-creation failure, and an unprivileged run on
+/// **7.1.5** was told its kernel was older than 5.8 — measured:
+///
+/// ```text
+/// failed to create map `AISME_DROPS`: Operation not permitted (os error 1)
+///   — a kernel below 5.8 has no BPF_MAP_TYPE_RINGBUF
+/// ```
+///
+/// A permission failure and an absent map type are different facts, and the
+/// reader acts on them differently: one needs `CAP_BPF`, the other needs a
+/// different kernel. Where neither is established the answer is the empty
+/// string, because the loader's own words are better than a guess appended to
+/// them.
+fn cause_of(text: &str) -> &'static str {
+    // Checked before the map type, because a refusal to create *any* map is
+    // what a missing capability looks like from here, and it is the far more
+    // common reason on a developer's machine.
+    if text.contains("Operation not permitted") || text.contains("os error 1") {
+        return " — loading a BPF program needs CAP_BPF and CAP_PERFMON, or root; this is a \
+                permission refusal and says nothing about the kernel's age";
+    }
+    if text.contains("map") && text.contains("create") {
+        return " — a kernel below 5.8 has no BPF_MAP_TYPE_RINGBUF, and F2 requires it; the \
+                perf-buffer fallback is F3.PT.*, not this phase";
+    }
+    ""
+}
+
 impl Sensor for BpfSensor {
     fn start(&mut self, _cfg: &SensorConfig) -> Result<()> {
         if OBJECT.is_empty() {
@@ -186,12 +220,7 @@ impl Sensor for BpfSensor {
             // measured — the thing this project treats as a defect everywhere
             // else.
             let text = error_chain(&e);
-            let likely = if text.contains("map") && text.contains("create") {
-                " — a kernel below 5.8 has no BPF_MAP_TYPE_RINGBUF, and F2 requires it; the \
-                 perf-buffer fallback is F3.PT.*, not this phase"
-            } else {
-                ""
-            };
+            let likely = cause_of(&text);
             Error::unsupported(format!(
                 "kernel {} refused the object: {text}{likely}",
                 Self::kernel_release()
@@ -302,6 +331,40 @@ mod tests {
     /// Everything here runs on the host, so it exercises only what needs no
     /// kernel: `I-12` forbids a kernel-touching test outside a VM, and the
     /// load, attach and drain are covered by `cargo xtask vm run`.
+    /// **A permission refusal is not a diagnosis about the kernel's age.**
+    ///
+    /// Measured on 2026-09-15: an unprivileged load on **7.1.5** was told
+    /// *"a kernel below 5.8 has no `BPF_MAP_TYPE_RINGBUF`"*, because the cause
+    /// was chosen by asking whether the text mentioned creating a map — which
+    /// `EPERM` does. A reader acts differently on the two: one needs `CAP_BPF`,
+    /// the other needs a different kernel.
+    ///
+    /// The third case is the one that matters most and has no test anywhere
+    /// else: where **no** cause is established, nothing is appended. A guess
+    /// glued to the loader's own words reads exactly like a finding.
+    #[test]
+    fn a_load_failure_names_a_cause_only_where_one_is_established() {
+        let denied =
+            cause_of("failed to create map `AISME_EVENTS`: Operation not permitted (os error 1)");
+        assert!(
+            denied.contains("CAP_BPF") && !denied.contains("5.8"),
+            "a permission refusal was reported as an old kernel: {denied}"
+        );
+
+        let absent =
+            cause_of("failed to create map `AISME_EVENTS`: Invalid argument (os error 22)");
+        assert!(
+            absent.contains("5.8"),
+            "a map the kernel does not know was not explained: {absent}"
+        );
+
+        assert_eq!(
+            cause_of("BTF error: unexpected BTF type id 45"),
+            "",
+            "a cause was invented for a failure nothing here explains"
+        );
+    }
+
     /// A wrapper's own message is not a diagnosis. This is the check that the
     /// reason survives to the reader — the failure that made it necessary was
     /// a load error whose top link said only "BTF error".

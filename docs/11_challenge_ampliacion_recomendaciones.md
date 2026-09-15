@@ -444,3 +444,60 @@ future `setPolicy` still cannot be called from inside a session.
 **One question survives for the owner, and it is point 2's**: where the recording may be made, and
 what declares the tool calls. Point 1 needs an ADR because it reverses a recorded decision, and the
 ADR's argument is written above rather than owed.
+
+---
+
+## Point 1, as executed
+
+`aisme run` forks the supervised command and stays as its parent. `ADR-09` records the decision,
+because it reverses `F2.WS.08`'s.
+
+**The measurement the whole change exists for**, through the shipped binaries:
+
+| command | before | after |
+|---|---|---|
+| `aisme run --trap-openat -- sh -c 'cat /etc/hostname'` | 2 delivered, **13 denied** | 6 delivered, **0 denied** |
+| the same, nested three shells deep | — | 10 delivered, **0 denied** |
+
+Every denial before was *"the path argument could not be read"* and every one was the grandchild's.
+**No component holds any capability**, and `PR_SET_PTRACER` is gone from the session path.
+
+The three verdicts still hold, now through a grandchild in every case, and the `asked` column still
+separates a compiled deny from an escalation nobody answered:
+
+| open, via `sh -c` | delivered | denied | asked |
+|---|---|---|---|
+| `/etc/hostname` | 6 | 0 | **0** |
+| `/etc/shadow` | 8 | 12 | **0** |
+| `~/.aws/credentials` | 8 | 12 | **1** |
+
+### What the point had not said, and the source did
+
+1. **`unsafe` is forbidden in `aisme-cli`.** `fork` and `pre_exec` need it, and `CLAUDE.md` permits
+   it in L2 and forbids it in L4's product edges — `crates/aisme-cli/src/*.rs` had none and still
+   has none. The whole sequence is one `aisme-linux` function, which is better than the point's
+   arrangement rather than a concession: there is exactly one place to audit.
+2. **`decideOpen` is not only a decision, it is the daemon's only sight of the action.** With the
+   loop in the session, nothing else tells the daemon an open happened — so the call carries the WAL
+   record too, and dropping it would have made the WAL silent about everything a supervised session
+   did. That is a regression the change would have caused, not a feature it postponed.
+3. **The `asked` count had to come back through the protocol.** The supervisor cannot tell an
+   escalation answered *deny* from a compiled deny, because both arrive as `Deny` — so the answer
+   carries `asked` beside the verdict. Without it the property this phase spent a week proving would
+   have stopped being visible.
+4. **A command that cannot be run must still exit 127.** `Command::spawn` failing is a different
+   error kind from a platform that cannot supervise, and the adapter distinguishes them so the
+   shell's convention survives. A test caught this.
+
+### Two defects of mine, both in the tests
+
+Both are the same shape as the ones this phase keeps finding, which is why they are recorded rather
+than quietly fixed.
+
+* **An assertion that could not fail the way it was written**: the grandchild test asserted
+  `0 denied`, and a denial reading *"the supervisor could not open it"* is an `ENOENT` whose count
+  depends on the environment rather than on the product. It passed alone and failed under the full
+  suite. It asserts the **reason** now — that no denial says *"the path argument could not be
+  read"* — which is the defect the change fixes and which would have failed before it.
+* **A substring that matched the wrong number**: `"10 delivered"` contains `"0 delivered"`, so the
+  check for "nothing was delivered" fired on a busy session. The count is parsed now.

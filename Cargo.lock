@@ -28,6 +28,7 @@ dependencies = [
 name = "aisme-cli"
 version = "0.1.0"
 dependencies = [
+ "aisme-core",
  "aisme-linux",
  "aisme-proto",
 ]

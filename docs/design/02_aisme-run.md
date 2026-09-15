@@ -42,11 +42,18 @@ The same socket carries **`declareToolCall`** (`F2.WS.03`): an agent volunteers 
 
 **F2's subset of step 5** is the write scope: one ruleset built from the session's declared scope, handling every write-shaped right the running ABI knows. The never-promptable classes and AISME's own files are `F3.EN.09` and `F3.EN.11`, and they need the daemon's policy rather than the invocation's scope.
 | 6 | Set the environment: export the key-log variables for known runtimes pointing at the `agentd` socket; strip variables that would defeat observation | `F4.CO.04` |
-| 7 | `exec` the command. Landlock and the cgroup are inherited; nothing the child does can relax them | — |
+| 7 | **Fork**, confine the child, `exec` the command in it, and stay as its supervisor. Landlock and the cgroup are inherited; nothing the child does can relax them | `ADR-09` |
 | 8 | Serve terminal adjudication on the controlling TTY for the life of the session | `F2.WS.06` |
 | 9 | On exit: close the session, release the cgroup, flush the WAL, print a one-line summary | — |
 
-**Step 9 is `agentd`'s, not this command's, and `exec` is the reason.** From step 7 this process *is* the supervised command, so it has no "on exit" of its own: the summary is printed before `exec` and the cgroup is released by the daemon, which waits on `poll` of `cgroup.events` for the kernel to say the session is empty and then removes the directory. That is why **every** session registers, not only a filtered one — an unregistered session is one whose cgroup nothing will ever remove.
+**`aisme run` is the session's ancestor, and that is what makes supervision possible** (`ADR-09`).
+There are two ways to observe a process tree on Linux — own it, or hold a capability — and Yama
+grants an ancestor the memory of every descendant while granting a sibling only the process that
+named it. A daemon-side supervisor therefore saw the first process of a session and nothing it
+forked, and every real agent forks. Steps 4 and 5 happen in the **child**, after the fork: applied
+in the parent, either would confine the supervisor itself.
+
+**Step 9's cgroup release is still `agentd`'s.** From step 7 this process *is* the supervised command, so it has no "on exit" of its own: the summary is printed before `exec` and the cgroup is released by the daemon, which waits on `poll` of `cgroup.events` for the kernel to say the session is empty and then removes the directory. That is why **every** session registers, not only a filtered one — an unregistered session is one whose cgroup nothing will ever remove.
 
 Steps 4–6 happen **before** `exec`, so there is no window in which the child runs unsupervised.
 

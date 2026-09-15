@@ -192,54 +192,23 @@ pub fn sensors(caps: &CapabilitySet) -> Vec<Box<dyn Sensor>> {
     sensors
 }
 
-/// Serve one registered session for its whole life: answer its notifications
-/// if it is filtered, and release its cgroup when it empties.
+/// Wait for a session's cgroup to empty, then remove it.
 ///
-/// **Both halves, because a session is not only a filter.** A session without
-/// `--trap-openat` has no listener and still has a cgroup that nothing else
-/// will remove: `exec` has no after, so the process that created the directory
-/// is the supervised command by the time it could clean up (`docs/10` point 2).
-///
-/// The composition root names the adapter; the caller passes an `Option<OwnedFd>`
-/// and gets back nothing platform-specific, which is what keeps `A-05` true
-/// with a second engine in the tree.
+/// **The one thing the daemon still owns about a session's life.** The
+/// notification loop is the session's own parent's now, because only an
+/// ancestor may read a held open's path argument without a capability
+/// (`docs/12`); but `exec` has no after, so the process that created the cgroup
+/// is the supervised command by the time it could clean up, and somebody
+/// outside the session has to do it (`docs/10` point 2).
 #[cfg(target_os = "linux")]
-pub fn serve_session_notifications(
-    listener: Option<std::os::fd::OwnedFd>,
-    session_id: u64,
-    tty: Option<&str>,
-    escalate: &[String],
-    unattended: Option<&str>,
-    policy: Option<&aisme_core::policy::CompiledPolicy>,
-    cgroup: Option<&str>,
-) {
-    if let Some(listener) = listener {
-        answer_notifications(listener, session_id, tty, escalate, unattended, policy);
-    } else {
-        // Not an error and not a silence: an unfiltered session is one the
-        // daemon watches rather than supervises, and saying so is what stops a
-        // reader concluding the filter failed.
-        println!("session {session_id:016x} watched; no filter, nothing to answer");
-    }
+pub fn release_when_empty(session_id: u64, cgroup: Option<&str>) {
     release_session_cgroup(session_id, cgroup);
 }
 
-/// Wait for a session's cgroup to empty, then remove it.
-///
-/// **No sweeper and no interval.** cgroup v2 publishes `cgroup.events` with a
-/// `populated` line and that file is pollable: `poll(2)` returns `POLLPRI` when
-/// it changes, so the daemon waits for the kernel to say the session is empty
-/// instead of guessing how often to look. A sweeper would either run too often
-/// or leave a window, and could not tell a new empty session from a finished
-/// one.
-///
-/// The state is **read before it is waited on**, because the session may have
-/// ended already and an edge that has passed never arrives again.
-///
-/// Nothing here is recursive. `rmdir` on a cgroup with processes in it fails
-/// with `EBUSY`, which the kernel enforces and this code therefore does not
-/// have to; and a session subtree with children of its own is not F2's, so
-/// removing one would be removing something nobody asked about.
+/// Off Linux there is no cgroup to release.
+#[cfg(not(target_os = "linux"))]
+pub fn release_when_empty(_session_id: u64, _cgroup: Option<&str>) {}
+
 #[cfg(target_os = "linux")]
 fn release_session_cgroup(session_id: u64, cgroup: Option<&str>) {
     use std::os::fd::AsRawFd as _;
@@ -298,136 +267,6 @@ fn release_session_cgroup(session_id: u64, cgroup: Option<&str>) {
         Ok(()) => println!("session {session_id:016x} cgroup released: {path}"),
         Err(e) => eprintln!("session {session_id:016x}: {path} could not be removed: {e}"),
     }
-}
-
-#[cfg(target_os = "linux")]
-fn answer_notifications(
-    listener: std::os::fd::OwnedFd,
-    session_id: u64,
-    tty: Option<&str>,
-    escalate: &[String],
-    unattended: Option<&str>,
-    policy: Option<&aisme_core::policy::CompiledPolicy>,
-) {
-    use std::os::fd::AsFd as _;
-
-    use aisme_core::adjudicate::{Adjudicator as _, Escalation};
-    use aisme_core::enforce::EscalationId;
-    use aisme_core::ontology::{PermissionGroup, SessionId, Severity};
-    use aisme_ebpf_common::Verdict;
-
-    // Named on the way in, because a session with no terminal cannot be
-    // prompted and `F2.WS.06` will answer it with a timeout verdict instead —
-    // which an operator should learn when the session starts, not when a
-    // decision is silently defaulted.
-    println!(
-        "session {session_id:016x} supervised; terminal {}",
-        tty.unwrap_or("none — escalations will take the timeout verdict")
-    );
-    // The answer comes from the session's registration, never from this
-    // process's environment: a daemon-side read could be steered by anything
-    // able to set a variable in the daemon, which includes the agent being
-    // adjudicated.
-    let unattended = unattended.and_then(|v| match v {
-        "d" => Some(crate::terminal::Unattended(Verdict::Deny)),
-        "1" | "s" | "a" => Some(crate::terminal::Unattended(Verdict::Allow)),
-        _ => None,
-    });
-    let mut adjudicator =
-        crate::terminal::TerminalAdjudicator::new(tty.map(ToOwned::to_owned), unattended);
-    // An unattended session waits for nobody: the answer is already known, and
-    // a ten-second budget it will never spend would only slow a gate down.
-    if unattended.is_some() {
-        adjudicator = adjudicator.with_budget(std::time::Duration::ZERO);
-    }
-    let mut asked = 0u64;
-    let mut escalation_id = 0u64;
-
-    // What this session is judged against, in order of authority:
-    //
-    // 1. The **daemon's compiled policy**, when it has one. This is the real
-    //    answer: `Verdict::Deny` refuses and **asks nobody**, which is what
-    //    makes it stronger than an escalation that denies on a timeout — no
-    //    answer exists to get wrong and no budget has to expire for it to
-    //    hold. `evaluate` is `aisme-core`'s and already handles globs, which
-    //    the trie lowering does not.
-    // 2. Failing that, the prefixes the session declared with `--escalate`:
-    //    a shorthand for tests and for a daemon started without a policy. It
-    //    can only ever *ask*, never refuse outright.
-    let decide = |path: &str| -> Verdict {
-        if let Some(policy) = policy {
-            let facts = aisme_core::policy::EventFacts {
-                // No group: at F2 the supervisor matches paths and does not
-                // classify, and `evaluate` reads an absent group as "every
-                // rule applies" rather than as "none does".
-                path: Some(path),
-                ..aisme_core::policy::EventFacts::default()
-            };
-            return aisme_core::policy::evaluate(policy, &facts).verdict;
-        }
-        if escalate
-            .iter()
-            .any(|prefix| path.starts_with(prefix.as_str()))
-        {
-            Verdict::Escalate
-        } else {
-            Verdict::Allow
-        }
-    };
-
-    let mut delivered = 0u64;
-    let mut denied = 0u64;
-    let result = aisme_linux::serve_notifications_with(
-        listener.as_fd(),
-        |path| {
-            match decide(path) {
-                // Refused by the policy, and nobody is asked. A deny that could
-                // become a prompt is a deny that can be argued with.
-                Verdict::Deny => return false,
-                Verdict::Allow | Verdict::Warn => return true,
-                Verdict::Escalate => {}
-            }
-            asked += 1;
-            escalation_id += 1;
-            let question = Escalation::new(
-                EscalationId(escalation_id),
-                SessionId(session_id),
-                PermissionGroup::Credentials,
-                "escalate-declared",
-                Severity::High,
-                format!("read {path}"),
-            );
-            // Blocking, on this session's own thread and never the hot loop: a
-            // human takes seconds and the hot loop's budget is microseconds.
-            crate::runtime::block_on(adjudicator.ask(&question)) == Verdict::Allow
-        },
-        |pid, ok, why| {
-            if ok {
-                delivered += 1;
-            } else {
-                denied += 1;
-                // One line per denial, with its reason: "unsupported" tells an
-                // operator nothing they can act on. The WAL record is F2.WS.09's.
-                eprintln!(
-                    "session {session_id:016x}: denied an openat from pid {pid}: {}",
-                    why.unwrap_or("no reason recorded")
-                );
-            }
-        },
-    );
-    if let Err(e) = result {
-        eprintln!(
-            "session {session_id:016x}: the notification loop stopped: {}",
-            e.detail
-        );
-    }
-    // Closing the listener is what ends the session's enforcement: any syscall
-    // still held then gets ENOSYS from the kernel, which is fail-closed.
-    drop(listener);
-    println!(
-        "session {session_id:016x} ended: {delivered} delivered, {denied} denied, {asked} asked ({} unattended)",
-        adjudicator.answered_unattended
-    );
 }
 
 /// Off Linux there are no notifications to answer and no cgroup to release.

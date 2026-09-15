@@ -242,32 +242,30 @@ fn run_slice(dir: &std::path::Path, rest: &[String]) -> std::io::Result<()> {
     if let Some(path) = socket {
         let owner = ipc::Peer::from_current_uid();
         println!("ipc: serving {path} for uid {}", owner.uid);
+        // What the daemon answers a supervisor with: the compiled policy, and
+        // the facts each session declared about itself. The **supervisor is the
+        // session's own parent** now — only an ancestor may read a held open's
+        // path argument without a capability — so the daemon decides and the
+        // session enforces (`docs/11` point 1, `docs/12`).
+        let supervision = ipc::Supervision::new(policy.clone());
+        supervision.observing(declared.clone());
         std::thread::spawn(move || {
             if let Err(e) = ipc::serve_feeding_sharing(
                 std::path::Path::new(&path),
                 owner.uid,
                 declared,
                 &generation,
+                &supervision,
                 |session| {
-                    // One thread per session, and never the hot loop: a human's
-                    // answer takes seconds and the hot loop's budget is
-                    // microseconds (`docs/05` §5.3).
+                    // One thread per session and never the hot loop, for the
+                    // one thing the daemon still owns about a session's life:
+                    // `exec` has no after, so the process that created the
+                    // cgroup is the supervised command by the time it could
+                    // clean up (`docs/10` point 2).
                     let id = session.session_id;
-                    let tty = session.tty;
-                    let escalate = session.escalate;
-                    let unattended = session.unattended;
                     let cgroup = session.cgroup;
-                    let policy = policy.clone();
                     std::thread::spawn(move || {
-                        platform::serve_session_notifications(
-                            session.listener,
-                            id,
-                            tty.as_deref(),
-                            &escalate,
-                            unattended.as_deref(),
-                            policy.as_deref(),
-                            cgroup.as_deref(),
-                        );
+                        platform::release_when_empty(id, cgroup.as_deref());
                     });
                 },
                 || false,
@@ -667,9 +665,12 @@ mod slice_tests {
                 uid,
                 declared,
                 &crate::ipc::generation_cell(),
-                // This test registers no session; a listener arriving here
-                // would be dropped, which closes it and fails the target's
-                // syscalls closed rather than leaving them held.
+                // No policy and no sessions: this test declares a tool call and
+                // registers nothing, so there is nothing for a supervisor to
+                // ask about.
+                &crate::ipc::Supervision::new(None),
+                // A registration arriving here would only be dropped; this test
+                // sends none.
                 drop,
                 move || {
                     served += 1;

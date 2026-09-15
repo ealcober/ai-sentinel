@@ -14,6 +14,8 @@ mod resolve;
 mod seccomp;
 #[cfg(target_os = "linux")]
 mod sensor;
+#[cfg(target_os = "linux")]
+mod session;
 
 #[cfg(target_os = "linux")]
 pub use landlock::{
@@ -36,3 +38,5 @@ pub use seccomp::{
 };
 #[cfg(target_os = "linux")]
 pub use sensor::BpfSensor;
+#[cfg(target_os = "linux")]
+pub use session::{exit_like, spawn_supervised, Supervised};

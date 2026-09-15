@@ -25,7 +25,11 @@ On a kernel with no Yama, `PR_SET_PTRACER` fails with `EINVAL` and that is **not
 
 Through the product, on the same day: `aisme run --trap-openat -- cat /etc/hostname` delivers 4 opens and denies none, while `aisme run --trap-openat -- sh -c 'cat /etc/hostname'` denies **13**, all of them the grandchild's, all *"the path argument could not be read"*. The shell is supervised; the command it runs is not.
 
-**How to apply:** do not read a `PR_SET_PTRACER` grant as covering a session. It covers one process. Anything that supervises a *tree* needs either `CAP_SYS_PTRACE` on the supervisor or a supervisor that is the tree's ancestor, and choosing between those is an architectural decision, not a patch.
+**How to apply:** do not read a `PR_SET_PTRACER` grant as covering a session. It covers one process. Anything that supervises a *tree* needs either `CAP_SYS_PTRACE` on the supervisor or a supervisor that is the tree's ancestor.
+
+**The answer taken is ancestry** (`ADR-09`): `aisme run` forks the supervised command and stays as its parent, so Yama permits the reads at any depth with **no grant at all** and no component holds a capability. Measured after: `sh -c 'cat /etc/hostname'` goes from 2 delivered and 13 denied to 6 delivered and 0 denied, and three shells deep to 10 delivered and 0 denied. `PR_SET_PTRACER` is gone from the session path, because a grant left in place is a grant somebody will rely on.
+
+The same rule shows up elsewhere and is worth recognising on sight: an unprivileged `fanotify` listener is told an event happened and is given `pid=0` for every process but itself. **Linux hides the actor from an unprivileged observer.** Own the tree, or hold a capability; there is no third way.
 
 **Source:** `F2.WS.05`, measured 2026-09-15
 

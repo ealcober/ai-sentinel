@@ -205,159 +205,46 @@ pub(crate) fn agentd_socket() -> String {
     std::env::var("AISME_AGENTD_SOCKET").unwrap_or_else(|_| "/run/aisme/agentd.sock".to_owned())
 }
 
-/// Deny writes outside the session's declared scope, in kernel (`F2.WS.11`).
+/// Register the session with `agentd`, and keep the connection.
 ///
-/// **A denial here produces no notification traffic at all**, which is the
-/// second half of the task's done-condition and the whole performance argument
-/// for L2 (§2.2.1): the kernel refuses the syscall and no supervisor is woken.
-/// The denial is recorded from the syscall's return value instead, by the
-/// exit tracepoint, so that a denial nobody was notified about is still a
-/// denial somebody can audit.
+/// **Every session registers, filtered or not**, and no descriptor travels on
+/// the message. An unregistered session is one whose cgroup nothing will ever
+/// release, and the seccomp listener now stays here: the process that answers a
+/// held open must be able to read its path argument, and Yama grants that to an
+/// **ancestor** — which is this process and never the daemon.
 ///
-/// **A kernel without Landlock is a named degradation, not a failure** (`I-19`,
-/// and `docs/design/02_aisme-run.md` §5): the step is skipped, the lost
-/// function is stated once on stderr, and the session runs. The alternative —
-/// refusing to start — would make the product unusable on exactly the kernels
-/// the degradation ladder exists for.
+/// The connection is kept for the life of the session, because `decideOpen`
+/// travels on it once per held open.
 ///
 /// # Errors
 ///
-/// Anything that stopped an available Landlock from being applied: a scope
-/// that cannot be opened, a ruleset the kernel refused. A write scope that
-/// silently failed to apply is worse than none, because the session believes
-/// it is confined.
-fn apply_write_scope(scopes: &[PathBuf]) -> Result<(), String> {
-    match platform::restrict_writes_to(scopes) {
-        Ok(Some(abi)) => {
-            // One line, at the moment it takes effect, naming what is in force.
-            // A confinement nobody can see is one nobody can debug.
-            println!(
-                "landlock: ABI {abi} — writes are denied outside {}",
-                scopes
-                    .iter()
-                    .map(|p| p.display().to_string())
-                    .collect::<Vec<String>>()
-                    .join(", ")
-            );
-            Ok(())
-        }
-        Ok(None) => {
-            eprintln!(
-                "landlock: unavailable on this kernel — writes outside the scope are not denied \
-                 in kernel (tier L2-); they arrive one syscall late through seccomp, if at all"
-            );
-            Ok(())
-        }
-        Err(e) => Err(e),
-    }
-}
-
-/// Everything that must happen between the cgroup and `exec`.
-///
-/// `F2.WS.05` installs the seccomp filter here; `F2.WS.11`'s Landlock ruleset
-/// joins it. Both must run after the cgroup exists and before `exec`, because a
-/// filter installed later has a window and a ruleset installed later is not
-/// inherited.
-///
-/// **The order inside is the safety.** The daemon is reached *first*: a filter
-/// is irreversible and inherited across `exec`, so installing one and then
-/// finding nobody to answer its notifications would leave the supervised
-/// command with every `openat` failing `ENOSYS` — a session that cannot run,
-/// created by the guard meant to protect it.
-///
-/// # Errors
-///
-/// Anything that stopped the session being supervised, with its reason. The
-/// caller refuses to `exec` rather than running unsupervised: a command the
-/// caller asked to have watched must not run unwatched without being told.
-fn pre_exec(invocation: &Invocation, session_id: u64, cgroup: &Path) -> Result<(), String> {
+/// Only for a session that asked to be trapped. One that did not is warned and
+/// runs: refusing it would invent a new reason for `aisme run` to fail that it
+/// never had, and the cost of no daemon there is a directory left behind.
+fn register(
+    invocation: &Invocation,
+    session_id: u64,
+    cgroup: &Path,
+) -> Result<Option<std::os::unix::net::UnixStream>, String> {
     use std::fmt::Write as _;
-    use std::os::fd::AsFd as _;
+    use std::io::Write as _;
 
-    // 1. The daemon, **before anything irreversible**, and that now covers two
-    //    things rather than one: the seccomp filter and the Landlock ruleset.
-    //    Reaching the daemon first is what keeps a trapping session from being
-    //    confined and filtered and then discovering nobody can answer it.
-    //
-    //    **Every** session registers, not only a trapping one: an unregistered
-    //    session is one whose cgroup nothing will ever release, because `exec`
-    //    has no after and this process is the supervised command from then on
-    //    (`docs/10` point 2).
     let socket_path = agentd_socket();
     let socket = match std::os::unix::net::UnixStream::connect(&socket_path) {
-        Ok(socket) => Some(socket),
+        Ok(socket) => socket,
         Err(e) if invocation.trap_openat => {
             return Err(format!(
                 "{socket_path}: {e} — --trap-openat needs aisme-agentd running"
             ));
         }
         Err(e) => {
-            // A warning, not a refusal. Refusing here would invent a new reason
-            // for `aisme run` to fail that it never had: this session asked for
-            // no supervision, and the cost of no daemon is a directory left
-            // behind, which is worth saying and not worth stopping for. The
-            // write scope below is still applied — a session without a daemon
-            // is unwatched, not unconfined.
             eprintln!(
                 "aisme run: {socket_path}: {e} — this session is unregistered; \
                  its cgroup will be left behind"
             );
-            None
+            return Ok(None);
         }
     };
-
-    // 2. The write scope, in kernel (`F2.WS.11`), for **every** session:
-    //    Landlock is not part of the trap, and step 5 of
-    //    `docs/design/02_aisme-run.md` applies to all of them.
-    //
-    //    It goes **before** the seccomp filter, and that is a correction to the
-    //    design note rather than a reading of it. The note lists the filter as
-    //    step 4 and this as step 5, which looks like an order and is not one:
-    //    `landlock_add_rule` needs an `O_PATH` descriptor for each allowed
-    //    directory, so applying the ruleset under a filter that traps every
-    //    `openat` would send the session's own setup to the supervisor to be
-    //    answered — and `I-28` forbids permitting an `O_PATH` open, so the
-    //    supervisor would have to refuse it.
-    apply_write_scope(&invocation.scopes)?;
-
-    let Some(socket) = socket else {
-        return Ok(());
-    };
-
-    // 3. The grant, before the filter, because it can still fail. The
-    //    supervisor reads the path argument of each trapped `openat` with
-    //    `process_vm_readv`, which needs ptrace permission that Yama's default
-    //    scope gives only to an ancestor — and the daemon is this session's
-    //    sibling. Measured: without it every open was denied and `cat` reported
-    //    "libc.so.6: Permission denied", fourteen times.
-    //
-    //    **It covers this process and nothing it forks.** Yama keys the
-    //    exception to the declaring task, so a session that runs a shell has
-    //    the shell supervised and the commands it runs denied. That is the one
-    //    open decision in F2 (`docs/10`, step 2 as executed); nothing here can
-    //    close it.
-    // 4. The filter. From there the session is trapped whatever happens next,
-    //    which is why nothing that can fail belongs after it.
-    let supervision = if invocation.trap_openat {
-        let supervisor = platform::allow_supervision_by(socket.as_fd())?;
-        Some((supervisor, platform::install_filter()?))
-    } else {
-        None
-    };
-
-    // 4. The listener, to the daemon that will answer it. The method name comes
-    //    from `aisme-proto` rather than a literal so the two cannot drift.
-    let tty = std::fs::read_link("/proc/self/fd/0")
-        .ok()
-        .and_then(|p| p.to_str().map(ToOwned::to_owned))
-        .filter(|p| p.starts_with("/dev/"));
-    // `AISME_TERMINAL_ANSWER` is read **here**, once, before `exec`, and carried
-    // to the daemon — never read by the adjudicator from its own environment,
-    // which anything able to set a variable in the daemon could steer,
-    // including the agent being adjudicated.
-    let unattended = std::env::var("AISME_TERMINAL_ANSWER")
-        .ok()
-        .filter(|v| matches!(v.as_str(), "d" | "1" | "s" | "a"));
 
     let mut params = format!(
         r#""session_id":{}"#,
@@ -365,17 +252,25 @@ fn pre_exec(invocation: &Invocation, session_id: u64, cgroup: &Path) -> Result<(
         // token: the daemon reads the same bits back.
         i64::from_ne_bytes(session_id.to_ne_bytes())
     );
-    if let Some(tty) = &tty {
-        let _ = write!(params, r#","tty":"{tty}""#);
+    // `AISME_TERMINAL_ANSWER` is read **here**, once, before the command runs,
+    // and carried to the daemon — never read by the adjudicator from its own
+    // environment, which anything able to set a variable in the daemon could
+    // steer, including the agent being adjudicated.
+    if let Ok(answer) = std::env::var("AISME_TERMINAL_ANSWER") {
+        if matches!(answer.as_str(), "d" | "1" | "s" | "a") {
+            let _ = write!(params, r#","unattended":"{answer}""#);
+        }
     }
-    if let Some(answer) = &unattended {
-        let _ = write!(params, r#","unattended":"{answer}""#);
+    if let Some(tty) = std::fs::read_link("/proc/self/fd/0")
+        .ok()
+        .and_then(|p| p.to_str().map(ToOwned::to_owned))
+        .filter(|p| p.starts_with("/dev/"))
+    {
+        let _ = write!(params, r#","tty":"{tty}""#);
     }
     // The daemon releases this when the kernel says it is empty, and refuses
     // any path that is not a session cgroup under the unified hierarchy.
     let _ = write!(params, r#","cgroup":"{}""#, cgroup.display());
-    // Said rather than inferred. The daemon must refuse a filtered session that
-    // carries no listener, and nothing else on the wire tells it which this is.
     let _ = write!(params, r#","trapping":{}"#, invocation.trap_openat);
     if !invocation.escalate.is_empty() {
         let list = invocation
@@ -390,60 +285,93 @@ fn pre_exec(invocation: &Invocation, session_id: u64, cgroup: &Path) -> Result<(
         r#"{{"jsonrpc":"2.0","id":1,"method":"{}","params":{{{params}}}}}"#,
         Method::RegisterSession.as_str()
     );
-    // One message: the request and the descriptor it carries. Two would put a
-    // filler byte in the daemon's stream ahead of the line.
-    let mut request = line.into_bytes();
-    request.push(b'\n');
-    match &supervision {
-        Some((_, listener)) => platform::send_listener(socket.as_fd(), listener.as_fd(), &request)?,
-        // No descriptor to carry: an ordinary write on the same socket, so the
-        // daemon's reader sees one line either way.
-        None => std::io::Write::write_all(&mut (&socket), &request)
-            .map_err(|e| format!("registering the session: {e}"))?,
-    }
+    writeln!(&socket, "{line}").map_err(|e| format!("registering the session: {e}"))?;
 
-    // Read the answer. A registration the daemon refused must not be mistaken
-    // for one it accepted: the filter is already installed, so proceeding would
-    // exec a command whose every `openat` fails with ENOSYS — measured, before
-    // this check existed, as `cat: libc.so.6: Error 38`.
     let mut reply = String::new();
     std::io::BufRead::read_line(&mut std::io::BufReader::new(&socket), &mut reply)
         .map_err(|e| format!("registering the session: {e}"))?;
-    match &supervision {
-        Some((supervisor, _)) => {
-            if !reply.contains("\"accepted\"") {
-                return Err(format!("the daemon refused the session: {}", reply.trim()));
-            }
-            eprintln!("aisme run: supervised by pid {supervisor}");
+    if !reply.contains("\"accepted\"") {
+        if invocation.trap_openat {
+            return Err(format!("the daemon refused the session: {}", reply.trim()));
         }
-        None => {
-            // Same distinction as the connect above: nothing was asked of the
-            // daemon that this session depends on, so a refusal costs the
-            // cgroup release and not the run.
-            if !reply.contains("\"accepted\"") {
-                eprintln!(
-                    "aisme run: the daemon refused the registration: {} — \
-                     this session's cgroup will be left behind",
-                    reply.trim()
-                );
-            }
-        }
+        eprintln!(
+            "aisme run: the daemon refused the registration: {} — \
+             this session's cgroup will be left behind",
+            reply.trim()
+        );
+        return Ok(None);
     }
-    // The daemon holds its own copy now; ours would keep the notification alive
-    // after this process is replaced by the supervised command.
-    drop(supervision);
-    Ok(())
+    Ok(Some(socket))
 }
 
-/// Run the supervised command, replacing this process.
+/// Ask the daemon what the policy says about one held open.
 ///
-/// Returns only on failure: on success `exec` never comes back, which is the
-/// point. The supervised command **is** this process from that moment, so its
-/// pid, its terminal and its exit status are the ones the caller sees, and
-/// nothing in the chain can be skipped by killing an intermediary.
-pub fn run(args: &[String]) -> u8 {
-    use std::os::unix::process::CommandExt as _;
+/// **The daemon decides and this process enforces**, which is the split the
+/// kernel forces: only an ancestor may read a held open's path without a
+/// capability, and only the daemon holds the compiled policy, the adjudicator
+/// and the WAL. A session that decided what governs it would be deciding
+/// whether to be enforced.
+///
+/// A daemon that cannot be asked **denies**. That is the one place in this file
+/// where failure is closed, and it is the right one: the session is filtered, so
+/// there is a guard to honour, and an unanswerable question is not permission.
+fn ask_daemon(
+    socket: &std::os::unix::net::UnixStream,
+    session_id: u64,
+    path: &str,
+    asked: &mut u64,
+) -> bool {
+    use std::io::Write as _;
 
+    let line = format!(
+        r#"{{"jsonrpc":"2.0","id":1,"method":"{}","params":{{"session_id":{},"path":"{}"}}}}"#,
+        Method::DecideOpen.as_str(),
+        i64::from_ne_bytes(session_id.to_ne_bytes()),
+        path.replace('\\', "\\\\").replace('"', "\\\"")
+    );
+    if writeln!(&*socket, "{line}").is_err() {
+        return false;
+    }
+    let mut reply = String::new();
+    if std::io::BufRead::read_line(&mut std::io::BufReader::new(socket), &mut reply).is_err() {
+        return false;
+    }
+    // Deny is 3 on the wire (`aisme-ebpf-common`); anything else the daemon
+    // answers is a permit. A reply this cannot parse is a denial, because a
+    // verdict nobody could read is not a verdict that said yes.
+    let Ok(value) = aisme_proto::json::parse(reply.trim()) else {
+        return false;
+    };
+    let Some(result) = value.get("result") else {
+        return false;
+    };
+    // Counted here because the verdict alone cannot say it: an escalation
+    // answered *deny* and a compiled deny both arrive as `Deny`, and the
+    // difference is the whole security argument.
+    if matches!(
+        result.get("asked"),
+        Some(aisme_proto::json::Value::Bool(true))
+    ) {
+        *asked += 1;
+    }
+    result
+        .get("verdict")
+        .and_then(aisme_proto::json::Value::as_int)
+        .is_some_and(|verdict| verdict != 3)
+}
+
+/// Run the supervised command as this process's **child**, and supervise it.
+///
+/// Returns the command's exit code, or never returns when the command died by
+/// a signal — see `exit_like`.
+///
+/// **`aisme run` is the session's ancestor, and that is what makes supervision
+/// possible at all.** There are two ways to observe a process tree on Linux:
+/// own the tree, or hold a capability. Yama grants an ancestor the memory of
+/// every descendant and grants a sibling only the process that named it, so a
+/// daemon-side supervisor sees the first process of a session and nothing it
+/// forks — and every real agent forks (`docs/11` point 1, `docs/12`).
+pub fn run(args: &[String]) -> u8 {
     let invocation = match parse(args) {
         Ok(i) => i,
         Err(problem) => {
@@ -459,26 +387,95 @@ pub fn run(args: &[String]) -> u8 {
             return 1;
         }
     };
-    // Printed before `exec`, because `exec` has no after. What the session did
-    // is `forensicd`'s to report.
+    // Printed before the command starts. What the session did is `forensicd`'s
+    // to report.
     println!(
         "session {id:016x} · scope {} · cgroup {}",
         invocation.scopes[0].display(),
         cgroup.display()
     );
-    if let Err(e) = pre_exec(&invocation, id, &cgroup) {
-        eprintln!("aisme run: {e}");
-        return 1;
-    }
+
+    // The daemon first, before anything irreversible: a session that is
+    // confined and filtered and then finds nobody to answer it is a session
+    // that cannot run, created by the guard meant to protect it.
+    let socket = match register(&invocation, id, &cgroup) {
+        Ok(socket) => socket,
+        Err(problem) => {
+            eprintln!("aisme run: {problem}");
+            return 1;
+        }
+    };
+
     let (program, rest) = invocation
         .command
         .split_first()
         .unwrap_or((&invocation.command[0], &[]));
-    let error = std::process::Command::new(program).args(rest).exec();
-    eprintln!("aisme run: cannot exec {program}: {error}");
-    // 127 is the shell's convention for "command not found", and a caller that
-    // scripts around us reads it the same way.
-    127
+    let supervised =
+        match platform::spawn_supervised(program, rest, &invocation.scopes, invocation.trap_openat)
+        {
+            Ok(supervised) => supervised,
+            Err((code, problem)) => {
+                eprintln!("aisme run: {problem}");
+                return code;
+            }
+        };
+    match supervised.landlock_abi {
+        Some(abi) => println!(
+            "landlock: ABI {abi} — writes are denied outside {}",
+            invocation
+                .scopes
+                .iter()
+                .map(|p| p.display().to_string())
+                .collect::<Vec<String>>()
+                .join(", ")
+        ),
+        None => eprintln!(
+            "landlock: unavailable on this kernel — writes outside the scope are not denied \
+             in kernel (tier L2-)"
+        ),
+    }
+
+    let mut child = supervised.child;
+    if let (Some(listener), Some(socket)) = (supervised.listener, socket.as_ref()) {
+        supervise(&listener, socket, id);
+    }
+    // The loop above returns when the last process under the filter is gone, so
+    // this does not block for long. An unfiltered session waits here instead.
+    match child.wait() {
+        Ok(status) => platform::exit_like(status),
+        Err(e) => {
+            eprintln!("aisme run: waiting for the command: {e}");
+            1
+        }
+    }
+}
+
+/// Answer this session's held opens until its last process is gone.
+fn supervise(listener: &std::os::fd::OwnedFd, socket: &std::os::unix::net::UnixStream, id: u64) {
+    use std::os::fd::AsFd as _;
+
+    let (mut delivered, mut denied, mut asked) = (0u64, 0u64, 0u64);
+    let result = platform::serve_notifications(
+        listener.as_fd(),
+        |path| ask_daemon(socket, id, path, &mut asked),
+        |pid, ok, why| {
+            if ok {
+                delivered += 1;
+            } else {
+                denied += 1;
+                // One line per denial with its reason: "unsupported" tells an
+                // operator nothing they can act on.
+                eprintln!(
+                    "session {id:016x}: denied an openat from pid {pid}: {}",
+                    why.unwrap_or("no reason recorded")
+                );
+            }
+        },
+    );
+    if let Err(problem) = result {
+        eprintln!("session {id:016x}: the notification loop stopped: {problem}");
+    }
+    println!("session {id:016x} ended: {delivered} delivered, {denied} denied, {asked} asked");
 }
 
 #[cfg(test)]
@@ -522,34 +519,56 @@ mod tests {
         assert_eq!(i.command, argv(&["sh", "--trap-openat"]));
     }
 
-    /// With no daemon reachable, the session is refused **before** the filter
-    /// is installed.
+    /// With no daemon reachable, a trapping session is refused **before**
+    /// anything irreversible happens.
     ///
-    /// The order is the safety: a seccomp filter is irreversible and inherited
-    /// across `exec`, so installing one and then finding nobody to answer its
-    /// notifications would leave the supervised command with every `openat`
-    /// failing `ENOSYS` — a session that cannot run, created by the guard meant
-    /// to protect it. This test asserts the refusal names the socket, which is
-    /// only true if the connect came first.
+    /// The order is the safety: the seccomp filter and the Landlock ruleset are
+    /// both irreversible, so confining a child and then finding nobody to
+    /// answer its notifications would leave the supervised command with every
+    /// `openat` failing `ENOSYS` — a session that cannot run, created by the
+    /// guard meant to protect it. This test asserts the refusal names the
+    /// socket, which is only true if the registration came first.
+    ///
+    /// It also asserts that **this process** is untouched, and that half is not
+    /// decoration: the confinement now happens in a forked child, and a version
+    /// that applied it here would confine the **test harness** for the rest of
+    /// the run, failing later tests in whatever order the runner chose.
     #[test]
-    fn trapping_without_a_daemon_refuses_before_installing_the_filter() {
+    fn trapping_without_a_daemon_refuses_before_confining_anything() {
         let invocation = parse(&argv(&["--trap-openat", "--", "true"])).unwrap();
-        // The scope is this crate's own directory and never reaches Landlock:
-        // `pre_exec` refuses at the connect, which is above the ruleset. A
-        // version that applied the ruleset first would confine **the test
-        // harness** for the rest of the run, and the tests that ran after it
-        // would fail in whatever order the runner chose.
-        let problem =
-            super::pre_exec(&invocation, 1, std::path::Path::new("/sys/fs/cgroup")).unwrap_err();
+        let problem = super::register(
+            &invocation,
+            1,
+            std::path::Path::new("/sys/fs/cgroup/aisme-0123456789abcdef"),
+        )
+        .unwrap_err();
         assert!(problem.contains("aisme-agentd"), "{problem}");
-        // And this process is still unfiltered: if the filter had gone in
-        // first, the test binary would wear it for the rest of the run.
         assert!(
             std::fs::read_to_string("/proc/self/status")
                 .unwrap_or_default()
                 .lines()
                 .any(|l| l.starts_with("Seccomp:") && l.contains('0')),
             "the probing process was left filtered"
+        );
+    }
+
+    /// A session that asked for no trap is **warned** and runs, rather than
+    /// refused, when no daemon answers.
+    ///
+    /// Refusing it would invent a new reason for `aisme run` to fail that it
+    /// never had: that session asked for no supervision, and the cost of no
+    /// daemon there is a directory left behind rather than a guard bypassed.
+    #[test]
+    fn an_untrapped_session_without_a_daemon_is_warned_and_not_refused() {
+        let invocation = parse(&argv(&["--", "true"])).unwrap();
+        let answer = super::register(
+            &invocation,
+            1,
+            std::path::Path::new("/sys/fs/cgroup/aisme-0123456789abcdef"),
+        );
+        assert!(
+            matches!(answer, Ok(None)),
+            "an unsupervised session must still run"
         );
     }
 

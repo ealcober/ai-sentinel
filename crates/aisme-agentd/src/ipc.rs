@@ -225,6 +225,223 @@ fn capabilities(generation: Option<aisme_core::policy::PolicyGeneration>) -> Val
 /// The descriptor **is** the message: a registration without one would leave a
 /// filtered process with nobody to answer its syscalls, and every `openat` in
 /// that session would fail with `ENOSYS` while the daemon reported success.
+/// What a session declared about itself, kept for as long as it runs.
+///
+/// The daemon holds these because the **supervisor is no longer the daemon**:
+/// `aisme run` is the session's own parent, which is the only process Yama will
+/// let read a descendant's memory without a capability. The daemon still holds
+/// the policy, the adjudicator and the WAL, so it still decides — it is asked,
+/// once per held open, over `decideOpen`.
+pub struct SessionFacts {
+    /// The controlling terminal the session named, for `F2.WS.06`'s prompt.
+    pub tty: Option<String>,
+    /// Path prefixes this session escalates when no daemon policy is in force.
+    pub escalate: Vec<String>,
+    /// An answer to use instead of asking, read once by `aisme run`.
+    pub unattended: Option<String>,
+}
+
+/// Everything the daemon needs to answer a supervisor.
+///
+/// One value rather than four parameters: a signature that grew to carry the
+/// policy, the sessions and their counters would be a signature nobody reads
+/// before adding the fifth thing to it.
+pub struct Supervision {
+    /// The operator's compiled policy, when one was given.
+    pub policy: Option<std::sync::Arc<aisme_core::policy::CompiledPolicy>>,
+    /// The sessions that have registered, by id.
+    pub sessions: std::sync::Mutex<std::collections::BTreeMap<u64, SessionFacts>>,
+    /// Where an observed open goes, so the daemon still sees the actions after
+    /// the notification loop moved into the session.
+    pub observed: std::sync::Mutex<Option<crate::declare::Declared>>,
+}
+
+impl Supervision {
+    /// A daemon with no policy and no sessions yet.
+    #[must_use]
+    pub fn new(policy: Option<std::sync::Arc<aisme_core::policy::CompiledPolicy>>) -> Supervision {
+        Supervision {
+            policy,
+            sessions: std::sync::Mutex::new(std::collections::BTreeMap::new()),
+            observed: std::sync::Mutex::new(None),
+        }
+    }
+
+    /// Send observed opens to the engine, so they reach the WAL.
+    pub fn observing(&self, into: crate::declare::Declared) {
+        if let Ok(mut slot) = self.observed.lock() {
+            *slot = Some(into);
+        }
+    }
+}
+
+/// `decideOpen` — the supervisor asks, the daemon answers.
+///
+/// **The daemon decides and the session enforces**, which is the split the
+/// kernel forces: only an ancestor may read a held open's path without a
+/// capability, and only the daemon holds the compiled policy. A session that
+/// decided what governs it would be deciding whether to be enforced.
+///
+/// The open is recorded on the way through. With the notification loop in the
+/// session, this call is the **only** thing that tells the daemon an action
+/// happened, so dropping the record here would make the WAL silent about
+/// everything a supervised session did.
+fn decide_open(request: &rpc::Request, supervision: &Supervision) -> String {
+    use aisme_ebpf_common::Verdict;
+
+    let Some(Value::Int(raw)) = request.params.get("session_id") else {
+        return rpc::error(
+            request.id,
+            ErrorCode::InvalidParams,
+            "session_id must be an integer",
+        );
+    };
+    let session_id = u64::from_ne_bytes(raw.to_ne_bytes());
+    let Some(path) = request.params.get("path").and_then(Value::as_str) else {
+        return rpc::error(
+            request.id,
+            ErrorCode::InvalidParams,
+            "path must be a string",
+        );
+    };
+
+    // Recorded before it is judged: an open the daemon refused to answer is
+    // still an open that happened.
+    record_open(supervision, session_id, path);
+
+    let facts = supervision.sessions.lock().ok().and_then(|sessions| {
+        sessions.get(&session_id).map(|facts| {
+            (
+                facts.tty.clone(),
+                facts.escalate.clone(),
+                facts.unattended.clone(),
+            )
+        })
+    });
+    let Some((tty, escalate, unattended)) = facts else {
+        // An unregistered session is not a session this daemon is supervising,
+        // and answering it would be answering for a policy nobody bound to it.
+        return rpc::error(
+            request.id,
+            ErrorCode::InvalidParams,
+            "no such session; register it before asking",
+        );
+    };
+
+    let verdict = match &supervision.policy {
+        Some(policy) => {
+            let facts = aisme_core::policy::EventFacts {
+                path: Some(path),
+                ..aisme_core::policy::EventFacts::default()
+            };
+            aisme_core::policy::evaluate(policy, &facts).verdict
+        }
+        // No daemon policy: the session's declared escalate class is the
+        // shorthand, exactly as it was when the loop lived here.
+        None if escalate.iter().any(|p| path.starts_with(p.as_str())) => Verdict::Escalate,
+        None => Verdict::Allow,
+    };
+
+    let asked = verdict == Verdict::Escalate;
+    let verdict = if asked {
+        ask_a_human(session_id, path, tty.as_deref(), unattended.as_deref())
+    } else {
+        verdict
+    };
+    rpc::response(
+        request.id,
+        Value::object([
+            // The wire numbers, which `aisme-ebpf-common` fixes: Allow 0, Warn
+            // 1, Escalate 2, Deny 3. The supervisor reads them back with the
+            // same enum, so the two cannot disagree about which is which.
+            ("verdict", Value::Int(verdict as i64)),
+            // **Whether anybody was asked**, which the verdict alone cannot
+            // say: an escalation answered *deny* and a compiled deny both come
+            // back as `Deny`, and the difference between them is the whole
+            // security argument. A compiled deny asks nobody, so no answer
+            // exists to get wrong and no timeout has to expire for it to hold.
+            ("asked", Value::Bool(asked)),
+        ]),
+    )
+}
+
+/// Put one observed open on the same stream every other event travels.
+fn record_open(supervision: &Supervision, session_id: u64, path: &str) {
+    let Ok(slot) = supervision.observed.lock() else {
+        return;
+    };
+    let Some(out) = slot.as_ref() else {
+        return;
+    };
+    let mut event = aisme_ebpf_common::RawEvent::ZERO;
+    event.kind = aisme_ebpf_common::EventKind::FileOpen.into();
+    event.outcome = aisme_ebpf_common::Outcome::Observed.into();
+    event.session_id = session_id;
+    event.ts_ns = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| {
+            u64::try_from(d.as_nanos() & u128::from(u64::MAX)).unwrap_or(0)
+        });
+    // Written through L0's accessor, so the one place that knows the layout is
+    // the one place that writes it. The path is what the caller asked the
+    // kernel for, resolved by the supervisor before it asked, so
+    // `FLAG_PATH_UNRESOLVED` would be a lie here and is not set.
+    let mut truncated = false;
+    if let Some((buffer, len)) = event.file_path_mut() {
+        let bytes = path.as_bytes();
+        let n = bytes.len().min(buffer.len());
+        buffer[..n].copy_from_slice(&bytes[..n]);
+        *len = u16::try_from(n).unwrap_or(0);
+        truncated = n < bytes.len();
+    }
+    if truncated {
+        event.flags |= aisme_ebpf_common::FLAG_TRUNCATED;
+    }
+    let _ = out.send(event);
+}
+
+/// Ask whoever this session said could answer.
+fn ask_a_human(
+    session_id: u64,
+    path: &str,
+    tty: Option<&str>,
+    unattended: Option<&str>,
+) -> aisme_ebpf_common::Verdict {
+    use aisme_core::adjudicate::{Adjudicator as _, Escalation};
+    use aisme_core::enforce::EscalationId;
+    use aisme_core::ontology::{PermissionGroup, SessionId, Severity};
+
+    // The answer comes from the session's registration, never from this
+    // process's environment: a daemon-side read could be steered by anything
+    // able to set a variable in the daemon, which includes the agent being
+    // adjudicated.
+    let unattended = unattended.and_then(|v| match v {
+        "d" => Some(crate::terminal::Unattended(
+            aisme_ebpf_common::Verdict::Deny,
+        )),
+        "1" | "s" | "a" => Some(crate::terminal::Unattended(
+            aisme_ebpf_common::Verdict::Allow,
+        )),
+        _ => None,
+    });
+    let mut adjudicator =
+        crate::terminal::TerminalAdjudicator::new(tty.map(ToOwned::to_owned), unattended);
+    // An unattended session waits for nobody: the answer is already known, and
+    // a budget it will never spend would only slow a gate down.
+    if unattended.is_some() {
+        adjudicator = adjudicator.with_budget(std::time::Duration::ZERO);
+    }
+    let question = Escalation::new(
+        EscalationId(session_id),
+        SessionId(session_id),
+        PermissionGroup::Credentials,
+        "escalate",
+        Severity::High,
+        format!("read {path}"),
+    );
+    crate::runtime::block_on(adjudicator.ask(&question))
+}
+
 /// `declareToolCall` (`F2.WS.03`) — an agent volunteers what it is about to do.
 ///
 /// It authorizes nothing: no grant, no verdict, no scope. The declaration is
@@ -355,20 +572,17 @@ fn checked_session_cgroup(path: &str) -> Result<String, &'static str> {
     Ok(path.to_owned())
 }
 
-fn register_session(request: &rpc::Request, ancillary: &mut Ancillary) -> String {
-    let listener = ancillary.received.take();
-    let trapping = matches!(request.params.get("trapping"), Some(Value::Bool(true)));
-    // A filtered session with nobody to answer it is the one registration that
-    // must be refused: every `openat` in it would fail with `ENOSYS`. An
-    // unfiltered one carries no listener by construction and is accepted —
-    // the daemon watches it rather than supervising it.
-    if trapping && listener.is_none() {
-        return rpc::error(
-            request.id,
-            ErrorCode::InvalidParams,
-            "a session that installs a seccomp filter must carry its listener as SCM_RIGHTS",
-        );
-    }
+fn register_session(
+    request: &rpc::Request,
+    ancillary: &mut Ancillary,
+    supervision: &Supervision,
+) -> String {
+    // **No descriptor travels on this message.** The seccomp listener stays in
+    // the session, because the process that answers a held open must be able to
+    // read its path argument — and Yama grants that to an **ancestor**, which
+    // is `aisme run` and never this daemon (`docs/11` point 1, `docs/12`). What
+    // the daemon needs is what the session declares about itself, and a
+    // `decideOpen` call when a held open needs a verdict.
     let Some(Value::Int(session_id)) = request.params.get("session_id") else {
         return rpc::error(
             request.id,
@@ -422,9 +636,22 @@ fn register_session(request: &rpc::Request, ancillary: &mut Ancillary) -> String
             .get("unattended")
             .and_then(Value::as_str)
             .map(ToOwned::to_owned),
-        listener,
         cgroup,
     });
+    // Kept for as long as the session runs, because `decideOpen` needs them and
+    // the supervisor that will call it is a different process from this one.
+    if let (Ok(mut sessions), Some(registered)) =
+        (supervision.sessions.lock(), ancillary.registered.as_ref())
+    {
+        sessions.insert(
+            registered.session_id,
+            SessionFacts {
+                tty: registered.tty.clone(),
+                escalate: registered.escalate.clone(),
+                unattended: registered.unattended.clone(),
+            },
+        );
+    }
     rpc::response(
         request.id,
         Value::object([("outcome", Value::string("accepted"))]),
@@ -444,6 +671,7 @@ pub fn serve_line(
     declarations: &mut Declarations,
     generation: &mut Option<aisme_core::policy::PolicyGeneration>,
     ancillary: &mut Ancillary,
+    supervision: &Supervision,
 ) -> String {
     let request = match rpc::parse_request(line) {
         Ok(request) => request,
@@ -464,7 +692,12 @@ pub fn serve_line(
         // for it. The descriptor is the message: a registration without one
         // would leave a filtered process with nobody to answer its syscalls,
         // and every `openat` in it would fail with ENOSYS.
-        Method::RegisterSession => register_session(&request, ancillary),
+        Method::RegisterSession => register_session(&request, ancillary, supervision),
+        // The session's own supervisor asking what the policy says about one
+        // held open (`docs/11` point 1). The daemon decides; the session
+        // enforces, because only an ancestor may read a held open's path
+        // without a capability.
+        Method::DecideOpen => decide_open(&request, supervision),
         // `F2.WS.04`. The loader publishes, then tells the daemon the number.        // It carries no descriptor: `agentd` holds no policy-map fd of any
         // kind, because `SCM_RIGHTS` would leave its empty
         // `CapabilityBoundingSet=` decorative (`F1.RT.07`).
@@ -534,14 +767,6 @@ pub struct Registered {
     /// daemon-side read could be steered by anything able to set a variable in
     /// the daemon, which includes the agent being adjudicated.
     pub unattended: Option<String>,
-    /// The seccomp listener for that session, when there is one.
-    ///
-    /// **Optional, because not every session is filtered.** A session without
-    /// `--trap-openat` installs no filter and has no listener to hand over, and
-    /// it is still a session the daemon must know about: it has a cgroup, and
-    /// somebody has to release it (`docs/10` point 2). Making the descriptor
-    /// the message is what made unfiltered sessions invisible.
-    pub listener: Option<std::os::fd::OwnedFd>,
     /// The session's own cgroup, for the daemon to release when it empties.
     ///
     /// `exec` has no after, so the process that created the directory is the
@@ -692,6 +917,10 @@ pub fn serve(path: &Path, owner_uid: u32, until: impl FnMut() -> bool) -> std::i
         path,
         owner_uid,
         &generation_cell(),
+        // No policy and no sessions: this surface answers `decideOpen` with
+        // "no such session", which is the honest answer from a server that is
+        // supervising nothing.
+        &Supervision::new(None),
         Declarations::new,
         drop,
         until,
@@ -708,6 +937,7 @@ pub fn serve_feeding_sharing(
     owner_uid: u32,
     declared: crate::declare::Declared,
     generation: &GenerationCell,
+    supervision: &Supervision,
     on_session: impl FnMut(Registered),
     until: impl FnMut() -> bool,
 ) -> std::io::Result<()> {
@@ -715,6 +945,7 @@ pub fn serve_feeding_sharing(
         path,
         owner_uid,
         generation,
+        supervision,
         move || Declarations::feeding(declared.clone()),
         on_session,
         until,
@@ -725,6 +956,7 @@ fn serve_with(
     path: &Path,
     owner_uid: u32,
     generation: &GenerationCell,
+    supervision: &Supervision,
     mut counter: impl FnMut() -> Declarations,
     mut on_session: impl FnMut(Registered),
     mut until: impl FnMut() -> bool,
@@ -770,8 +1002,19 @@ fn serve_with(
                     &mut declarations,
                     &mut told,
                     &mut ancillary,
+                    supervision,
                 )
             })?;
+            // No method carries a descriptor any more — the seccomp listener
+            // stays in the session, whose own parent answers it. One that
+            // arrives is **closed**, not leaked and not ignored: the reader
+            // uses `recvmsg` precisely so a control message cannot be lost, and
+            // the point of that is undone if what it catches is then dropped on
+            // the floor of the process.
+            if let Some(stray) = ancillary.received.take() {
+                drop(stray);
+                eprintln!("ipc: a request carried a descriptor no method takes; it was closed");
+            }
             if let Some(session) = ancillary.registered.take() {
                 on_session(session);
             }
@@ -976,54 +1219,31 @@ mod tests {
             d,
             &mut None,
             &mut Ancillary::default(),
+            &Supervision::new(None),
         ))
         .unwrap()
     }
 
-    /// A **filtered** session without its listener is refused; an unfiltered
-    /// one is not.
+    /// **No descriptor travels on `registerSession`**, and a session that
+    /// installs a filter is accepted without one.
     ///
-    /// The refusal exists because accepting a filtered registration with no
-    /// descriptor would leave a process with nobody to answer its syscalls:
-    /// every `openat` in it would fail with `ENOSYS` and the daemon would have
-    /// reported success. It must not extend to a session that installed no
-    /// filter — that session has no listener to carry, and refusing it is what
-    /// made unfiltered sessions invisible to the daemon and left their cgroups
-    /// behind for ever.
+    /// The seccomp listener stays in the session, because the process that
+    /// answers a held open must be able to read its path argument and Yama
+    /// grants that to an **ancestor** — which is `aisme run` and never this
+    /// daemon. What the daemon needs is what the session declares about itself,
+    /// and a `decideOpen` call when a held open needs a verdict.
     #[test]
-    fn a_trapping_session_without_its_listener_is_refused() {
+    fn a_registration_carries_no_descriptor_and_is_accepted_without_one() {
         let line = r#"{"jsonrpc":"2.0","id":1,"method":"registerSession","params":{"session_id":7,"trapping":true}}"#;
-
-        let mut empty = Ancillary::default();
-        let refused = json::parse(&serve_line(
-            line,
-            &user(),
-            OWNER,
-            &mut Declarations::new(),
-            &mut None,
-            &mut empty,
-        ))
-        .unwrap();
-        assert!(
-            refused.get("error").is_some(),
-            "a registration with no descriptor was accepted: {refused:?}"
-        );
-        assert!(empty.registered.is_none());
-
-        // With one, it is accepted and the caller is handed the session.
-        let (a, b) = std::os::unix::net::UnixStream::pair().unwrap();
-        drop(b);
-        let mut carried = Ancillary {
-            received: Some(std::os::fd::OwnedFd::from(a)),
-            registered: None,
-        };
+        let mut bare = Ancillary::default();
         let accepted = json::parse(&serve_line(
             line,
             &user(),
             OWNER,
             &mut Declarations::new(),
             &mut None,
-            &mut carried,
+            &mut bare,
+            &Supervision::new(None),
         ))
         .unwrap();
         assert_eq!(
@@ -1031,40 +1251,125 @@ mod tests {
                 .get("result")
                 .and_then(|r| r.get("outcome"))
                 .and_then(json::Value::as_str),
-            Some("accepted")
+            Some("accepted"),
+            "a filtered session was refused for carrying no listener: {accepted:?}"
         );
-        let session = carried.registered.expect("the session reached the caller");
+        let session = bare.registered.expect("the session reached the caller");
         assert_eq!(session.session_id, 7);
         assert_eq!(session.tty, None, "no tty is a real state, not a default");
-        assert!(
-            carried.received.is_none(),
-            "the descriptor was left behind as well as taken"
-        );
 
-        // And a session that installed no filter is accepted with no
-        // descriptor at all: it is watched, not supervised.
-        let watched =
-            r#"{"jsonrpc":"2.0","id":1,"method":"registerSession","params":{"session_id":8}}"#;
-        let mut bare = Ancillary::default();
-        let accepted = json::parse(&serve_line(
-            watched,
+        // A descriptor sent anyway is **not** consumed by the registration. The
+        // server closes it rather than leaking it, and a registration that
+        // quietly took one would be a second way to supervise — which is a
+        // second thing to keep true.
+        let (a, b) = std::os::unix::net::UnixStream::pair().unwrap();
+        drop(b);
+        let mut carried = Ancillary {
+            received: Some(std::os::fd::OwnedFd::from(a)),
+            registered: None,
+        };
+        let answer = json::parse(&serve_line(
+            line,
             &user(),
             OWNER,
             &mut Declarations::new(),
             &mut None,
-            &mut bare,
+            &mut carried,
+            &Supervision::new(None),
+        ))
+        .unwrap();
+        assert!(answer.get("error").is_none());
+        assert!(
+            carried.received.is_some(),
+            "the registration consumed a descriptor it has no use for"
+        );
+    }
+
+    /// A `decideOpen` for a session nobody registered is **refused**.
+    ///
+    /// Answering it would be answering for a policy nothing bound to that
+    /// session — and a supervisor that got an answer for a session the daemon
+    /// is not supervising would believe it was supervised.
+    #[test]
+    fn deciding_for_an_unregistered_session_is_refused() {
+        let line = r#"{"jsonrpc":"2.0","id":1,"method":"decideOpen","params":{"session_id":99,"path":"/etc/hostname"}}"#;
+        let answer = json::parse(&serve_line(
+            line,
+            &user(),
+            OWNER,
+            &mut Declarations::new(),
+            &mut None,
+            &mut Ancillary::default(),
+            &Supervision::new(None),
         ))
         .unwrap();
         assert!(
-            accepted.get("error").is_none(),
-            "an unfiltered session was refused for having no listener: {accepted:?}"
+            answer.get("error").is_some(),
+            "a session the daemon never saw was decided for: {answer:?}"
         );
-        let session = bare
-            .registered
-            .expect("the watched session reached the caller");
-        assert!(
-            session.listener.is_none(),
-            "a watched session carries no listener, and that is the state itself"
+    }
+
+    /// With no daemon policy, the session's declared escalate class decides —
+    /// and the answer says **whether anybody was asked**.
+    ///
+    /// That flag is the whole security argument in one field: an escalation
+    /// answered *deny* and a compiled deny both come back as `Deny`, and only a
+    /// compiled deny asks nobody. A supervisor that could not tell them apart
+    /// could not report the difference either.
+    #[test]
+    fn the_answer_says_whether_anybody_was_asked() {
+        let supervision = Supervision::new(None);
+        let register = r#"{"jsonrpc":"2.0","id":1,"method":"registerSession","params":{"session_id":7,"trapping":true,"unattended":"d","escalate":["/etc/shadow"]}}"#;
+        let _ = serve_line(
+            register,
+            &user(),
+            OWNER,
+            &mut Declarations::new(),
+            &mut None,
+            &mut Ancillary::default(),
+            &supervision,
+        );
+
+        let decide = |path: &str| {
+            let line = format!(
+                r#"{{"jsonrpc":"2.0","id":1,"method":"decideOpen","params":{{"session_id":7,"path":"{path}"}}}}"#
+            );
+            json::parse(&serve_line(
+                &line,
+                &user(),
+                OWNER,
+                &mut Declarations::new(),
+                &mut None,
+                &mut Ancillary::default(),
+                &supervision,
+            ))
+            .unwrap()
+        };
+
+        let plain = decide("/etc/hostname");
+        let result = plain.get("result").expect("a verdict");
+        assert_eq!(
+            result.get("verdict").and_then(json::Value::as_int),
+            Some(0),
+            "a path no rule names is allowed (§B.10's default)"
+        );
+        assert_eq!(
+            result.get("asked"),
+            Some(&json::Value::Bool(false)),
+            "nobody should have been asked about a path nothing escalates"
+        );
+
+        let escalated = decide("/etc/shadow");
+        let result = escalated.get("result").expect("a verdict");
+        assert_eq!(
+            result.get("asked"),
+            Some(&json::Value::Bool(true)),
+            "the escalate class must reach the adjudicator"
+        );
+        assert_eq!(
+            result.get("verdict").and_then(json::Value::as_int),
+            Some(3),
+            "the session's unattended answer was `d`, and the answer decides"
         );
     }
 
@@ -1110,6 +1415,7 @@ mod tests {
                 &mut Declarations::new(),
                 &mut None,
                 &mut carried,
+                &Supervision::new(None),
             ))
             .unwrap();
             assert!(
@@ -1133,6 +1439,7 @@ mod tests {
             &mut Declarations::new(),
             &mut None,
             &mut carried,
+            &Supervision::new(None),
         ))
         .unwrap();
         assert!(
@@ -1166,6 +1473,7 @@ mod tests {
             &mut Declarations::new(),
             &mut None,
             &mut carried,
+            &Supervision::new(None),
         ))
         .unwrap();
         assert_eq!(
@@ -1195,6 +1503,7 @@ mod tests {
                     &mut Declarations::new(),
                     told,
                     &mut Ancillary::default(),
+                    &Supervision::new(None),
                 ))
                 .unwrap()
             };
@@ -1208,6 +1517,7 @@ mod tests {
             &mut Declarations::new(),
             &mut told,
             &mut Ancillary::default(),
+            &Supervision::new(None),
         ))
         .unwrap();
         assert!(
@@ -1253,6 +1563,7 @@ mod tests {
             &mut Declarations::new(),
             &mut told,
             &mut Ancillary::default(),
+            &Supervision::new(None),
         ))
         .unwrap();
         assert_eq!(
@@ -1326,6 +1637,7 @@ mod tests {
             &mut Declarations::new(),
             &mut None,
             &mut Ancillary::default(),
+            &Supervision::new(None),
         ))
         .unwrap();
         assert_eq!(
@@ -1342,6 +1654,7 @@ mod tests {
             &mut Declarations::new(),
             &mut None,
             &mut Ancillary::default(),
+            &Supervision::new(None),
         ))
         .unwrap();
         assert_eq!(response.get("id").and_then(json::Value::as_int), Some(42));

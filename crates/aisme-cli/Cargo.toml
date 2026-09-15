@@ -21,6 +21,10 @@ aisme-proto = { path = "../aisme-proto" }
 # here because `aisme run` installs a kernel filter and that choice belongs in
 # one auditable place.
 [target.'cfg(target_os = "linux")'.dependencies]
+# L4 -> L1, for the error kind that separates "this platform cannot" from
+# "the command you named is not there" — which is what keeps `aisme run`
+# exiting 127 for the second.
+aisme-core = { path = "../aisme-core" }
 aisme-linux = { path = "../aisme-linux" }
 
 [lints]

@@ -106,11 +106,29 @@ pub enum Method {
     /// The F2 slice of `docs/design/02_aisme-run.md` step 3; `F8.CLI.01` widens
     /// it to the rest of what a session registration carries.
     RegisterSession,
+    /// The session's supervisor asks what the policy says about one held open.
+    ///
+    /// **The supervisor is the session's own parent, and the decision is still
+    /// the daemon's.** `aisme run` is the only process Yama will let read a
+    /// descendant's memory without a capability, so it is the one that reads
+    /// the path and performs the validated open; but a session that decided
+    /// what governs it would be deciding whether to be enforced, so the verdict
+    /// comes from the daemon that holds the compiled policy.
+    ///
+    /// **It is also how the daemon sees the action at all.** With the
+    /// supervisor in the session rather than in the daemon, this call is the
+    /// only thing that tells the daemon an open happened — so it carries the
+    /// WAL record, the adjudication and the forensics, not merely a verdict.
+    ///
+    /// It grants nothing and carries no descriptor. A session that stops
+    /// calling it is a session that has stopped enforcing, which the daemon
+    /// sees as silence and never as permission.
+    DecideOpen,
 }
 
 impl Method {
     /// Every method, in Annex I.1's order.
-    pub const ALL: [Method; 15] = [
+    pub const ALL: [Method; 16] = [
         Method::GetCapabilities,
         Method::ListSessions,
         Method::GetSession,
@@ -126,6 +144,7 @@ impl Method {
         Method::DeclareToolCall,
         Method::SetPolicyGeneration,
         Method::RegisterSession,
+        Method::DecideOpen,
     ];
 
     /// The name on the wire.
@@ -135,6 +154,7 @@ impl Method {
             Method::DeclareToolCall => "declareToolCall",
             Method::SetPolicyGeneration => "setPolicyGeneration",
             Method::RegisterSession => "registerSession",
+            Method::DecideOpen => "decideOpen",
             Method::GetCapabilities => "getCapabilities",
             Method::ListSessions => "listSessions",
             Method::GetSession => "getSession",
@@ -177,9 +197,14 @@ impl Method {
             // The loader runs as root on this machine; the class that means
             // "a process on this host, not a paired device" is the right one,
             // and it is the same class `pairDevice` uses.
-            Method::PairDevice | Method::SetPolicyGeneration | Method::RegisterSession => {
-                AuthClass::LocalPeer
-            }
+            Method::PairDevice
+            | Method::SetPolicyGeneration
+            | Method::RegisterSession
+            // The supervisor is a local process of the installing user, and it is
+            // inside a session cgroup by construction — so `LocalPeer` and
+            // never `HumanPrincipal`, which is the class that separates the
+            // user from the agent (`F7.PS.08`).
+            | Method::DecideOpen => AuthClass::LocalPeer,
             Method::SetPolicy | Method::ManageGrant | Method::ManageSuppression => {
                 AuthClass::HumanPrincipal
             }

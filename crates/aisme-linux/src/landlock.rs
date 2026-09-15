@@ -154,6 +154,30 @@ pub fn write_access_for(abi: u8) -> u64 {
     }
 }
 
+/// The character devices a write scope must not deny, and why each one.
+///
+/// **Measured, not anticipated.** The first version of this ruleset denied
+/// `/dev/null`, and the first supervised shell that redirected anything
+/// reported `sh: cannot create /dev/null: Permission denied` — on a command
+/// that wrote nothing anywhere. Almost every program redirects, so a write
+/// scope without this list is a false positive on essentially every benign
+/// workload, and this project holds that a false positive is as serious as a
+/// missed detection.
+///
+/// They are named one by one rather than allowing `/dev`, which also holds
+/// `/dev/mem`, the block devices and every mounted disk. Each of these is a
+/// character device that **stores nothing**: a write to it exfiltrates nothing
+/// and mutates nothing that survives the call, which is what makes granting it
+/// a correction rather than a hole.
+const NON_STORAGE_DEVICES: [&str; 6] = [
+    "/dev/null",    // discards
+    "/dev/zero",    // discards
+    "/dev/full",    // discards, and always answers ENOSPC
+    "/dev/random",  // a write contributes entropy and reads nothing back
+    "/dev/urandom", // the same
+    "/dev/tty",     // the session's own terminal: output it already has
+];
+
 /// Build a ruleset that denies every write, then allow writes beneath each of
 /// `writable`, and apply it to this process and everything it `exec`s.
 ///
@@ -216,6 +240,16 @@ pub fn restrict_writes_to(writable: &[std::path::PathBuf]) -> Result<u8> {
     for path in writable {
         add_path_beneath(ruleset.as_raw_fd(), path, support.write_access)?;
     }
+    for device in NON_STORAGE_DEVICES {
+        let path = std::path::Path::new(device);
+        // A device that is not on this machine is not an error: a container or
+        // a minimal image may have no `/dev/tty`, and refusing to confine a
+        // session because one node is missing would trade a working write scope
+        // for none at all.
+        if path.exists() {
+            add_path_beneath(ruleset.as_raw_fd(), path, file_access(support.abi))?;
+        }
+    }
 
     // Required without `CAP_SYS_ADMIN`, and harmless with it. The seccomp
     // filter sets it too; both calls are idempotent, and doing it here is what
@@ -235,6 +269,24 @@ pub fn restrict_writes_to(writable: &[std::path::PathBuf]) -> Result<u8> {
         )));
     }
     Ok(support.abi)
+}
+
+/// The write-shaped rights that mean anything for a **non-directory**.
+///
+/// **Measured.** `landlock_add_rule` answers `EINVAL` when a `PATH_BENEATH`
+/// rule on a file or a device carries a directory-only right — `MAKE_REG`,
+/// `MAKE_DIR`, `REMOVE_FILE` and the rest only describe what may happen
+/// *inside* a directory. Granting the workspace's full set on `/dev/null`
+/// therefore refused the whole ruleset, and the session failed to start rather
+/// than being confined: the first attempt reported
+/// `landlock_add_rule for /dev/null: Invalid argument`.
+#[must_use]
+fn file_access(abi: u8) -> u64 {
+    if abi >= 3 {
+        WRITE_FILE | TRUNCATE
+    } else {
+        WRITE_FILE
+    }
 }
 
 /// Allow `access` beneath one directory.
@@ -433,6 +485,58 @@ mod tests {
         assert_eq!(
             code, 0,
             "12 means a second, broader ruleset restored access the first had denied"
+        );
+        let _ = std::fs::remove_dir_all(&workspace);
+        let _ = std::fs::remove_dir_all(&outside);
+    }
+
+    /// `/dev/null` stays writable, and so does the rest of the non-storage set.
+    ///
+    /// This is the regression test for a defect that shipped: the first version
+    /// of the ruleset denied `/dev/null`, and the first supervised shell that
+    /// redirected anything failed with *"cannot create /dev/null: Permission
+    /// denied"* — on a command that wrote nothing anywhere. It is asserted
+    /// alongside a real denial in the same child, because a ruleset that had
+    /// stopped denying anything would also pass the first half.
+    #[test]
+    fn the_non_storage_devices_stay_writable_and_the_scope_still_denies() {
+        if !probe().available() {
+            return;
+        }
+        let workspace = scratch("dev-ws");
+        let outside = scratch("dev-out");
+        let refused = outside.join("refused");
+
+        let code = in_child(|| {
+            if restrict_writes_to(std::slice::from_ref(&workspace)).is_err() {
+                return 10;
+            }
+            for device in super::NON_STORAGE_DEVICES {
+                if !std::path::Path::new(device).exists() {
+                    continue;
+                }
+                // Only `EACCES` is a Landlock denial. `/dev/tty` answers
+                // `ENXIO` in a process with no controlling terminal, which is
+                // this harness under a test runner — reading that as a denial
+                // would fail the test for a reason that has nothing to do with
+                // the ruleset.
+                match std::fs::OpenOptions::new().write(true).open(device) {
+                    Ok(file) => drop(file),
+                    Err(e) if e.raw_os_error() == Some(libc::EACCES) => return 11,
+                    Err(_) => {}
+                }
+            }
+            // And the scope is still a scope.
+            if std::fs::write(&refused, b"out").is_ok() {
+                return 12;
+            }
+            0
+        });
+
+        assert_eq!(
+            code, 0,
+            "11 = a non-storage device was denied, which breaks every redirect; \
+             12 = the scope stopped denying, so the first half proved nothing"
         );
         let _ = std::fs::remove_dir_all(&workspace);
         let _ = std::fs::remove_dir_all(&outside);

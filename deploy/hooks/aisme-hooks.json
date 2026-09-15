@@ -27,8 +27,18 @@
   "//25": "hooks mid-session, because the file watcher reloads them. A session run under",
   "//26": "`aisme run` is denied that write in kernel for the user's file (docs/12, M5), and",
   "//27": "DT-14 records the attempt. The in-workspace case is NOT yet denied — see D-4.",
-  "//18": "",
-  "//19": "Cost: 1 ms per tool call, measured on a debug build.",
+  "//28": "",
+  "//29": "FOUR EVENTS END A CALL, AND PostToolUse ALONE IS NOT ONE OF THEM. PostToolUse",
+  "//30": "fires only on SUCCESS: a tool that errors fires PostToolUseFailure, an auto-mode",
+  "//31": "denial fires PermissionDenied, and PostToolBatch closes a whole parallel wave.",
+  "//32": "Subscribing to PostToolUse alone would silently omit every failure and every",
+  "//33": "denial, and the recording would think those calls were still running.",
+  "//34": "See docs/research/02, section 1.2, for the ten ways a start gets no end —",
+  "//35": "TWO OF THEM SILENT: interrupting a running tool with Esc fires nothing at all,",
+  "//36": "and neither does saying No at a permission prompt. A lost end is safe by design:",
+  "//37": "the call stays open and the recording marks MORE ambiguity, never less.",
+  "//38": "",
+  "//39": "Cost: 1 ms per tool call, measured on a debug build.",
   "hooks": {
     "PreToolUse": [
       {
@@ -40,6 +50,37 @@
             "timeout": 5,
             "statusMessage": "Declaring to AISME..."
           }
+        ]
+      }
+    ],
+    "PostToolUse": [
+      {
+        "matcher": ".*",
+        "hooks": [
+          { "type": "command", "command": "aisme declare", "timeout": 5 }
+        ]
+      }
+    ],
+    "PostToolUseFailure": [
+      {
+        "matcher": ".*",
+        "hooks": [
+          { "type": "command", "command": "aisme declare", "timeout": 5 }
+        ]
+      }
+    ],
+    "PermissionDenied": [
+      {
+        "matcher": ".*",
+        "hooks": [
+          { "type": "command", "command": "aisme declare", "timeout": 5 }
+        ]
+      }
+    ],
+    "PostToolBatch": [
+      {
+        "hooks": [
+          { "type": "command", "command": "aisme declare", "timeout": 5 }
         ]
       }
     ]

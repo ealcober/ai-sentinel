@@ -51,6 +51,7 @@ impl OutcomeCode {
             2 => Outcome::Warned,
             3 => Outcome::Escalated,
             4 => Outcome::Denied,
+            5 => Outcome::Completed,
             _ => return Err(UnknownOutcome(self)),
         })
     }
@@ -84,6 +85,17 @@ pub enum Outcome {
     Escalated = 3,
     /// Denied in kernel or by the adjudicator.
     Denied = 4,
+    /// A declared activity that was in flight has **ended** (`F2.WS.03`).
+    ///
+    /// Not a verdict: nothing decided anything. It says the tool call this
+    /// event names is no longer running, which is what lets a recording tell a
+    /// sequential pair of tool calls from a concurrent one — without it, every
+    /// past declaration stays a candidate for every later action for ever.
+    ///
+    /// **Why it ends is deliberately not encoded.** Success, failure and
+    /// denial are distinguishable at the hook and nothing consumes the
+    /// distinction yet; a vocabulary nobody has used is not worth freezing.
+    Completed = 5,
 }
 
 /// One observed event, as the kernel writes it and user space reads it.
@@ -297,20 +309,29 @@ mod tests {
 
     #[test]
     fn outcomes_decode_in_b10_order() {
-        let all = [
+        // The **verdicts**, in §B.10's severity order. `Completed` is not one
+        // of them and is deliberately absent: it says a declared activity
+        // stopped running, which is not a decision and sits on no ladder.
+        // Ordering it against `Denied` would invent a severity for it.
+        let verdicts = [
             Outcome::Observed,
             Outcome::Allowed,
             Outcome::Warned,
             Outcome::Escalated,
             Outcome::Denied,
         ];
-        for pair in all.windows(2) {
+        for pair in verdicts.windows(2) {
             assert!(pair[0] < pair[1]);
         }
-        for outcome in all {
+        for outcome in verdicts {
             assert_eq!(OutcomeCode::from(outcome).decode(), Ok(outcome));
         }
-        assert_eq!(OutcomeCode(5).decode(), Err(UnknownOutcome(OutcomeCode(5))));
+        assert_eq!(
+            OutcomeCode::from(Outcome::Completed).decode(),
+            Ok(Outcome::Completed),
+            "the lifecycle outcome must round-trip like any other"
+        );
+        assert_eq!(OutcomeCode(6).decode(), Err(UnknownOutcome(OutcomeCode(6))));
     }
 
     #[test]

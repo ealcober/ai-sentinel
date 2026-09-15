@@ -543,11 +543,24 @@ fn declare_tool_call(
                 let ts_ns = std::time::SystemTime::now()
                     .duration_since(std::time::UNIX_EPOCH)
                     .map_or(0, |d| u64::try_from(d.as_nanos()).unwrap_or(u64::MAX));
+                // **The phase**, from the hook event the harness fired.
+                // Absent and unrecognised both mean a **start**: a declaration
+                // that cannot say which it is must not close a call it never
+                // opened, and the direction is chosen so the error marks more
+                // ambiguity rather than less.
+                let ended = request
+                    .params
+                    .get("phase")
+                    .and_then(Value::as_str)
+                    .is_some_and(|phase| phase == "end");
+                let declared_by = peer.pid.and_then(|p| u32::try_from(p).ok());
                 let event = crate::declare::declaration_event(
                     u64::try_from(id).unwrap_or(0),
                     name,
                     ts_ns,
-                    peer.pid.and_then(|p| u32::try_from(p).ok()),
+                    declared_by,
+                    declared_by.and_then(parent_of),
+                    ended,
                 );
                 // A closed receiver means the loop stopped. The caller
                 // is not told the declaration was recorded when it was
@@ -627,6 +640,24 @@ fn checked_session_cgroup(path: &str) -> Result<String, &'static str> {
         return Err("the last component of cgroup must be aisme-<16 hex>");
     }
     Ok(path.to_owned())
+}
+
+/// The parent of `pid`, read from `/proc/<pid>/stat`.
+///
+/// **Read while the peer is connected**, which is the only moment it is
+/// reliable: a pre-tool hook lives about a millisecond, and asked afterwards it
+/// is already reaped and the answer would be an absence recorded as a zero.
+/// The pid it is asked about came from `SO_PEERCRED`, so the whole chain is the
+/// kernel's rather than the caller's.
+///
+/// The fourth field of `stat` is `ppid`, and the second is the command name in
+/// parentheses, which may itself contain spaces and parentheses; the split is
+/// therefore taken after the **last** `)`, which is what `proc(5)` requires.
+fn parent_of(pid: u32) -> Option<u32> {
+    let stat = std::fs::read_to_string(format!("/proc/{pid}/stat")).ok()?;
+    let after = stat.rsplit_once(')')?.1;
+    // After the name come `state` and then `ppid`.
+    after.split_whitespace().nth(1)?.parse().ok()
 }
 
 /// The home directory of `uid`, as the system says it is.
@@ -1427,6 +1458,113 @@ mod tests {
                 assert_eq!(&s.tool_name[..s.name_len as usize], b"Bash");
             }
             other => panic!("wrong view: {other:?}"),
+        }
+    }
+
+    /// The declarer's parent is read from `/proc`, and the parser survives a
+    /// command name with spaces and parentheses in it.
+    ///
+    /// `stat`'s second field is the command in parentheses and may itself
+    /// contain both, so the split is taken after the **last** `)` — which is
+    /// what `proc(5)` requires and what a naive `split_whitespace` gets wrong.
+    /// Asserted against this process, whose parent is the test runner, so the
+    /// test reads a real `/proc` rather than a fixture.
+    #[test]
+    fn the_declarers_parent_is_read_from_proc_and_the_name_cannot_break_it() {
+        let me = std::process::id();
+        let mine = parent_of(me).expect("this process has a parent");
+        assert_ne!(mine, 0, "a live process reported no parent");
+        assert_ne!(mine, me, "a process cannot be its own parent");
+
+        // The kernel's own answer, taken a different way.
+        let status = std::fs::read_to_string("/proc/self/status").unwrap();
+        let ppid: u32 = status
+            .lines()
+            .find_map(|l| l.strip_prefix("PPid:"))
+            .and_then(|v| v.trim().parse().ok())
+            .expect("PPid in /proc/self/status");
+        assert_eq!(mine, ppid, "the stat parser and /proc/self/status disagree");
+
+        assert_eq!(
+            parent_of(u32::MAX),
+            None,
+            "a pid that cannot exist reported a parent"
+        );
+    }
+
+    /// **A start and an end are the same kind with different outcomes**, and an
+    /// end says a declared call is no longer in flight (`F2.WS.03`).
+    ///
+    /// Without it, every past declaration stays a candidate for every later
+    /// action for ever, and attribution cannot tell a sequential pair of tool
+    /// calls from a concurrent one. `Outcome::decode` returns a `Result`, so a
+    /// consumer that does not know this value says so — where a flag bit would
+    /// be silently ignored and an end would read as a second start.
+    #[test]
+    fn a_declared_call_can_end_and_the_end_says_so() {
+        use aisme_core::sensor::{EventBatch, Sensor as _};
+        use aisme_ebpf_common::{EventKind, Outcome};
+
+        let (mut sensor, tx) = crate::declare::DeclarationSensor::new();
+        let mut d = Declarations::feeding(tx);
+        for params in [
+            r#"{"toolcall_id":5,"tool_name":"Bash","phase":"start"}"#,
+            r#"{"toolcall_id":5,"tool_name":"Bash","phase":"end"}"#,
+        ] {
+            let response = call_with("declareToolCall", params, &agent(), &mut d);
+            assert!(response.get("result").is_some(), "{response:?}");
+        }
+
+        let mut batch = EventBatch::with_capacity(4);
+        assert_eq!(
+            sensor
+                .poll(&mut batch, std::time::Duration::ZERO)
+                .expect("poll"),
+            2,
+            "both halves of the call must reach the engine"
+        );
+        let events = batch.as_slice();
+        assert_eq!(events[0].kind.decode(), Ok(EventKind::ToolCall));
+        assert_eq!(events[1].kind.decode(), Ok(EventKind::ToolCall));
+        assert_eq!(
+            (events[0].outcome.decode(), events[1].outcome.decode()),
+            (Ok(Outcome::Observed), Ok(Outcome::Completed)),
+            "the two halves are indistinguishable, so nothing can count what is in flight"
+        );
+    }
+
+    /// A phase this version does not understand **starts** a call.
+    ///
+    /// A declaration that cannot say which half it is must not close one it
+    /// never opened. The direction is chosen so the error marks more ambiguity
+    /// in the recording rather than less.
+    #[test]
+    fn a_phase_this_version_does_not_know_is_a_start() {
+        use aisme_core::sensor::{EventBatch, Sensor as _};
+        use aisme_ebpf_common::Outcome;
+
+        let (mut sensor, tx) = crate::declare::DeclarationSensor::new();
+        let mut d = Declarations::feeding(tx);
+        for params in [
+            r#"{"toolcall_id":1,"tool_name":"Bash"}"#,
+            r#"{"toolcall_id":2,"tool_name":"Bash","phase":"whatever-comes-next"}"#,
+        ] {
+            let _ = call_with("declareToolCall", params, &agent(), &mut d);
+        }
+
+        let mut batch = EventBatch::with_capacity(4);
+        assert_eq!(
+            sensor
+                .poll(&mut batch, std::time::Duration::ZERO)
+                .expect("poll"),
+            2
+        );
+        for event in batch.as_slice() {
+            assert_eq!(
+                event.outcome.decode(),
+                Ok(Outcome::Observed),
+                "an unrecognised phase closed a call"
+            );
         }
     }
 

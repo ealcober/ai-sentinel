@@ -3906,7 +3906,7 @@ One protocol, spoken by the desktop UI, the CLI, `aisme-uiagent`, the mobile app
 | `pairDevice` | `{ qr_payload, device_pubkey, hw_pubkey? }` | `paired` \| `rejected` | **local peer only** | no |
 | `revokeDevice` | `{ device_id }` | `revoked` | local peer, or the device revoking itself | yes |
 | `verifySession` | `{ session_id }` | inclusion proofs, `key_hw`, anchor status | any | yes |
-| `declareToolCall` | `{ toolcall_id, tool_name, params_hash, declared_targets[] }`; the **declaring process is not a parameter** and is taken from `SO_PEERCRED` | `accepted` \| `rate_limited` | any | **no** — two identical declarations are two tool calls, not one retried |
+| `declareToolCall` | `{ toolcall_id, tool_name, phase, params_hash, declared_targets[] }`; the **declaring process is not a parameter** and is taken from `SO_PEERCRED`, and **neither is its parent**, which the daemon reads from `/proc` while the peer is connected | `accepted` \| `rate_limited` | any | **no** — two identical declarations are two tool calls, not one retried |
 | `setPolicyGeneration` | `{ generation }` | `accepted` | local | **yes** — telling the daemon the same number twice is telling it once |
 | `registerSession` | `{ session_id, scope, tty, cgroup, trapping, escalate, unattended }` | `accepted` | local | **no** — two registrations are two sessions |
 | `decideOpen` | `{ session_id, pid, ppid, path }` | `{ verdict, asked }` | local | **yes** — the same held open asked twice is the same question |
@@ -3934,6 +3934,23 @@ nothing.
 **`registerSession` carries a descriptor, and which one is the whole point** (`F2.WS.05`, `F2.WS.08`). `aisme run` installs the escalate-class seccomp filter before `exec` — it cannot be installed after without a window — and `SECCOMP_FILTER_FLAG_NEW_LISTENER` hands the notify fd to the process that installed it, which is about to be replaced by the supervised command. It travels here as `SCM_RIGHTS` ancillary data on the same message. **This is not the descriptor `docs/06` point 3 refused**: that was a writable policy map, which would leave `CapabilityBoundingSet=` decorative — the capability gone and the authority kept. A notify fd grants exactly the authority the enforcer must have, to answer one held syscall for one session, and cannot change what the kernel enforces. The daemon's reader uses `recvmsg` for this reason: `read(2)` delivers the bytes and **discards the control message**, so a line-based reader would accept the registration and silently lose the listener.
 
 **`setPolicyGeneration` carries a number, never a map** (`F2.WS.04`). `aisme-loaderd` calls it after a publication so the daemon can stamp the generation on the WAL segments it opens from then on, and so `getCapabilities` can be asked. `aisme-agentd` holds **no** policy-map descriptor, readable or writable: passing it one over `SCM_RIGHTS` would leave its empty `CapabilityBoundingSet=` decorative — the capability gone and the authority kept (`F1.RT.07`). What the daemon needs is a `u64`. `getCapabilities` reports `policy_generation` **only when it knows one**: before the first publication the field is absent, because a daemon that answered 0 would be indistinguishable from one that had been told generation 0. Telling the daemon is a courtesy and not the publication — `--publish` warns and exits 0 when the socket is absent, since the privileged act already happened in the kernel.
+
+**`declareToolCall` reports two halves of a tool call's life, and neither authorizes anything**
+(`F2.WS.03`). `phase` is `start` or `end`, and **anything this version does not understand is a
+start**: a declaration that cannot say which half it is must not close a call it never opened, and
+the error then marks more ambiguity in a recording rather than less. An end is recorded as
+`Outcome::Completed`, which is an *outcome* and not a flag bit for a measured reason — `decode`
+returns a `Result`, so a consumer that does not know the value says so, where a flag bit is silently
+ignored and an end would read as a second start. **Four hook events end a call and `PostToolUse` is
+not enough alone**: it fires only on success, so a failure, an auto-mode denial and a parallel wave
+need `PostToolUseFailure`, `PermissionDenied` and `PostToolBatch` beside it, and two further cases —
+an interrupted tool and a manually denied prompt — fire **nothing at all** (`docs/research/02`, section 1.2).
+The `toolcall_id` is a hash of the harness's own `tool_use_id` where the harness has one, so a start
+and its end land on the same call with no protocol field added; six vendors carry such an id and
+three do not, and a session without one is recorded in **counted** mode, where the recording knows
+how many calls were in flight but not which. **And the declaring process's parent is on the event**,
+because a pre-tool hook is a *sibling* of the subprocess its tool spawns — both are children of the
+agent — so a recording that knew only the declarer could never join the two.
 
 **`declareToolCall` authorizes nothing** (`F2.WS.03`). It creates no grant, changes no verdict and carries no scope: it is an observation an agent volunteers about its own work, recorded beside the actions it claims to explain so correlation has something to match against while they happen. `DT-04` exists precisely because a declaration may be a lie, so the engine treats it as evidence to be checked, never as permission. **The correlation token never travels on it** — if it did, the engine could join on it and §4.6's precision and recall would measure the join rather than the correlator. Beyond `DECLARATIONS_PER_MINUTE` per session the answer is the *result* `rate_limited`, not an error (Annex I.2): a declaration storm is cheap to send and expensive to correlate, and the bound is derived from the reference workload's 200 tool calls/hour rather than guessed.
 

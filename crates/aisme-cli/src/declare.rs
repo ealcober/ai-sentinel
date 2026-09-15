@@ -39,18 +39,22 @@ pub fn declare(args: &[String]) -> u8 {
 
     // The hook's payload, or the flags, whichever is present. Flags exist so the
     // same binary can be driven by a harness that is not Claude Code.
-    let (tool, session) = match aisme_proto::json::parse(stdin.trim()) {
-        Ok(value) => (
-            value
-                .get("tool_name")
-                .and_then(aisme_proto::json::Value::as_str)
-                .map(ToOwned::to_owned),
-            value
-                .get("session_id")
-                .and_then(aisme_proto::json::Value::as_str)
-                .map(ToOwned::to_owned),
-        ),
-        Err(_) => (None, None),
+    let (tool, session, event, call) = match aisme_proto::json::parse(stdin.trim()) {
+        Ok(value) => {
+            let field = |name: &str| {
+                value
+                    .get(name)
+                    .and_then(aisme_proto::json::Value::as_str)
+                    .map(ToOwned::to_owned)
+            };
+            (
+                field("tool_name"),
+                field("session_id"),
+                field("hook_event_name"),
+                field("tool_use_id"),
+            )
+        }
+        Err(_) => (None, None, None, None),
     };
     let tool = flag(args, "--tool").or(tool).unwrap_or_default();
     let session = flag(args, "--session").or(session).unwrap_or_default();
@@ -58,10 +62,19 @@ pub fn declare(args: &[String]) -> u8 {
         eprintln!("aisme declare: no tool_name on stdin or in --tool; nothing declared");
         return 0;
     }
+    let phase = flag(args, "--phase")
+        .or(event)
+        .map_or(Phase::Start, |name| phase_of(&name));
 
-    // Unique per call without holding any state: the same tool declared twice in
-    // one nanosecond would collide, and nothing in a session does that.
-    let id = call_id(&session, &tool);
+    // **The harness's own id where there is one.** `tool_use_id` is documented
+    // as existing to *"correlate `PreToolUse` and `PostToolUse` events for the
+    // same tool call"*, so hashing it gives a start and its end the same
+    // `toolcall_id` with no protocol field added — and six vendors carry one.
+    // Where there is none, the clock-based id is unique per call and an end
+    // cannot be paired to its start: the recording then knows only how many
+    // calls were in flight, which is what ambiguity needs and all those
+    // vendors can give.
+    let id = call.map_or_else(|| call_id(&session, &tool), |id| stable_id(&session, &id));
     let socket = crate::run::agentd_socket();
     let Ok(mut stream) = std::os::unix::net::UnixStream::connect(&socket) else {
         // Not an error the user should see on every tool call when they simply
@@ -83,9 +96,10 @@ pub fn declare(args: &[String]) -> u8 {
     let _ = stream.set_write_timeout(Some(budget));
     let _ = stream.set_read_timeout(Some(budget));
     let line = format!(
-        r#"{{"jsonrpc":"2.0","id":1,"method":"{}","params":{{"toolcall_id":{id},"tool_name":"{}"}}}}"#,
+        r#"{{"jsonrpc":"2.0","id":1,"method":"{}","params":{{"toolcall_id":{id},"tool_name":"{}","phase":"{}"}}}}"#,
         aisme_proto::rpc::Method::DeclareToolCall.as_str(),
-        escape(&tool)
+        escape(&tool),
+        if phase == Phase::End { "end" } else { "start" }
     );
     if writeln!(stream, "{line}").is_err() {
         return 0;
@@ -96,6 +110,45 @@ pub fn declare(args: &[String]) -> u8 {
     let mut reply = String::new();
     let _ = std::io::BufReader::new(&stream).read_line(&mut reply);
     0
+}
+
+/// Which half of a tool call's life this declaration reports.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Phase {
+    /// A tool call is about to run.
+    Start,
+    /// A tool call that was in flight has stopped running.
+    End,
+}
+
+/// The phase a hook event name reports.
+///
+/// **Anything unknown is a start.** A payload this version does not understand
+/// must not close a call it never opened: the error then marks more ambiguity
+/// in the recording rather than less, which is the safe direction. Four events
+/// end a call, and `PostToolUse` alone is not enough — it fires **only on
+/// success**, so subscribing to it alone would silently omit every failure and
+/// every denial.
+fn phase_of(event: &str) -> Phase {
+    match event {
+        "end" | "PostToolUse" | "PostToolUseFailure" | "PermissionDenied" | "PostToolBatch" => {
+            Phase::End
+        }
+        _ => Phase::Start,
+    }
+}
+
+/// FNV-1a over the session and the harness's own call id.
+///
+/// Stable across the two phases of one call, which is the whole point: the
+/// clock-based [`call_id`] deliberately is not.
+fn stable_id(session: &str, call: &str) -> i64 {
+    let mut h: u64 = 0xcbf2_9ce4_8422_2325;
+    for byte in session.as_bytes().iter().chain(call.as_bytes()) {
+        h ^= u64::from(*byte);
+        h = h.wrapping_mul(0x0000_0100_0000_01b3);
+    }
+    i64::from_ne_bytes(h.to_ne_bytes())
 }
 
 /// A value after `--name`, when it is there.
@@ -144,7 +197,77 @@ fn escape(text: &str) -> String {
 #[cfg(test)]
 #[allow(clippy::unwrap_used)]
 mod tests {
-    use super::{call_id, escape, flag};
+    use super::{call_id, escape, flag, phase_of, stable_id, Phase};
+
+    /// **Anything this version does not understand is a start.**
+    ///
+    /// A payload that cannot say which half of a call it reports must not close
+    /// one it never opened: the recording then marks more ambiguity rather than
+    /// less, which is the safe direction. The four end events are the four,
+    /// because `PostToolUse` fires **only on success** — subscribing to it alone
+    /// would silently omit every failure, every denial and every interrupt.
+    #[test]
+    fn only_the_four_end_events_end_a_call_and_everything_else_starts_one() {
+        for ending in [
+            "PostToolUse",
+            "PostToolUseFailure",
+            "PermissionDenied",
+            "PostToolBatch",
+            "end",
+        ] {
+            assert!(
+                phase_of(ending) == Phase::End,
+                "{ending} did not end a call"
+            );
+        }
+        for starting in [
+            "PreToolUse",
+            "start",
+            "",
+            "SessionStart",
+            // A vendor event this version has never heard of. It must not
+            // decrement a counter it never incremented.
+            "SomeFutureToolEvent",
+        ] {
+            assert!(
+                phase_of(starting) == Phase::Start,
+                "{starting:?} closed a call"
+            );
+        }
+    }
+
+    /// The harness's own id makes a start and its end **the same call**.
+    ///
+    /// `tool_use_id` is documented as existing to correlate the two hook
+    /// events, so hashing it needs no protocol field. The clock-based id
+    /// deliberately does the opposite, which is what puts a session without a
+    /// per-call id into counted mode.
+    #[test]
+    fn the_harness_id_is_stable_across_the_two_phases_and_the_clock_id_is_not() {
+        assert_eq!(
+            stable_id("s", "toolu_01ABC"),
+            stable_id("s", "toolu_01ABC"),
+            "a start and its end did not land on the same call"
+        );
+        assert_ne!(
+            stable_id("s", "toolu_01ABC"),
+            stable_id("s", "toolu_01XYZ"),
+            "two different calls collided"
+        );
+        assert_ne!(
+            stable_id("s", "toolu_01ABC"),
+            stable_id("other", "toolu_01ABC"),
+            "two sessions share a call id"
+        );
+
+        let a = call_id("s", "Bash");
+        std::thread::sleep(std::time::Duration::from_nanos(1));
+        assert_ne!(
+            a,
+            call_id("s", "Bash"),
+            "the fallback id is stable, so an end would pair with the wrong start"
+        );
+    }
 
     /// Two calls in the same session are two tool calls.
     #[test]

@@ -243,7 +243,7 @@ assume. A missing start stream is an incident, not a quiet gap.
 
 Verified against `crates/aisme-ebpf-common/src/event.rs:47-56` (`decode` returns a `Result`, so an
 unknown outcome announces itself) and `:19-33` (a flag bit does not), against `ADR-08` for the
-additive variant, and against `docs/research/02` §1.2 for the ten orphan cases. **One claim of the
+additive variant, and against `docs/research/02`, section 1.2 for the ten orphan cases. **One claim of the
 skeleton fell:** `Outcome::Completed` was written as *"an existing enum value"* and it does not exist
 — the five that do are `Observed`, `Allowed`, `Warned`, `Escalated`, `Denied`. Adding it is still the
 right choice, and now for a reason rather than by assumption: an unknown *outcome* is reported, an
@@ -348,7 +348,7 @@ detector.
 Verified against `record.rs:205-229` (the walk with no end bound), `:34-40` (the conservative
 principle this extends), `:425-455` (the test whose declarers are ancestors and which must keep
 passing unchanged), and `declare.rs:56` (`ppid` never stamped). Against the field: `docs/research/03`
-§3 for marking as the norm, and §2.3 for the sibling case being the canonical failure of ancestry
+§3 for marking as the norm, and section 2.3 for the sibling case being the canonical failure of ancestry
 attribution rather than an edge case. **One claim of the skeleton fell** — that ambiguity would be
 decided from the candidate set. It is decided from the in-flight count, which is both simpler and
 correct where several stale declarations still match a single live call. Open: nothing of its own.
@@ -716,7 +716,7 @@ one in false.
    `(tgid, seq)` join. They are separable, the join is not needed for the property the task owes, and
    bundling them is why the task has stayed open across two phases.
 5. **The one thing that would falsify the whole plan** is the hook not firing. Five reported cases of
-   silently non-firing hooks are recorded in `docs/research/02` §4.4, and a hook that crashes looks
+   silently non-firing hooks are recorded in `docs/research/02`, section 4.4, and a hook that crashes looks
    exactly like one that never fired. That is why point 4 verifies the stream **before** recording
    rather than discovering it in the counts afterwards.
 

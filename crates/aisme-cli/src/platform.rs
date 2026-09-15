@@ -49,7 +49,7 @@ pub fn spawn_supervised(
 #[cfg(target_os = "linux")]
 pub fn serve_notifications(
     listener: std::os::fd::BorrowedFd<'_>,
-    allow: impl FnMut(&str) -> bool,
+    allow: impl FnMut(u32, &str) -> bool,
     record: impl FnMut(u32, bool, Option<&str>),
 ) -> Result<(), String> {
     aisme_linux::serve_notifications_with(listener, allow, record).map_err(|e| e.detail)
@@ -77,7 +77,7 @@ pub fn spawn_supervised(
 #[cfg(not(target_os = "linux"))]
 pub fn serve_notifications(
     _listener: std::os::fd::BorrowedFd<'_>,
-    _allow: impl FnMut(&str) -> bool,
+    _allow: impl FnMut(u32, &str) -> bool,
     _record: impl FnMut(u32, bool, Option<&str>),
 ) -> Result<(), String> {
     Err("seccomp needs a Linux kernel".to_owned())

@@ -301,6 +301,78 @@ fn counts(summary: &str) -> (u64, u64, u64) {
     (of("delivered"), of("denied"), of("asked"))
 }
 
+/// **A declaration may be lost; it may never be a hang.**
+///
+/// `aisme declare` runs as a pre-tool hook, in front of every tool call the
+/// agent makes, and it authorizes nothing (`DT-04`) — so a daemon that does not
+/// answer must cost a dropped declaration and not the agent's turn.
+///
+/// Measured on 2026-09-15 with no budget on the socket: a declaration made from
+/// inside a session that had registered with the same daemon waited **for
+/// ever**. The daemon accepts connections **serially**, and `aisme run` holds
+/// one open for the whole session, so the hook queued behind it and never
+/// reached the head. The process tree read `aisme run` in `recv_wait_event`,
+/// the shell in `do_wait`, and the hook in `unix_stream_data_wait`. Both planes
+/// this product has — intent and enforcement — had never been exercised in the
+/// same session, and the first time they were, they deadlocked.
+///
+/// This test pins the half that is fixed: the budget. The daemon's serial
+/// accept loop is a separate defect, recorded in `STATE.md` under *Blocked*,
+/// and until it is fixed a declaration made inside a registered session costs
+/// the budget and is dropped.
+#[test]
+fn a_declaration_gives_up_rather_than_waiting_on_a_daemon_that_does_not_answer() {
+    use std::io::Write as _;
+
+    let dir = std::env::temp_dir().join(format!("aisme-mute-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).expect("the scratch directory");
+    let socket = dir.join("sock");
+
+    // A daemon that accepts and then says nothing at all — which is exactly
+    // what a serially-busy one looks like from the hook's side.
+    let listener = std::os::unix::net::UnixListener::bind(&socket).expect("bind");
+    let mute = std::thread::spawn(move || {
+        if let Ok((stream, _)) = listener.accept() {
+            // Held open, unanswered, until the test drops it.
+            std::thread::sleep(std::time::Duration::from_secs(30));
+            drop(stream);
+        }
+    });
+
+    let started = std::time::Instant::now();
+    let mut child = aisme()
+        .env("AISME_AGENTD_SOCKET", &socket)
+        .arg("declare")
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .expect("aisme declare");
+    child
+        .stdin
+        .take()
+        .expect("stdin")
+        .write_all(br#"{"tool_name":"Bash","session_id":"s"}"#)
+        .expect("the hook payload");
+    let status = child.wait().expect("wait");
+    let took = started.elapsed();
+
+    assert!(
+        status.success(),
+        "a declaration that could not be delivered must still exit 0: it authorizes \
+         nothing, so a failure has nothing to protect"
+    );
+    assert!(
+        took < std::time::Duration::from_secs(5),
+        "the hook took {took:?} waiting for a daemon that never answered; before the \
+         budget it waited for ever, and this runs in front of every tool call"
+    );
+
+    drop(mute);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 /// **A known gap, with a test on it**: a supervised session can write the agent
 /// configuration files its own host executes.
 ///

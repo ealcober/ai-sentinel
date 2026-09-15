@@ -327,13 +327,23 @@ mod tests {
         assert_eq!(unsafe { libc::grantpt(master) }, 0);
         // SAFETY: as above.
         assert_eq!(unsafe { libc::unlockpt(master) }, 0);
-        // SAFETY: `ptsname` returns a pointer into libc's own storage, read
-        // immediately and copied.
-        let name = unsafe {
-            let p = libc::ptsname(master);
-            assert!(!p.is_null());
-            std::ffi::CStr::from_ptr(p).to_string_lossy().into_owned()
-        };
+        // **`ptsname_r`, never `ptsname`.** The plain form returns a pointer
+        // into libc's own **static** storage and is not thread-safe, and every
+        // test in this binary runs in the same process: measured under
+        // `--test-threads 8`, two tests opening a pty at once raced on that
+        // buffer and one of them adjudicated against the *other's* terminal,
+        // waited for a key nobody would type there, and returned its timeout
+        // verdict — `left: Deny, right: Allow`. Green alone, red under load,
+        // and the defect was in the harness rather than in the product.
+        let mut buffer = [0 as libc::c_char; 256];
+        // SAFETY: `buffer` is ours, outlives the call, and its own length is
+        // passed; the descriptor is the master we just opened.
+        let rc = unsafe { libc::ptsname_r(master, buffer.as_mut_ptr(), buffer.len()) };
+        assert_eq!(rc, 0, "ptsname_r: {}", std::io::Error::last_os_error());
+        // SAFETY: on success the buffer holds a NUL-terminated name.
+        let name = unsafe { std::ffi::CStr::from_ptr(buffer.as_ptr()) }
+            .to_string_lossy()
+            .into_owned();
         // SAFETY: we own `master` and nothing else does.
         (unsafe { std::fs::File::from_raw_fd(master) }, name)
     }

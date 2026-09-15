@@ -68,6 +68,20 @@ pub fn declare(args: &[String]) -> u8 {
         // are not running the daemon.
         return 0;
     };
+    // **A declaration may be lost; it may never be a hang.** This runs as a
+    // pre-tool hook, in front of every tool call the agent makes, and it
+    // authorizes nothing (`DT-04`) — so a daemon that does not answer must cost
+    // a dropped declaration and not the agent's turn. Measured 2026-09-15 with
+    // no budget here: a declaration made from inside a supervised session waits
+    // **forever**, because the daemon accepts connections serially and the
+    // session's own supervisor holds one open for the whole session. The
+    // process tree read `aisme run` in `recv_wait_event`, the shell in
+    // `do_wait`, and this process in `unix_stream_data_wait`.
+    //
+    // The budget is 100× the measured cost of a declaration (1 ms).
+    let budget = std::time::Duration::from_millis(100);
+    let _ = stream.set_write_timeout(Some(budget));
+    let _ = stream.set_read_timeout(Some(budget));
     let line = format!(
         r#"{{"jsonrpc":"2.0","id":1,"method":"{}","params":{{"toolcall_id":{id},"tool_name":"{}"}}}}"#,
         aisme_proto::rpc::Method::DeclareToolCall.as_str(),

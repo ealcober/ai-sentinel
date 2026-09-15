@@ -326,9 +326,28 @@ fn decide_open(request: &rpc::Request, supervision: &Supervision) -> String {
         );
     };
 
+    // **Who made the call**, from `seccomp_notif.pid`, which the kernel writes
+    // when it suspends the syscall. Absent is recorded as absent rather than as
+    // zero: an action with no actor cannot be attributed to any declaration,
+    // and a `0` that means *we were not told* is indistinguishable from a `0`
+    // that means *the kernel*.
+    let actor = match request.params.get("pid") {
+        Some(Value::Int(pid)) => u32::try_from(*pid).ok(),
+        _ => None,
+    };
+    // And its parent, so the recording carries an **ancestry** and not just a
+    // set of pids: correlation walks from an action up to the process that
+    // declared the intent, and a chain with no links is a chain that cannot be
+    // walked. The supervisor reads it while the syscall is suspended, which is
+    // the only moment the process is certainly still alive.
+    let actor_parent = match request.params.get("ppid") {
+        Some(Value::Int(ppid)) => u32::try_from(*ppid).ok(),
+        _ => None,
+    };
+
     // Recorded before it is judged: an open the daemon refused to answer is
     // still an open that happened.
-    record_open(supervision, session_id, path);
+    record_open(supervision, session_id, actor, actor_parent, path);
 
     let facts = supervision.sessions.lock().ok().and_then(|sessions| {
         sessions.get(&session_id).map(|facts| {
@@ -392,7 +411,13 @@ fn decide_open(request: &rpc::Request, supervision: &Supervision) -> String {
 }
 
 /// Put one observed open on the same stream every other event travels.
-fn record_open(supervision: &Supervision, session_id: u64, path: &str) {
+fn record_open(
+    supervision: &Supervision,
+    session_id: u64,
+    actor: Option<u32>,
+    actor_parent: Option<u32>,
+    path: &str,
+) {
     let Ok(slot) = supervision.observed.lock() else {
         return;
     };
@@ -403,6 +428,12 @@ fn record_open(supervision: &Supervision, session_id: u64, path: &str) {
     event.kind = aisme_ebpf_common::EventKind::FileOpen.into();
     event.outcome = aisme_ebpf_common::Outcome::Observed.into();
     event.session_id = session_id;
+    // The process the action belongs to. Correlation walks an ancestry from
+    // here to find the declaration whose subtree contains it, so an event that
+    // leaves this zero is an action nothing can ever be matched to
+    // (`F2.WS.03`, and measured again here on 2026-09-15).
+    event.tgid = actor.unwrap_or(0);
+    event.ppid = actor_parent.unwrap_or(0);
     event.ts_ns = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map_or(0, |d| {
@@ -1474,6 +1505,101 @@ mod tests {
             answer.get("error").is_some(),
             "a session the daemon never saw was decided for: {answer:?}"
         );
+    }
+
+    /// **An observed open carries the process that made it, and that process's
+    /// parent.**
+    ///
+    /// Since `ADR-09` the notification loop lives in the session, so `decideOpen`
+    /// is the daemon's **only** sight of an action — and correlation attributes
+    /// an action to the declaration whose process *subtree* contains it. An
+    /// ancestry is walked from a pid, so an action with no pid can never be
+    /// matched to any declaration.
+    ///
+    /// Measured on 2026-09-15 before this held: every `FileOpen` in the WAL of a
+    /// real supervised session read `tgid=0`, and
+    /// `aisme-agentsim --to-trace` reported **every** action unattributed. It is
+    /// the same defect `F2.WS.03` closed for declarations, which were measured
+    /// arriving as `tgid=0 pid=0 kind=ToolCall` before the declaring process was
+    /// put on the wire.
+    ///
+    /// The pid is the kernel's — `seccomp_notif.pid`, written when the call was
+    /// suspended — and the parent is read by the supervisor while it is still
+    /// suspended, which is the only moment a short-lived process is certainly
+    /// still there to be asked.
+    #[test]
+    fn an_observed_open_carries_the_process_that_made_it_and_its_parent() {
+        use aisme_core::sensor::{EventBatch, Sensor as _};
+        use aisme_ebpf_common::EventKind;
+
+        let (mut sensor, tx) = crate::declare::DeclarationSensor::new();
+        let supervision = Supervision::new(None);
+        supervision.observing(tx);
+        register_with(&supervision, 7, "");
+
+        let line = r#"{"jsonrpc":"2.0","id":1,"method":"decideOpen","params":{"session_id":7,"pid":4242,"ppid":424,"path":"/etc/hostname"}}"#;
+        let _ = serve_line(
+            line,
+            &user(),
+            OWNER,
+            &mut Declarations::new(),
+            &mut None,
+            &mut Ancillary::default(),
+            &supervision,
+        );
+
+        let mut batch = EventBatch::with_capacity(4);
+        assert_eq!(
+            sensor
+                .poll(&mut batch, std::time::Duration::ZERO)
+                .expect("poll"),
+            1,
+            "the open did not reach the engine at all"
+        );
+        let event = batch.as_slice()[0];
+        assert_eq!(event.kind.decode(), Ok(EventKind::FileOpen));
+        assert_eq!(
+            (event.tgid, event.ppid),
+            (4242, 424),
+            "the action arrived with no actor or no ancestry, so nothing can attribute it"
+        );
+    }
+
+    /// An open whose caller was not named is recorded with **no** actor, and not
+    /// with a plausible one.
+    ///
+    /// Zero here means *we were not told*, which is what the recorder reads as
+    /// unexplained. Substituting the session's own pid, or the daemon's, would
+    /// attribute the action to a process that did not make it — a worse answer
+    /// than none, because it is indistinguishable from a correct one.
+    #[test]
+    fn an_open_with_no_caller_named_is_recorded_without_one() {
+        use aisme_core::sensor::{EventBatch, Sensor as _};
+
+        let (mut sensor, tx) = crate::declare::DeclarationSensor::new();
+        let supervision = Supervision::new(None);
+        supervision.observing(tx);
+        register_with(&supervision, 7, "");
+
+        let line = r#"{"jsonrpc":"2.0","id":1,"method":"decideOpen","params":{"session_id":7,"path":"/etc/hostname"}}"#;
+        let _ = serve_line(
+            line,
+            &user(),
+            OWNER,
+            &mut Declarations::new(),
+            &mut None,
+            &mut Ancillary::default(),
+            &supervision,
+        );
+
+        let mut batch = EventBatch::with_capacity(4);
+        assert_eq!(
+            sensor
+                .poll(&mut batch, std::time::Duration::ZERO)
+                .expect("poll"),
+            1
+        );
+        assert_eq!((batch.as_slice()[0].tgid, batch.as_slice()[0].ppid), (0, 0));
     }
 
     /// A policy in force is compiled **per session**, and two sessions with

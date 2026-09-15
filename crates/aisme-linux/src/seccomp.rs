@@ -1060,12 +1060,13 @@ pub fn serve_notifications(
     listener: BorrowedFd<'_>,
     record: impl FnMut(u32, bool, Option<&str>),
 ) -> aisme_core::error::Result<()> {
-    serve_notifications_with(listener, |_| true, record)
+    serve_notifications_with(listener, |_, _| true, record)
 }
 
 /// [`serve_notifications`], asking `allow` about each path first.
 ///
-/// `allow` receives **what the descriptor names**, not what the target typed:
+/// `allow` receives the **pid that made the call** and **what the descriptor
+/// names**, not what the target typed:
 /// the file is located with `O_PATH` first, so a symbolic link, a `..` or a
 /// relative spelling have all collapsed before the decision is taken. What the
 /// target receives is that same located file reopened through `/proc/self/fd`,
@@ -1079,7 +1080,7 @@ pub fn serve_notifications(
 /// As [`serve_notifications`].
 pub fn serve_notifications_with(
     listener: BorrowedFd<'_>,
-    mut allow: impl FnMut(&str) -> bool,
+    mut allow: impl FnMut(u32, &str) -> bool,
     mut record: impl FnMut(u32, bool, Option<&str>),
 ) -> aisme_core::error::Result<()> {
     loop {
@@ -1150,7 +1151,7 @@ pub fn serve_notifications_with(
             record(n.pid, false, Some("what it names could not be resolved"));
             continue;
         };
-        if !allow(&resolved) {
+        if !allow(n.pid, &resolved) {
             respond_deny(listener, n.id, libc::EACCES)?;
             record(n.pid, false, Some("refused by the session's adjudicator"));
             continue;
@@ -1572,7 +1573,7 @@ mod tests {
             let listener = recv_fd(parent_end.as_fd()).expect("the listener");
             // The production loop, not a hand-rolled one: the errno the caller
             // receives is chosen inside it.
-            let _ = super::serve_notifications_with(listener.as_fd(), |_| permit, |_, _, _| {});
+            let _ = super::serve_notifications_with(listener.as_fd(), |_, _| permit, |_, _, _| {});
             reap(pid)
         };
 
@@ -1818,7 +1819,8 @@ mod tests {
         let listener = recv_fd(parent.as_fd()).expect("the listener");
         let mut seen = 0;
         // Refuse everything: what matters is whether the call arrived at all.
-        let _ = super::serve_notifications_with(listener.as_fd(), |_| false, |_, _, _| seen += 1);
+        let _ =
+            super::serve_notifications_with(listener.as_fd(), |_, _| false, |_, _, _| seen += 1);
         let opened = reap(pid);
         assert_eq!(
             opened, 0,

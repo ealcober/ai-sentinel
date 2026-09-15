@@ -354,19 +354,52 @@ fn register(
 /// A daemon that cannot be asked **denies**. That is the one place in this file
 /// where failure is closed, and it is the right one: the session is filtered, so
 /// there is a guard to honour, and an unanswerable question is not permission.
+/// The parent of `pid`, read from `/proc/<pid>/stat`.
+///
+/// **Read while the syscall is suspended**, which is the only moment this is
+/// reliable: the supervisor is holding the call, so the process is alive and
+/// cannot have been reaped. Asked afterwards — by the daemon, say — a
+/// short-lived process is often already gone and the answer would be an
+/// absence recorded as a zero.
+///
+/// The fourth field of `stat` is `ppid`, and the second is the command name in
+/// parentheses, which may itself contain spaces and parentheses; the split is
+/// therefore taken after the **last** `)`, which is what `proc(5)` requires.
+fn parent_of(pid: u32) -> Option<u32> {
+    let stat = std::fs::read_to_string(format!("/proc/{pid}/stat")).ok()?;
+    let after = stat.rsplit_once(')')?.1;
+    // After the name come `state` and then `ppid`.
+    after.split_whitespace().nth(1)?.parse().ok()
+}
+
 fn ask_daemon(
     socket: &std::os::unix::net::UnixStream,
     session_id: u64,
+    pid: u32,
     path: &str,
     asked: &mut u64,
 ) -> bool {
     use std::io::Write as _;
 
+    // **The pid travels with the open, and it is the daemon's only sight of an
+    // actor.** Since `ADR-09` the notification loop lives in the session, so
+    // this call is the only thing that tells the daemon an action happened —
+    // and correlation attributes an action to the declaration whose process
+    // *subtree* contains it. An ancestry is walked from a pid, so an action
+    // arriving without one can never be matched to any declaration: measured,
+    // every `FileOpen` in the WAL read `tgid=0`, which is the same defect
+    // `F2.WS.03` closed for declarations and for the same reason.
+    //
+    // It is the kernel's: `seccomp_notif.pid` is written by the kernel when it
+    // suspends the call, so a session cannot claim to be another process.
     let line = format!(
-        r#"{{"jsonrpc":"2.0","id":1,"method":"{}","params":{{"session_id":{},"path":"{}"}}}}"#,
+        r#"{{"jsonrpc":"2.0","id":1,"method":"{}","params":{{"session_id":{},"pid":{pid},"ppid":{},"path":"{}"}}}}"#,
         Method::DecideOpen.as_str(),
         i64::from_ne_bytes(session_id.to_ne_bytes()),
-        path.replace('\\', "\\\\").replace('"', "\\\"")
+        // Absent stays absent: 0 is "we could not read it", and the recorder
+        // treats a broken chain as unexplained rather than as the init process.
+        parent_of(pid).unwrap_or(0),
+        json_string(path)
     );
     if writeln!(&*socket, "{line}").is_err() {
         return false;
@@ -496,7 +529,7 @@ fn supervise(listener: &std::os::fd::OwnedFd, socket: &std::os::unix::net::UnixS
     let (mut delivered, mut denied, mut asked) = (0u64, 0u64, 0u64);
     let result = platform::serve_notifications(
         listener.as_fd(),
-        |path| ask_daemon(socket, id, path, &mut asked),
+        |pid, path| ask_daemon(socket, id, pid, path, &mut asked),
         |pid, ok, why| {
             if ok {
                 delivered += 1;

@@ -827,7 +827,95 @@ pub fn read_target_path(pid: u32, addr: u64) -> aisme_core::error::Result<std::f
 ///
 /// `openat2`'s errno — including the target's own `ENOENT`, which is the
 /// answer the caller would have got and is passed back unchanged.
-pub fn open_as_target(pid: u32, path: &std::ffi::CStr) -> aisme_core::error::Result<OwnedFd> {
+/// Locate what the target's path names, **without opening it for reading**.
+///
+/// Returns an `O_PATH` descriptor: it names the file and cannot read or write
+/// it. That is exactly what a decision needs, and it is what lets the decision
+/// happen **before** anything is opened for real — `docs/05` §5.3's order,
+/// which is *"`openat2` … → evaluate **the opened file** against the compiled
+/// policy → `ADDFD`"*.
+///
+/// **Why `O_PATH` and not a read descriptor.** Deciding after a real open would
+/// mean opening files the policy is about to refuse, and opening a FIFO for
+/// reading blocks until a writer appears — so a denied path could hang the
+/// supervisor. `O_PATH` never blocks and works for any file type.
+///
+/// # Errors
+///
+/// The target's own, most often `ENOENT`.
+pub fn locate_as_target(pid: u32, path: &std::ffi::CStr) -> aisme_core::error::Result<OwnedFd> {
+    open_relative_to_target(
+        pid,
+        path,
+        u64::try_from(libc::O_PATH | libc::O_CLOEXEC).unwrap_or(0),
+    )
+}
+
+/// What a descriptor actually names, as an absolute path.
+///
+/// **This is the string a decision must be taken on.** The path a process asks
+/// for is a *spelling*, not a file: measured on 2026-09-15, a policy denying a
+/// file was defeated by a symbolic link to it, because the rule was matched
+/// against what the caller typed and the descriptor was then opened from the
+/// same string. `RESOLVE_NO_MAGICLINKS` stops `/proc/self/root/…` and does not
+/// stop an ordinary symlink, which is why the flag alone was not enough.
+///
+/// # Errors
+///
+/// The link could not be read, or it does not name a path — a deleted file
+/// reads as `"… (deleted)"` and is refused here rather than decided about.
+pub fn canonical_path(fd: &OwnedFd) -> aisme_core::error::Result<String> {
+    use aisme_core::error::Error;
+    use std::os::fd::AsRawFd as _;
+
+    let link = format!("/proc/self/fd/{}", fd.as_raw_fd());
+    let resolved = std::fs::read_link(&link)
+        .map_err(|e| Error::unsupported(format!("{link}: {e}")))?
+        .to_string_lossy()
+        .into_owned();
+    if !resolved.starts_with('/') || resolved.ends_with(" (deleted)") {
+        return Err(Error::unsupported(format!(
+            "the descriptor names {resolved:?}, which is not a path a rule can be matched against"
+        )));
+    }
+    Ok(resolved)
+}
+
+/// Turn a located file into the read descriptor the caller asked for.
+///
+/// Reopened **through the descriptor**, never through the path: `/proc/self/fd`
+/// resolves to the inode this descriptor already names, so nothing is looked up
+/// a second time and the file the policy was evaluated on is the file the
+/// target receives. That is `I-28`, and re-resolving the string here would give
+/// it away after paying for it.
+///
+/// # Errors
+///
+/// The reopen, with the kernel's own errno.
+pub fn open_located(located: &OwnedFd) -> aisme_core::error::Result<OwnedFd> {
+    use aisme_core::error::Error;
+    use std::os::fd::AsRawFd as _;
+
+    let link = std::ffi::CString::new(format!("/proc/self/fd/{}", located.as_raw_fd()))
+        .map_err(|e| Error::unsupported(format!("descriptor path: {e}")))?;
+    // SAFETY: a NUL-terminated path that outlives the call.
+    let fd = unsafe { libc::open(link.as_ptr(), libc::O_RDONLY | libc::O_CLOEXEC) };
+    if fd < 0 {
+        return Err(Error::unsupported(format!(
+            "reopening the located file: {}",
+            std::io::Error::last_os_error()
+        )));
+    }
+    // SAFETY: the kernel just gave us this descriptor.
+    Ok(unsafe { OwnedFd::from_raw_fd(fd) })
+}
+
+/// Open `path` as `pid` would, with `flags`, refusing magic links.
+fn open_relative_to_target(
+    pid: u32,
+    path: &std::ffi::CStr,
+    flags: u64,
+) -> aisme_core::error::Result<OwnedFd> {
     use aisme_core::error::Error;
 
     let cwd = std::ffi::CString::new(format!("/proc/{pid}/cwd"))
@@ -851,7 +939,7 @@ pub fn open_as_target(pid: u32, path: &std::ffi::CStr) -> aisme_core::error::Res
     let mut how: libc::open_how = unsafe { std::mem::zeroed() };
     // The flags this subset reproduces, and only these: `reproducible` has
     // already refused anything else (limit one of `Q-13`).
-    how.flags = u64::try_from(libc::O_RDONLY | libc::O_CLOEXEC).unwrap_or(0);
+    how.flags = flags;
     how.resolve = RESOLVE_NO_MAGICLINKS;
     // SAFETY: `openat2` with a directory descriptor we own, a NUL-terminated
     // path, and an `open_how` that outlives the call.
@@ -963,12 +1051,14 @@ pub fn serve_notifications(
 
 /// [`serve_notifications`], asking `allow` about each path first.
 ///
-/// `allow` receives the path the target asked for — **to decide, not to
-/// open**. What the target receives is still the descriptor this supervisor
-/// opened from that same string, so a rewrite between the two changes nothing
-/// (`I-28`). It returns `false` to deny, and it is where a human is asked: it
-/// runs on this session's own thread, so it may block for as long as the
-/// adjudicator's budget allows.
+/// `allow` receives **what the descriptor names**, not what the target typed:
+/// the file is located with `O_PATH` first, so a symbolic link, a `..` or a
+/// relative spelling have all collapsed before the decision is taken. What the
+/// target receives is that same located file reopened through `/proc/self/fd`,
+/// so nothing is resolved a second time and a rewrite of the path string
+/// between the two changes nothing (`I-28`). It returns `false` to deny, and it
+/// is where a human is asked: it runs on this session's own thread, so it may
+/// block for as long as the adjudicator's budget allows.
 ///
 /// # Errors
 ///
@@ -1008,12 +1098,33 @@ pub fn serve_notifications_with(
             record(n.pid, false, Some("the path argument could not be read"));
             continue;
         };
-        if !allow(&path.to_string_lossy()) {
+        // **Locate, then decide, then open** — `docs/05` §5.3's order, and the
+        // order is the property. A path is a *spelling*: measured, a policy
+        // denying a file was defeated by a symbolic link to it, because the
+        // rule was matched against what the caller typed. The decision is taken
+        // on what the descriptor **names**, and the descriptor handed over is
+        // that same one reopened through `/proc/self/fd` rather than through
+        // the string, so nothing is resolved twice (`I-28`).
+        let Ok(located) = locate_as_target(n.pid, &path) else {
+            // The supervisor's own open failed — most often the target's own
+            // ENOENT. Answering EACCES rather than passing the errno through is
+            // the conservative choice and is visible in the record; widening it
+            // is `F3.EN.12`'s.
+            respond_deny(listener, n.id, libc::EACCES)?;
+            record(n.pid, false, Some("the supervisor could not open it"));
+            continue;
+        };
+        let Ok(resolved) = canonical_path(&located) else {
+            respond_deny(listener, n.id, libc::EACCES)?;
+            record(n.pid, false, Some("what it names could not be resolved"));
+            continue;
+        };
+        if !allow(&resolved) {
             respond_deny(listener, n.id, libc::EACCES)?;
             record(n.pid, false, Some("refused by the session's adjudicator"));
             continue;
         }
-        if let Ok(fd) = open_as_target(n.pid, &path) {
+        if let Ok(fd) = open_located(&located) {
             respond_with_fd(listener, n.id, fd.as_fd())?;
             record(n.pid, true, None);
         } else {
@@ -1102,9 +1213,9 @@ pub fn peer_pid(socket: BorrowedFd<'_>) -> aisme_core::error::Result<i32> {
 #[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
     use super::{
-        id_valid, install_openat_filter, open_as_target, probe, read_target_path, recv, recv_fd,
-        reproducible, respond_deny, respond_with_fd, send_fd, wexit_status, wif_exited,
-        Unreproducible,
+        canonical_path, id_valid, install_openat_filter, locate_as_target, open_located, probe,
+        read_target_path, recv, recv_fd, reproducible, respond_deny, respond_with_fd, send_fd,
+        wexit_status, wif_exited, Unreproducible,
     };
     use std::os::fd::OwnedFd;
 
@@ -1319,12 +1430,77 @@ mod tests {
             )
         });
         let asked = read_target_path(n.pid, n.path_addr()).expect("the path argument");
-        let opened = open_as_target(n.pid, &asked).expect("the supervisor's own open");
+        let opened =
+            open_located(&locate_as_target(n.pid, &asked).expect("the supervisor's own locate"))
+                .expect("the supervisor's own open");
         respond_with_fd(listener.as_fd(), n.id, opened.as_fd()).expect("ADDFD");
 
         assert_eq!(
             reap(pid),
             i32::from(b'A'),
+            "the target did not read through the descriptor we handed it"
+        );
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// **A path is a spelling, not a file.** The decision is taken on what the
+    /// descriptor *names*, never on what the caller typed.
+    ///
+    /// Measured before this held: a policy denying a file was defeated by a
+    /// symbolic link to it — read by its real name it was denied, read through
+    /// the link the secret was read. `RESOLVE_NO_MAGICLINKS` stops
+    /// `/proc/self/root/…` and does **not** stop an ordinary symlink, which is
+    /// why one spelling was caught and the other was not. The field calls the
+    /// same class denylist fragility, and measured 69–98 % of real denylists
+    /// fragile to it.
+    ///
+    /// The assertion is on the two strings being **different**, and on the
+    /// resolved one being the real file. A supervisor that decided on the asked
+    /// path would pass every other test in this module.
+    #[test]
+    fn the_decision_is_taken_on_the_resolved_path_and_not_the_spelling() {
+        use std::os::fd::AsFd;
+
+        let dir = scratch("symlink");
+        let real = dir.join("secret");
+        let alias = dir.join("alias");
+        std::fs::write(&real, b"S").unwrap();
+        std::os::unix::fs::symlink(&real, &alias).unwrap();
+        let path = cstr(&alias);
+
+        let (pid, parent_end, child_end) =
+            supervised(move |_| open_and_read_first_byte(&path.clone()));
+        drop(child_end);
+
+        let listener = recv_fd(parent_end.as_fd()).expect("the listener");
+        let n = recv(listener.as_fd()).expect("the notification");
+        let request = n.open_request().expect("a shape this supervisor reads");
+        let asked = read_target_path(n.pid, request.path_addr).expect("the path argument");
+        assert_eq!(
+            asked.to_string_lossy(),
+            alias.to_string_lossy(),
+            "the caller asked for the link — that is the spelling a rule must not be matched against"
+        );
+
+        let located = locate_as_target(n.pid, &asked).expect("locating what it names");
+        let resolved = canonical_path(&located).expect("the canonical path");
+        let expected = std::fs::canonicalize(&real).expect("the real file");
+        assert_eq!(
+            resolved,
+            expected.to_string_lossy(),
+            "the decision would have been taken on the link rather than on the file it names"
+        );
+        assert_ne!(
+            resolved,
+            alias.to_string_lossy(),
+            "resolving returned the spelling it was given"
+        );
+
+        let opened = open_located(&located).expect("reopening through the descriptor");
+        respond_with_fd(listener.as_fd(), n.id, opened.as_fd()).expect("ADDFD");
+        assert_eq!(
+            reap(pid),
+            i32::from(b'S'),
             "the target did not read through the descriptor we handed it"
         );
         std::fs::remove_dir_all(&dir).ok();
@@ -1398,7 +1574,10 @@ mod tests {
         );
 
         // We open what we READ, not what the buffer says now.
-        let opened = open_as_target(n.pid, &read_back).expect("the supervisor's own open");
+        let opened = open_located(
+            &locate_as_target(n.pid, &read_back).expect("the supervisor's own locate"),
+        )
+        .expect("the supervisor's own open");
         respond_with_fd(listener.as_fd(), n.id, opened.as_fd()).expect("ADDFD");
 
         assert_eq!(
@@ -1436,7 +1615,9 @@ mod tests {
         let asked = read_target_path(n.pid, n.path_addr()).expect("the path argument");
 
         // Decided and opened: from here the object is fixed.
-        let opened = open_as_target(n.pid, &asked).expect("the supervisor's own open");
+        let opened =
+            open_located(&locate_as_target(n.pid, &asked).expect("the supervisor's own locate"))
+                .expect("the supervisor's own open");
 
         // The attack, by a third party with no access to the target: the
         // directory moves aside and a different tree takes its name.

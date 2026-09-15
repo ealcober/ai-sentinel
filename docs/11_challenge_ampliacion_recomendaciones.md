@@ -315,11 +315,16 @@ at the owner's choice — nothing else.
 
 **Everything that does not depend on the two answers is built first, and it is most of it.**
 
-- **`aisme-forensicd` gains `--to-trace <wal-dir> <out-dir>`**: it reads the WAL through the same
-  replayer `--tail` uses, joins each `FileOpen` to the declaration whose process subtree contains
-  its `tgid`, and writes `trace.txt` plus a `manifest.toml` in the schema `F0.ASSET.02` already
-  fixed. It lives here because `forensicd` is the cold path and already owns reading the WAL;
-  putting it in `agentd` would put a file-format writer on the hot side.
+- **`aisme-agentsim` gains `--to-trace <wal-dir> <trace-file>`**: it reads the WAL through
+  `aisme_core::wal`'s replayer and joins each action to the declaration whose process subtree
+  contains its `tgid`.
+
+  *(Corrected while implementing it, and the correction is a layer. This first said `aisme-forensicd`
+  "because `forensicd` is the cold path and already owns reading the WAL". **`forensicd` is `L3` and
+  `aisme-agentsim` is `L4`**, so `forensicd` cannot name the trace format and `verify-layering`
+  would refuse it. The stated reason was also false: the replayer is `aisme_core::wal`, which is
+  `L1` and available to both. Writing and recovering the format in one crate puts the round trip
+  inside one crate's tests, which is where it belongs.)*
 - **The attribution rule is stated in the code and not inferred by a reader**: an action belongs to
   the most recent declaration from a process in its own ancestry, and to `0` when there is none.
   `0` is written, never omitted, because an absent token and an unattributed action must not look
@@ -329,9 +334,18 @@ at the owner's choice — nothing else.
   is how the summary counts and the round trip are pinned.
 - **`cargo xtask record-trace`** wraps the three steps an operator would otherwise get wrong in
   order: start the daemon, run the session, convert, and verify the hash the manifest claims.
-- **`manifest.toml`'s `produced_by` is written by the recorder**, from what actually ran, rather
-  than being a sentence somebody keeps up to date. A provenance line a human maintains is a
-  provenance line that will one day be wrong.
+- **`manifest.toml` is written by the sealing step and not by the recorder**, so that the `sha256`
+  has one implementation. `xtask` already computes that hash and `verify-docs` already checks it;
+  a second implementation in a product binary is a second answer to the same question. The recorder
+  writes `trace.txt` and prints what it recovered; `cargo xtask record-trace` writes the manifest,
+  fills `produced_by` from what actually ran, and seals the hash. A provenance line a human
+  maintains is a provenance line that will one day be wrong.
+- **The correlation token is not the `toolcall_id`**, and this is the subtlety the implementation
+  surfaced. The id travels on the control socket, so an engine reading the replayed stream sees it —
+  and the plan is explicit that a token the engine can see makes §4.6 measure a join rather than a
+  correlator. The recorder derives the token from *who declared, when, and which call*, which is
+  stable, unique in practice, and appears nowhere the engine reads. A test asserts the declared id
+  never reaches the ground truth.
 
 **Only after Question A and B are answered:** the recording itself, the `agent`, `model`,
 `repository_commit` and `wallclock_seconds` fields, and the `sha256` over the content.

@@ -143,7 +143,12 @@ impl Summary {
         }
     }
 
-    fn bump(&mut self, action: Action) {
+    /// Count one action.
+    ///
+    /// Public because a trace can now be **recovered** as well as generated,
+    /// and a recorder that kept its own counters would be a second place for
+    /// the summary to disagree with the actions beneath it.
+    pub fn bump(&mut self, action: Action) {
         match action {
             Action::ToolCall => self.tool_calls += 1,
             Action::FileRead => self.file_reads += 1,

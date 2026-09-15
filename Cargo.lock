@@ -19,6 +19,8 @@ dependencies = [
 name = "aisme-agentsim"
 version = "0.1.0"
 dependencies = [
+ "aisme-core",
+ "aisme-ebpf-common",
  "aisme-proto",
 ]
 

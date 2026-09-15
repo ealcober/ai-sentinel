@@ -29,6 +29,11 @@ fn main() -> ExitCode {
             return ExitCode::FAILURE;
         }
     }
+    // The two file-producing verbs return before the replay: they write the
+    // file the replay consumes, rather than consuming one (`F0.ASSET.02`).
+    if let Some(code) = trace_verbs(&args) {
+        return code;
+    }
     let options = match replay::Options::parse(&args) {
         Ok(options) => options,
         Err(problem) => {
@@ -111,4 +116,113 @@ fn main() -> ExitCode {
             ExitCode::FAILURE
         }
     }
+}
+
+/// `--to-trace` and `--emit-trace`, or `None` when neither was asked for.
+///
+/// One function because they are one concern — producing the file the replay
+/// reads — and because `main` is a dispatcher and not a place for argument
+/// shapes.
+fn trace_verbs(args: &[String]) -> Option<ExitCode> {
+    if let Some(at) = args.iter().position(|a| a == "--to-trace") {
+        let (Some(wal), Some(out)) = (args.get(at + 1), args.get(at + 2)) else {
+            eprintln!("usage: aisme-agentsim --to-trace <wal-dir> <trace-file>");
+            return Some(ExitCode::FAILURE);
+        };
+        return Some(to_trace(wal, out));
+    }
+    if let Some(at) = args.iter().position(|a| a == "--emit-trace") {
+        let Some(out) = args.get(at + 1) else {
+            eprintln!("usage: aisme-agentsim --emit-trace <trace-file> [--minutes N]");
+            return Some(ExitCode::FAILURE);
+        };
+        let minutes = args
+            .iter()
+            .position(|a| a == "--minutes")
+            .and_then(|i| args.get(i + 1))
+            .map_or(Ok(30), |v| v.parse::<u32>());
+        return Some(match minutes {
+            Ok(minutes) if minutes > 0 => emit_trace(out, minutes),
+            _ => {
+                eprintln!("aisme-agentsim: --minutes needs a positive number");
+                ExitCode::FAILURE
+            }
+        });
+    }
+    None
+}
+
+/// Recover a trace from a recording and say what it recovered.
+///
+/// The counts go to stderr rather than into the file, because a summary a
+/// person reads and a summary a gate parses are different things and the file
+/// already carries the second.
+fn to_trace(wal: &str, out: &str) -> ExitCode {
+    use aisme_agentsim::record;
+
+    let events = match record::read_wal(std::path::Path::new(wal)) {
+        Ok(events) => events,
+        Err(e) => {
+            eprintln!("aisme-agentsim: {wal}: {e}");
+            return ExitCode::FAILURE;
+        }
+    };
+    let recorded = record::from_events(&events);
+    // A fixture with no actions would pass a gate by having nothing to check.
+    if recorded.trace.entries.is_empty() {
+        eprintln!(
+            "aisme-agentsim: {wal} holds {} event(s) and no action this format has — \
+             nothing written",
+            events.len()
+        );
+        return ExitCode::FAILURE;
+    }
+    if let Err(e) = std::fs::write(out, aisme_agentsim::trace::write(&recorded.trace)) {
+        eprintln!("aisme-agentsim: {out}: {e}");
+        return ExitCode::FAILURE;
+    }
+    let summary = recorded.trace.summary;
+    println!(
+        "recovered {} action(s) over {} µs: {} tool call(s), {} read(s), {} write(s), \
+         {} exec(s), {} https",
+        recorded.trace.entries.len(),
+        summary.duration_us,
+        summary.tool_calls,
+        summary.file_reads,
+        summary.file_writes,
+        summary.execs,
+        summary.https_requests
+    );
+    // Both numbers are printed even when zero: a reader must be able to tell
+    // "nothing was skipped" from "nobody looked".
+    println!("unattributed: {}", recorded.unattributed);
+    println!(
+        "skipped by kind: {}",
+        if recorded.skipped.is_empty() {
+            "none".to_owned()
+        } else {
+            recorded
+                .skipped
+                .iter()
+                .map(|(kind, n)| format!("{kind}={n}"))
+                .collect::<Vec<String>>()
+                .join(", ")
+        }
+    );
+    ExitCode::SUCCESS
+}
+
+/// Write a synthetic session shaped like §2.22's reference workload.
+fn emit_trace(out: &str, minutes: u32) -> ExitCode {
+    let trace = aisme_agentsim::record::synthesise(minutes);
+    if let Err(e) = std::fs::write(out, aisme_agentsim::trace::write(&trace)) {
+        eprintln!("aisme-agentsim: {out}: {e}");
+        return ExitCode::FAILURE;
+    }
+    println!(
+        "wrote {} action(s) over {minutes} minute(s) — the reference workload's shape, \
+         and not a recording",
+        trace.entries.len()
+    );
+    ExitCode::SUCCESS
 }

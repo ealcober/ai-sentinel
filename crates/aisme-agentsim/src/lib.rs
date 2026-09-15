@@ -8,5 +8,6 @@
 //! workload runs.
 
 pub mod openbench;
+pub mod record;
 pub mod replay;
 pub mod trace;

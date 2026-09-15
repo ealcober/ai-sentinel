@@ -1360,14 +1360,31 @@ mod tests {
         let server = std::thread::spawn(move || {
             serve(&server_path, owner.uid, || true).unwrap();
         });
-        // Wait for the socket to appear rather than sleep a guess.
-        for _ in 0..1_000 {
-            if path.exists() {
-                break;
+        // Retry the **connect**, against a wall-clock deadline.
+        //
+        // Two corrections to what stood here, and the test failed under a
+        // parallel run to earn both. It waited for the *path to exist*, which
+        // the listener creates before it accepts — so a socket that is there is
+        // not a socket that answers. And it bounded the wait in
+        // `yield_now()` calls, which is a guess measured in scheduler turns
+        // rather than in time: a thousand of them pass in microseconds on an
+        // idle machine and can elapse before the server thread is scheduled at
+        // all when the rest of the suite is running. A flaky test is a gate
+        // people learn to re-run.
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        let mut client = loop {
+            match UnixStream::connect(&path) {
+                Ok(client) => break client,
+                Err(e) => {
+                    assert!(
+                        std::time::Instant::now() < deadline,
+                        "the server never accepted a connection on {}: {e}",
+                        path.display()
+                    );
+                    std::thread::sleep(std::time::Duration::from_millis(1));
+                }
             }
-            std::thread::yield_now();
-        }
-        let mut client = UnixStream::connect(&path).unwrap();
+        };
         writeln!(
             client,
             r#"{{"jsonrpc":"2.0","id":5,"method":"getCapabilities"}}"#

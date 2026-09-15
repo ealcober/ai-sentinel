@@ -41,7 +41,12 @@ use crate::SKIP;
 /// rather than passing a vaguer one.
 const EXPECTED: [(&str, Verdict); 3] = [
     ("/etc/shadow", Verdict::Deny),
-    ("~/.aws/credentials", Verdict::Escalate),
+    // **A resolved path, with no `~` in it.** The first version of this gate
+    // asserted `~/.aws/credentials`, which the policy matched because the gate
+    // handed it that exact string — and which no kernel ever produces, because
+    // the tilde is expanded by the shell long before the syscall. The assertion
+    // passed while the rule it tested could not fire on a real machine.
+    ("/home/agent/.aws/credentials", Verdict::Escalate),
     ("/etc/hostname", Verdict::Allow),
 ];
 
@@ -53,7 +58,6 @@ pub(crate) fn run(args: &[&str]) -> u8 {
             return 1;
         }
     }
-    let started = Instant::now();
     let mut bad = 0;
 
     let root = workspace_root();
@@ -70,6 +74,18 @@ pub(crate) fn run(args: &[&str]) -> u8 {
             return SKIP;
         }
     }
+
+    // Touch each binary once before the clock starts. **This is not a way of
+    // getting a better number**: the first execution of a freshly linked binary
+    // pays for the dynamic loader and for faulting its pages in, which is the
+    // build's cost and not the slice's. Measured, once, and it is why this
+    // exists: immediately after `cargo build` the same run took **5304 ms**
+    // and 79 ms on every attempt after. A gate that fails the first time it is
+    // run after a build and passes the second is a gate people learn to re-run.
+    for path in [&agentd, &forensicd] {
+        let _ = Command::new(path).output();
+    }
+    let started = Instant::now();
 
     // 1. The shipped policy, through the real compiler — the same two calls the
     //    loader and the daemon make. A gate that hand-built a `CompiledPolicy`
@@ -100,17 +116,9 @@ pub(crate) fn run(args: &[&str]) -> u8 {
 
     // 3. The slice: a recorded trace of those three opens, through the daemon's
     //    own composition and into the real WAL.
-    let dir = std::env::temp_dir().join(format!("aisme-skeleton-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&dir);
-    if std::fs::create_dir_all(dir.join("wal")).is_err() {
-        eprintln!("FAIL: {} cannot be created", dir.display());
+    let Some((dir, trace_file)) = scratch_with_trace() else {
         return 1;
-    }
-    let trace_file = dir.join("trace.bin");
-    if let Err(e) = write_trace(&trace_file) {
-        eprintln!("FAIL: writing the trace: {e}");
-        return 1;
-    }
+    };
 
     let run = Command::new(&agentd)
         .arg("--run")
@@ -170,6 +178,24 @@ pub(crate) fn run(args: &[&str]) -> u8 {
         eprintln!("FAIL test-skeleton — {bad} assertion(s) failed");
         1
     }
+}
+
+/// A scratch directory holding a WAL and the recorded trace, or `None` when
+/// neither could be created — which is the gate unable to ask, not an assertion
+/// failing.
+fn scratch_with_trace() -> Option<(PathBuf, PathBuf)> {
+    let dir = std::env::temp_dir().join(format!("aisme-skeleton-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    if let Err(e) = std::fs::create_dir_all(dir.join("wal")) {
+        eprintln!("FAIL: {}: {e}", dir.display());
+        return None;
+    }
+    let trace_file = dir.join("trace.bin");
+    if let Err(e) = write_trace(&trace_file) {
+        eprintln!("FAIL: writing the trace: {e}");
+        return None;
+    }
+    Some((dir, trace_file))
 }
 
 /// Every verdict the shipped policy gets wrong, counted and named.

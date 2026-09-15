@@ -15,6 +15,7 @@ fn compiled(src: &str) -> CompiledPolicy {
     let policy = parse(src).unwrap_or_else(|e| panic!("{e:#?}"));
     let bindings = Bindings::new()
         .with("workspace", "/home/u/proj")
+        .with("home", "/home/u")
         .with_list("session.network_allow", &["registry.npmjs.org"]);
     compile(&policy, &bindings).unwrap_or_else(|e| panic!("{e:#?}"))
 }

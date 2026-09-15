@@ -594,9 +594,11 @@ mod slice_tests {
             "`deny-shadow` is a compiled deny: nobody is asked and no answer can undo it"
         );
         assert_eq!(
-            verdict_for("~/.aws/credentials"),
+            verdict_for("/home/agent/.aws/credentials"),
             Verdict::Escalate,
-            "`escalate-aws` is a path_glob — the lowered trie would have dropped it"
+            "`escalate-aws` is a path_glob — the lowered trie would have dropped it. \
+             The path is **resolved**: a tilde is a shell expansion the kernel never sees, \
+             so asserting `~/.aws/credentials` would test a string no process ever opens"
         );
         assert_eq!(
             verdict_for("/etc/hostname"),

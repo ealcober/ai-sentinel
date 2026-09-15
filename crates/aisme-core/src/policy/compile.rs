@@ -113,6 +113,20 @@ pub enum CompileErrorKind {
         /// The pattern.
         pattern: String,
     },
+    /// A path pattern that starts with `~/`.
+    ///
+    /// **A rule that can never fire, which is worse than no rule** — the gate
+    /// that tests it still passes. The tilde is expanded by a *shell*, so what
+    /// a process asks the kernel for is already `/home/<user>/…`, and a pattern
+    /// still carrying the tilde matches nothing any process ever opens.
+    /// Measured on 2026-09-15: the shipped skeleton's credential rule read
+    /// `~/.aws/**`, and `cat ~/.aws/credentials` under it was answered with
+    /// **0 asked** — the escalate path was never exercised by the gate that
+    /// existed to exercise it.
+    TildePath {
+        /// The pattern as written.
+        pattern: String,
+    },
     /// A `${…}` the session did not bind.
     UnboundVariable {
         /// Its name.
@@ -173,6 +187,11 @@ impl core::fmt::Display for CompileError {
             CompileErrorKind::AssertViolated { assert_index } => {
                 write!(f, "violates [[assert]] #{} (§B.12)", assert_index + 1)
             }
+            CompileErrorKind::TildePath { pattern } => write!(
+                f,
+                "path \"{pattern}\" starts with `~/`, which a shell expands and a kernel never sees — \
+                 the rule would match nothing. Use `${{home}}`, or an absolute path"
+            ),
             CompileErrorKind::GlobBudget { pattern } => write!(
                 f,
                 "glob \"{pattern}\" exceeds the budget ({MAX_DOUBLE_STAR} `**`, {MAX_WILDCARD_SEGMENTS} wildcard segments)"
@@ -733,11 +752,20 @@ fn resolve(
         };
         let term = match key {
             MatchKey::PathUnder(texts) => {
-                Term::PathUnder(canon(texts_to_strings(texts, bindings, &err, errors)))
+                let paths = canon(texts_to_strings(texts, bindings, &err, errors));
+                for p in &paths {
+                    if starts_with_tilde(p) {
+                        errors.push(err(CompileErrorKind::TildePath { pattern: p.clone() }));
+                    }
+                }
+                Term::PathUnder(paths)
             }
             MatchKey::PathGlob(texts) => {
                 let globs = canon(texts_to_strings(texts, bindings, &err, errors));
                 for g in &globs {
+                    if starts_with_tilde(g) {
+                        errors.push(err(CompileErrorKind::TildePath { pattern: g.clone() }));
+                    }
                     if !glob_within_budget(g) {
                         errors.push(err(CompileErrorKind::GlobBudget { pattern: g.clone() }));
                     }
@@ -855,6 +883,15 @@ fn glob_head(glob: &str) -> &str {
         Some(i) => &head[..i],
         None => "",
     }
+}
+
+/// Whether a path pattern begins with a shell's home shorthand.
+///
+/// Only at the start, and only followed by a separator: `~` is an ordinary
+/// character everywhere else in a path, and a rule about a file genuinely named
+/// `report~` or a directory holding `a~b` must keep working.
+fn starts_with_tilde(pattern: &str) -> bool {
+    pattern == "~" || pattern.starts_with("~/")
 }
 
 fn glob_within_budget(glob: &str) -> bool {

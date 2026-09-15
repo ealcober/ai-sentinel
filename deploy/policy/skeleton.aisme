@@ -28,10 +28,23 @@ verdict = "deny"
 
 # 2. Cloud credentials are the escalate class: the syscall is held and someone
 #    is asked. This is the rule `F2.WS.05` traps on and `F2.WS.06` answers.
+#
+#    **Not `~/.aws/**`, and the reason is measured.** `~` is a shell expansion,
+#    not a path: the supervisor evaluates what the kernel was asked for, which
+#    is already `/home/<user>/.aws/credentials`. A rule spelled with a tilde
+#    matches nothing any process ever opens — measured on 2026-09-15, where
+#    `cat ~/.aws/credentials` under this policy read the file with **0 asked**
+#    and the escalate path was never exercised. A rule that cannot fire is
+#    worse than no rule, because the gate that tests it still passes.
+#
+#    `**/.aws/credentials` is one `**`, which is the compiler's budget, and it
+#    matches any user's store rather than one machine's home. The precise form
+#    is `${home}/.aws/**`, and it arrives with the per-session bindings that
+#    rule 3 also waits for (`F2.WS.11`).
 [[rule]]
 id = "escalate-aws"
 group = "CREDENTIALS"
-match = { path_glob = "~/.aws/**" }
+match = { path_glob = "**/.aws/credentials" }
 verdict = "escalate"
 
 # 3. The write scope (`F2.WS.11`): a write outside the session's declared

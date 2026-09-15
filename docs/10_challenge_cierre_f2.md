@@ -744,3 +744,109 @@ number the supervisor can report about itself: what matters is how long the sysc
 only the caller can time that. It must also be the process `aisme run` `exec`s and never a child of
 one — a grandchild's path arguments cannot be read by a sibling supervisor under Yama, so a bench
 driven through `sh -c` would have measured a refusal and reported it as a fast T1.
+
+---
+
+## Step 6 — the reference-trace recording, and why it stops here
+
+`F0.ASSET.02` asks for *"a real Claude Code session on this repository — an actual working session,
+not a script — captured with `aisme run` in **observe-only mode** into
+`tests/fixtures/reference-trace/`"*, and its done-condition is that *"the CPU gate **and** the
+correlation gate get one fixed, hashed input"*. The fixture directory, the `manifest.toml` schema
+and its hash check all exist from F0; what is owed is the recording.
+
+**It does not happen here, for two reasons that are independent of each other.** Both are measured,
+not argued.
+
+### 1. Observe-only mode records nothing on this host, and that is `I-12` working
+
+Measured: a real session — `aisme run -- sh -c 'cat README.md > /dev/null; ls docs > /dev/null'` —
+against a running daemon produced **0 lines in the WAL**. There is no sensor. `platform::sensors`
+reaches `BpfSensor` only when `caps.ringbuf` was measured, and `probe()` reports nothing present on
+a host precisely so that no BPF program is loaded outside a VM. The recording therefore needs a
+guest, and a guest cannot host a real Claude Code session.
+
+### 2. The specified mechanism cannot produce the format's ground truth at all
+
+This is the finding that matters, and it is about the task rather than the machine.
+
+The trace format is **agent actions**, and every action line carries a `correlation_token`:
+*"the ground truth of §4.6 … the correlation engine never sees it; the scorer does"*
+(`crates/aisme-agentsim/src/trace.rs:24`). The parser enforces the relationship — an action whose
+token belongs to no declared tool call is rejected as `OrphanToken` — and token `0` means "no tool
+call caused this".
+
+**A kernel sensor cannot know which tool call caused an action.** It sees an `openat`; it does not
+see the intent that produced it. So a recording made the specified way would carry `0` in every
+token column: syntactically valid, usable by the CPU gate, and **worthless to the correlation
+gate** — which is half of the task's own done-condition. Only the agent's own record knows which
+actions each of its tool calls caused.
+
+### What would unblock it, and it is the owner's
+
+1. **The owner records a session under `aisme run` on a kernel where the sensor loads** — a guest,
+   or a one-off on the host. This satisfies the stated provenance and gives the **CPU** gate its
+   input. It cannot give the correlation gate ground truth, for the reason above, so
+   `F0.ASSET.02`'s second half would stay owed and the task should say so.
+2. **The owner authorises deriving the trace from the agent's own session record.** This is the
+   only mechanism that satisfies **both** gates, because the tool-call-to-action relationship
+   exists only there. It changes the asset's stated provenance —
+   `produced_by = "aisme run in observe-only mode"` would have to say what actually produced it —
+   and it commits a derived record of the owner's own session to the repository. Changing an
+   asset's provenance and publishing a derived record of a session are both the owner's to decide,
+   not a step inside a closing plan.
+
+**Recommended: (2), with `produced_by` rewritten to name it.** The asset exists to give two gates a
+fixed input, and only one of the two mechanisms can. A hashed fixture whose provenance line is
+inaccurate is worse than no fixture, so the field is rewritten rather than left as it stands.
+
+---
+
+## A defect found while preparing GATE F2, and it is the gate's third of this kind
+
+**`cat ~/.aws/credentials` under the shipped policy was answered with `0 asked`.** The escalate
+rule did not fire, the file was read, and the exit status was 0.
+
+The cause is one character. `~` is expanded by a **shell**; the supervisor evaluates what the
+kernel was asked for, which is already `/home/<user>/.aws/credentials`. The shipped rule read
+`path_glob = "~/.aws/**"`, so it matched nothing any process ever opens. **GATE F2's third
+enforcement line would have passed by escalating nothing** — the same shape as the two findings in
+point 1 of this document, and the third time this phase has produced a check that reports a
+property it did not test.
+
+**It also made an assertion in my own `test-skeleton` vacuous.** That gate asserted `Escalate` for
+the string `~/.aws/credentials`, which the policy matched because the gate handed it that exact
+string. It passed while the rule it tested could not fire on a real machine. The expectation is a
+resolved path now.
+
+### The fix is in the compiler, not in the three places that had the bug
+
+A tilde at the start of a path pattern is now a **compile error**, naming the pattern and the
+reason: *"starts with `~/`, which a shell expands and a kernel never sees — the rule would match
+nothing. Use `${home}`, or an absolute path."* One guard where every policy passes through, rather
+than a correction in each rule that happens to have one — and the class of defect stops being
+possible instead of stopping being present.
+
+The tilde stays an ordinary character everywhere else: a file genuinely named `report~` still
+compiles, and the test asserts that too, because a diagnostic that over-reaches becomes its own
+defect.
+
+**Everything that was teaching the wrong form is corrected**, which is where the bug came from:
+`crates/aisme-core/tests/fixtures/sketch.toml` — the canonical worked example — used
+`~/.ssh/id_*` and `~/.aws/credentials`, and so did the grammar's example in the plan. Both now read
+`${home}/…`, which is the form that works, and the fixture's callers bind `home` the way they
+already bind `workspace`.
+
+The skeleton's own rule becomes `**/.aws/credentials`: one `**`, which is the compiler's budget
+(`**/.aws/**` is refused, correctly, as two), and it matches **any** user's store rather than one
+machine's home. The precise form is `${home}/.aws/**`, and it arrives with the per-session bindings
+that the write-scope rule is also waiting for. Measured after the change, against a real resolved
+home path: **`1 asked`, and the answer obeyed in both directions.**
+
+### One flake removed from `test-skeleton` while it was open
+
+The first run after `cargo build` took **5304 ms** and failed the command's own one-second
+condition; every run after took 79–108 ms. The first execution of a freshly linked binary pays for
+the dynamic loader and for faulting its pages in, which is the build's cost and not the slice's, so
+each binary is touched once before the clock starts. A gate that fails the first time it is run
+after a build and passes the second is a gate people learn to re-run.

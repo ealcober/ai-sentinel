@@ -14,6 +14,7 @@ const SKETCH: &str = include_str!("fixtures/sketch.toml");
 fn bindings() -> Bindings {
     Bindings::new()
         .with("workspace", "/home/u/proj")
+        .with("home", "/home/u")
         .with_list("session.network_allow", &["registry.npmjs.org"])
 }
 
@@ -108,5 +109,51 @@ fn strictness_is_proven_for_additions_and_unproven_for_relaxations() {
         at_least_as_strict(&base, &granted),
         Ok(()),
         "dropping a grant only tightens"
+    );
+}
+
+/// A path pattern that starts with `~/` is refused, and the refusal names it.
+///
+/// **This is a rule that could never fire, which is worse than no rule at all**:
+/// the gate that tests it still passes. The tilde is expanded by a shell, so a
+/// process asks the kernel for `/home/<user>/.aws/credentials` and a pattern
+/// still carrying the tilde matches nothing. Measured on 2026-09-15 before this
+/// diagnostic existed: the shipped skeleton's credential rule read `~/.aws/**`,
+/// and `cat ~/.aws/credentials` under it was answered with **0 asked** — the
+/// escalate path was never exercised by the gate that existed to exercise it.
+///
+/// Both `path_glob` and `path_under` are checked, because the defect is about
+/// the tilde and not about globbing.
+#[test]
+fn a_path_that_starts_with_a_tilde_is_refused_by_name() {
+    for key in ["path_glob", "path_under"] {
+        let source = format!(
+            "[[rule]]\nid = \"tilde\"\ngroup = \"CREDENTIALS\"\n\
+             match = {{ {key} = \"~/.aws/credentials\" }}\nverdict = \"escalate\"\n"
+        );
+        let policy = parse(&source).unwrap();
+        let errors = compile(&policy, &bindings())
+            .expect_err("a tilde path compiled, so a rule that cannot fire would have shipped");
+        let said = errors
+            .iter()
+            .map(ToString::to_string)
+            .collect::<Vec<String>>()
+            .join("; ");
+        assert!(
+            said.contains("~/.aws/credentials") && said.contains("shell"),
+            "the refusal must name the pattern and say why, got: {said}"
+        );
+    }
+
+    // And a tilde anywhere else is an ordinary character: a file really named
+    // `report~` must keep working, or the diagnostic becomes its own defect.
+    let ordinary = parse(
+        "[[rule]]\nid = \"backup\"\ngroup = \"CREDENTIALS\"\n\
+         match = { path_glob = \"${workspace}/report~\" }\nverdict = \"allow\"\n",
+    )
+    .unwrap();
+    assert!(
+        compile(&ordinary, &bindings()).is_ok(),
+        "a tilde inside a path is not a home shorthand"
     );
 }

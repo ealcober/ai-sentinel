@@ -8,10 +8,13 @@ use aisme_core::policy::{compile, parse, Bindings};
 const SKETCH: &str = include_str!("fixtures/sketch.toml");
 
 fn bindings() -> Bindings {
-    Bindings::new().with("workspace", "/home/u/proj").with_list(
-        "session.network_allow",
-        &["registry.npmjs.org", "api.anthropic.com"],
-    )
+    Bindings::new()
+        .with("workspace", "/home/u/proj")
+        .with("home", "/home/u")
+        .with_list(
+            "session.network_allow",
+            &["registry.npmjs.org", "api.anthropic.com"],
+        )
 }
 
 fn bytes_of(src: &str, bindings: &Bindings) -> Vec<u8> {
@@ -50,10 +53,13 @@ fn the_bytes_do_not_depend_on_the_order_the_source_was_written_in() {
     );
     // And a list variable bound in another order resolves to the same bytes:
     // values are sorted before encoding.
-    let swapped = Bindings::new().with("workspace", "/home/u/proj").with_list(
-        "session.network_allow",
-        &["api.anthropic.com", "registry.npmjs.org"],
-    );
+    let swapped = Bindings::new()
+        .with("workspace", "/home/u/proj")
+        .with("home", "/home/u")
+        .with_list(
+            "session.network_allow",
+            &["api.anthropic.com", "registry.npmjs.org"],
+        );
     assert_eq!(bytes_of(SKETCH, &swapped), bytes_of(SKETCH, &bindings()));
 }
 
@@ -61,10 +67,13 @@ fn the_bytes_do_not_depend_on_the_order_the_source_was_written_in() {
 fn different_meaning_gives_different_bytes() {
     let base = bytes_of(SKETCH, &bindings());
     // A different workspace: the resolved prefix differs.
-    let other_ws = Bindings::new().with("workspace", "/srv/other").with_list(
-        "session.network_allow",
-        &["registry.npmjs.org", "api.anthropic.com"],
-    );
+    let other_ws = Bindings::new()
+        .with("workspace", "/srv/other")
+        .with("home", "/home/u")
+        .with_list(
+            "session.network_allow",
+            &["registry.npmjs.org", "api.anthropic.com"],
+        );
     assert_ne!(bytes_of(SKETCH, &other_ws), base);
     // One verdict changed: one byte differs, and the digest with it.
     let stricter = SKETCH.replacen(

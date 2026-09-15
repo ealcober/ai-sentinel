@@ -13,10 +13,13 @@ use aisme_ebpf_common::Verdict;
 const SKETCH: &str = include_str!("fixtures/sketch.toml");
 
 fn bindings() -> Bindings {
-    Bindings::new().with("workspace", "/home/u/proj").with_list(
-        "session.network_allow",
-        &["registry.npmjs.org", "api.anthropic.com"],
-    )
+    Bindings::new()
+        .with("workspace", "/home/u/proj")
+        .with("home", "/home/u")
+        .with_list(
+            "session.network_allow",
+            &["registry.npmjs.org", "api.anthropic.com"],
+        )
 }
 
 fn sketch() -> CompiledPolicy {

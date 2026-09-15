@@ -48,7 +48,10 @@ report    = "lm-2026-08-24"    # which learning-mode report produced it
 [[rule]]
 id      = "credentials-ask"
 group   = "CREDENTIALS"
-match   = { path_glob = ["**/.env", "~/.ssh/id_*", "~/.aws/credentials"] }
+# `${home}`, never `~`: the tilde is a shell expansion and the kernel is asked
+# for `/home/<user>/…`, so a pattern carrying one matches nothing. The compiler
+# refuses it by name.
+match   = { path_glob = ["**/.env", "${home}/.ssh/id_*", "${home}/.aws/credentials"] }
 verdict = "escalate"
 taint   = ["SECRET_MATERIAL"]
 severity_floor = "high"

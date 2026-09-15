@@ -643,8 +643,10 @@ of a delegated scope. Not observed on this host — the directory survived the r
 their own runs created, parsed from the session line, so a test host does not accumulate them.
 That is test hygiene, not the fix.
 
-**What it needs:** its own amplification alongside `F8.CLI.01`, where the session is registered with
-`agentd` and can therefore be closed by it.
+**Amplified as `docs/10` point 2, and it is not `F8.CLI.01`'s after all.** `registerSession` and
+the session thread both already exist, so what remains is one parameter and one `poll` on
+`cgroup.events` — the daemon waits for the kernel to say the session is empty and removes the
+directory. The claim that this was owed alongside `F8.CLI.01` fell when the seam was read.
 
 ---
 

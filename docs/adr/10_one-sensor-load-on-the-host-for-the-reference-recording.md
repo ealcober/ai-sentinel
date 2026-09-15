@@ -1,6 +1,6 @@
 # ADR-10 — Load the sensor once on the owner's host, for the reference recording only
 
-**Status**: Proposed · **Date**: 2026-09-15
+**Status**: Accepted · **Date**: 2026-09-15
 **Raised by**: the owner, on `docs/15` point 2 · **Narrows**: `I-12`
 
 ## Context
@@ -118,8 +118,24 @@ and re-recording in a guest if one ever becomes able to host a session. What kee
       privilege as the load, which is why it shares the one `sudo` rather than preceding it. **If
       they differ, stop**: the offsets become an `F0.VER` row measured on 7.1 and the recording waits.
       (`docs/16` point 2)
-- [ ] Run `sudo aisme-agentd --load-sensor` on the owner's host; paste the output verbatim into
-      `docs/ai/STATE.md`. (`F0.ASSET.02`)
+- [x] **Done, 2026-09-15 — the sensor loads on 7.1.5.** `sudo ./target/debug/aisme-agentd
+      --load-sensor` answered:
+
+      ```
+      load-sensor: ACCEPTED
+        ringbuf: true
+        health: Healthy
+      ```
+
+      The program was loaded, its capabilities read, and it detached immediately. This is the first
+      time the sensor has been exercised on a kernel above the VM matrix's 7.0 ceiling, and it is the
+      answer this ADR was written to obtain. The recording may proceed.
+
+      **It also exposed a wording defect**, recorded as an open point rather than fixed here: the
+      startup banner prints `degraded: no BPF ring buffer` on this host, which asserts the kernel
+      lacks it — and the load has just proved it does not. `probe()` does not measure the ring buffer
+      (that is `F3.LD.01`'s), so the honest banner says *not measured*, not *absent*. Asserting an
+      absence that was never established is the class of defect this project treats most seriously.
 - [ ] If `ACCEPTED`: record `tests/fixtures/reference-trace/` from one observe-only session, with the
       hook installed in `~/.claude/settings.json` and nowhere else. (`F0.ASSET.02`)
 - [ ] Mark this ADR **Superseded by nothing — expired** on the commit that lands the fixture, so the

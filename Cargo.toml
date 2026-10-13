@@ -56,6 +56,23 @@ edition = "2021"
 license = "Apache-2.0"
 repository = "https://github.com/ealcober/AI-SYSTEM-MONITOR"
 rust-version = "1.87"   # aya 0.14 and aya-ebpf 0.2 both declare 1.87.0 (F0.VER.01)
+# One sentence that has to stand alone: this is what a search result shows, with
+# no README under it. The terms are the ones the field already uses — the papers
+# and vendor pages a searcher will have read first — and none of them claims a
+# capability the product does not have. "Sandbox" is deliberately absent: this
+# is not one, and the threat model says so.
+description = "Kernel-level runtime security for autonomous AI coding agents: eBPF and Landlock enforcement, tool-call attribution, and tamper-evident forensics."
+# crates.io allows five, each at most twenty characters.
+keywords = ["ebpf", "ai-agent", "security", "landlock", "seccomp"]
+# From crates.io's fixed list; an invented category is rejected at publish time.
+categories = ["os::linux-apis", "development-tools"]
+readme = "README.md"
+# Declared once here rather than in nineteen manifests: a crate inherits these
+# with `description.workspace = true` on the day it is actually published, and
+# no crate is today. GitHub reads none of them — it reads the repository's own
+# description and topics, which are set in its settings and recorded in
+# `docs/18`, because a topic list that lives only in somebody's memory does not
+# survive the next rename.
 
 [workspace.lints.rust]
 unsafe_op_in_unsafe_fn = "deny"

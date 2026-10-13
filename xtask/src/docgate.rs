@@ -325,6 +325,217 @@ pub(crate) fn nn_naming() -> Result<(), String> {
     fail(&bad)
 }
 
+/// The workspace declares what a searcher needs, and the repository URL matches
+/// the directory it is in.
+///
+/// The manifest carried only `license` and `repository`: no `description`, no
+/// `keywords`, no `categories`. Those are what crates.io ranks on, and their
+/// absence is why this repository was findable by nobody.
+///
+/// **The third clause is the one that earns its keep.** It compares the last
+/// path segment of `repository` against the directory name, so the day the
+/// repository is renamed and the manifest is not, the gate says so — which is
+/// exactly the failure a rename risks, and the only part of a rename a machine
+/// can check.
+pub(crate) fn workspace_is_discoverable() -> Result<(), String> {
+    let Ok(manifest) = std::fs::read_to_string("Cargo.toml") else {
+        return Err("Cargo.toml could not be read".to_owned());
+    };
+    let mut bad = Vec::new();
+
+    let value = |key: &str| -> Option<String> {
+        manifest
+            .lines()
+            .find(|l| l.trim_start().starts_with(&format!("{key} = ")))
+            .and_then(|l| l.split_once('='))
+            .map(|(_, v)| v.trim().trim_matches('"').to_owned())
+    };
+
+    match value("description") {
+        Some(d) if d.len() >= 40 => {}
+        Some(_) => bad.push(
+            "[workspace.package] description is too short to stand alone in a search result"
+                .to_owned(),
+        ),
+        None => bad.push("[workspace.package] declares no description".to_owned()),
+    }
+
+    let keywords = manifest
+        .lines()
+        .find(|l| l.trim_start().starts_with("keywords = "))
+        .map_or(0, |l| l.matches('"').count() / 2);
+    if keywords < 3 {
+        bad.push(format!(
+            "[workspace.package] declares {keywords} keyword(s); crates.io allows five and a \
+             searcher needs at least three"
+        ));
+    }
+
+    match value("repository") {
+        Some(url) => {
+            let last = url.rsplit('/').next().unwrap_or_default().to_owned();
+            let here = std::env::current_dir()
+                .ok()
+                .and_then(|p| p.file_name().map(|n| n.to_string_lossy().into_owned()))
+                .unwrap_or_default();
+            if !here.is_empty() && last != here {
+                bad.push(format!(
+                    "repository ends in {last:?} and this directory is {here:?} — one of the \
+                     two was renamed and the other was not"
+                ));
+            }
+        }
+        None => bad.push("[workspace.package] declares no repository".to_owned()),
+    }
+
+    fail(&bad)
+}
+
+/// Every numbered document under `docs/` is linked from `README.md`, and every
+/// `docs/` link in the README resolves.
+///
+/// **It fails in both directions, and that is the point.** A document nobody
+/// links is a document nobody reads: the README's map cited `docs/01`–`04`
+/// while sixteen numbered documents existed, so twelve were invisible to a
+/// visitor — including both field studies and the plan that closes the current
+/// phase. And a link to a deleted file is a page that lies, which for a project
+/// whose argument is that it does not overclaim is the worse of the two.
+///
+/// A grouped link counts: the map names ranges rather than every file, so a
+/// document is satisfied by appearing anywhere in the README.
+pub(crate) fn readme_links_every_numbered_doc() -> Result<(), String> {
+    let Ok(root) = std::fs::read_to_string("README.md") else {
+        return Err("README.md could not be read".to_owned());
+    };
+    // The curated map in the root README plus the full index in `docs/`. A
+    // sixteen-row table does not belong on a landing page, and an index does
+    // not belong anywhere but the directory it indexes — so a document is
+    // reachable if either names it.
+    let index = std::fs::read_to_string("docs/README.md").unwrap_or_default();
+    let readme = format!("{root}\n{index}");
+    let mut bad = Vec::new();
+
+    // Direction one: every numbered document is mentioned.
+    if let Ok(entries) = std::fs::read_dir("docs") {
+        for e in entries.flatten() {
+            let p = e.path();
+            if p.is_dir() {
+                continue;
+            }
+            let Some(name) = p.file_name().and_then(std::ffi::OsStr::to_str) else {
+                continue;
+            };
+            let numbered = name.len() > 3
+                && name[..2].chars().all(|c| c.is_ascii_digit())
+                && name.as_bytes().get(2) == Some(&b'_');
+            if !numbered {
+                continue;
+            }
+            // Either the full filename, or the `docs/NN` form a grouped range
+            // uses. Both are a link a reader can follow.
+            let stem = &name[..2];
+            if !readme.contains(name) && !readme.contains(&format!("docs/{stem})")) {
+                bad.push(format!(
+                    "docs/{name} is linked from no line of README.md, so a visitor \
+                     cannot find it"
+                ));
+            }
+        }
+    }
+
+    // Direction two: every `docs/` link in the root README resolves. The
+    // index's own links are relative to `docs/` and are checked below.
+    let mut rest = root.as_str();
+    while let Some(at) = rest.find("](docs/") {
+        rest = &rest[at + 2..];
+        let Some(end) = rest.find(')') else { break };
+        let target = &rest[..end];
+        // A directory link ends in `/`; both forms must exist on disk.
+        if !Path::new(target).exists() {
+            bad.push(format!("README.md links {target}, which does not exist"));
+        }
+        rest = &rest[end..];
+    }
+
+    // And every link in the index, which is relative to `docs/`.
+    let mut rest = index.as_str();
+    while let Some(at) = rest.find("](") {
+        rest = &rest[at + 2..];
+        let Some(end) = rest.find(')') else { break };
+        let target = &rest[..end];
+        if !target.starts_with("http") && !Path::new("docs").join(target).exists() {
+            bad.push(format!(
+                "docs/README.md links {target}, which does not exist"
+            ));
+        }
+        rest = &rest[end..];
+    }
+
+    fail(&bad)
+}
+
+/// The repository root holds only what an allow-list admits.
+///
+/// **Rule 4 says the root takes `README.md` and the instruction files and
+/// nothing else, and nothing enforced it for anything but `.md`.** That is how
+/// a 691 KB scraped copy of a third-party documentation page came to sit in the
+/// root, tracked, beside this project's own `LICENSE` and `NOTICE` — a
+/// redistribution nobody decided to make. The list below is the one the rules
+/// already imply; a file that belongs in the root is one edit away, and an
+/// accident is a `FAIL`.
+///
+/// Directories are not listed: the layout is `Cargo.toml`'s business and
+/// `verify-layering`'s, not this check's.
+pub(crate) fn root_is_allow_listed() -> Result<(), String> {
+    const ALLOWED: &[&str] = &[
+        // The two the rule names.
+        "README.md",
+        "CLAUDE.md",
+        // Project governance, each referenced by fixed name from the README.
+        "CONTRIBUTING.md",
+        "SECURITY.md",
+        "NOTICE",
+        "CITATION.cff",
+        "LICENSE.md",
+        "LICENSE-APACHE",
+        "LICENSE-GPL",
+        "LICENSE-BSD",
+        // The workspace's own manifests and the canonical numbers.
+        "Cargo.toml",
+        "Cargo.lock",
+        "rust-toolchain.toml",
+        "budgets.toml",
+        "layers.toml",
+        "deny.toml",
+        // Ignored by git, listed so a local tree does not fail its own gate.
+        ".gitignore",
+    ];
+
+    let Ok(entries) = std::fs::read_dir(".") else {
+        return Err("the repository root could not be read".to_owned());
+    };
+    let mut bad = Vec::new();
+    for e in entries.flatten() {
+        let p = e.path();
+        if p.is_dir() {
+            continue;
+        }
+        let Some(name) = p.file_name().and_then(std::ffi::OsStr::to_str) else {
+            continue;
+        };
+        // A dotfile is tooling configuration, not content; `.gitignore` is
+        // listed above because it is the one a reader looks for.
+        if name.starts_with('.') || ALLOWED.contains(&name) {
+            continue;
+        }
+        bad.push(format!(
+            "{name} is in the repository root, which Rule 4 does not admit — \
+             move it under docs/ or a crate, or add it to ALLOWED with a reason"
+        ));
+    }
+    fail(&bad)
+}
+
 /// Every task ID that appears in a commit subject has a line in the changelog.
 ///
 /// `docs/CHANGELOG.md` states this rule at the top of the file and, until this

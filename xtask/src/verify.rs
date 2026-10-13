@@ -530,6 +530,18 @@ fn cross_document_checks(r: &mut Report, plan: &str) {
         ),
         ("NN_slug.md naming under docs/, and no NN_-", g::nn_naming()),
         (
+            "the repository root holds only allow-listed files",
+            g::root_is_allow_listed(),
+        ),
+        (
+            "README.md links every numbered doc, and every link resolves",
+            g::readme_links_every_numbered_doc(),
+        ),
+        (
+            "the workspace is discoverable and its repository URL matches",
+            g::workspace_is_discoverable(),
+        ),
+        (
             "every task ID in a commit subject has a changelog line",
             g::changelog_covers_commits(),
         ),

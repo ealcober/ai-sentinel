@@ -41,8 +41,17 @@ const SESSIONS_MAP: &str = "AISME_SESSIONS";
 #[cfg(bpf_object_present)]
 pub(crate) const OBJECT: &[u8] = include_bytes!(env!("AISME_BPF_OBJECT"));
 /// No object was built; `start` says so and names the command.
+///
+/// **`pub(crate)` on both arms, or the crate does not compile without the
+/// object.** This arm was private while the other was not, so `policy.rs` —
+/// which reads `OBJECT` to decide whether a load is even possible — compiled
+/// only on a machine where `cargo xtask build-ebpf` had already run. That is
+/// every developer's machine after the first build and **no fresh clone**,
+/// which is the one configuration a contributor starts from, and it defeats the
+/// property the comment above states: that a missing object is reported at run
+/// time rather than failing the build.
 #[cfg(not(bpf_object_present))]
-const OBJECT: &[u8] = &[];
+pub(crate) const OBJECT: &[u8] = &[];
 
 /// Every link of an error, joined — because a wrapper that hides its cause is
 /// how a diagnosis becomes a guess.

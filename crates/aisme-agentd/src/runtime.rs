@@ -96,6 +96,49 @@ fn notify_to(socket: &std::ffi::OsStr, message: &str) -> bool {
         .is_ok()
 }
 
+/// Set by `SIGTERM` or `SIGINT`, read once per tick by the hot loop.
+static STOP: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// The whole handler: one atomic store, which is async-signal-safe. Anything
+/// more — a print, a lock, a flush — would be work a signal can interrupt
+/// halfway, so the loop does it instead, between ticks.
+extern "C" fn request_stop(_signal: libc::c_int) {
+    STOP.store(true, std::sync::atomic::Ordering::Relaxed);
+}
+
+/// Make `SIGTERM` and `SIGINT` ask the loop to stop rather than kill the
+/// process.
+///
+/// The default action ends the daemon wherever it is. Because the WAL is
+/// fsynced at the end of each tick (`wal.rs`), a stop between ticks loses
+/// nothing and reports what it drained; the same signal mid-tick would cut a
+/// batch the sink had not written. `systemctl stop` sends `SIGTERM`, a
+/// terminal's Ctrl-C sends `SIGINT`, and both get the clean exit.
+///
+/// # Errors
+///
+/// What `sigaction(2)` says when it refuses.
+pub(crate) fn stop_on_signals() -> io::Result<()> {
+    for signal in [libc::SIGTERM, libc::SIGINT] {
+        // SAFETY: an all-zero `sigaction` is a valid value — empty mask, no
+        // flags — and the one field set is a handler with the `extern "C"`
+        // signature the kernel calls.
+        let mut action: libc::sigaction = unsafe { std::mem::zeroed() };
+        action.sa_sigaction = request_stop as *const () as libc::sighandler_t;
+        // SAFETY: `action` is a fully initialised value that outlives the
+        // call, and a null old-action pointer is permitted.
+        if unsafe { libc::sigaction(signal, &raw const action, std::ptr::null_mut()) } != 0 {
+            return Err(io::Error::last_os_error());
+        }
+    }
+    Ok(())
+}
+
+/// Whether a stop signal has arrived.
+pub(crate) fn stop_requested() -> bool {
+    STOP.load(std::sync::atomic::Ordering::Relaxed)
+}
+
 /// Drive a future to completion on this thread.
 ///
 /// The adjudicators this daemon composes do their waiting **before** the future

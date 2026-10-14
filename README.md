@@ -58,7 +58,7 @@ syscall answered by the supervisor with a validated descriptor at **46.6 µs** p
 in-kernel deny costs **19× less** than the supervised round trip — which is the whole architectural
 argument, in figures. Reproduce with `cargo xtask bench-t0 --syscalls 100000`.
 
-**392 tests pass and the local gate is green** at the time of writing — `cargo test --workspace` and
+**394 tests pass and the local gate is green** at the time of writing — `cargo test --workspace` and
 `cargo xtask gate --level commit`. There is **no hosted CI**: every gate runs on your machine
 (`I-27`), which is a deliberate constraint and not an omission.
 
@@ -112,8 +112,8 @@ nightly and `bpf-linker` (`cargo xtask build-ebpf`), and loading it needs `CAP_B
 
 **About `deploy/systemd/`:** those units are the **target** deployment — an unprivileged daemon with
 an empty capability set, and a separate loader holding `CAP_BPF`. They are **not yet a working
-install**: with their arguments today the daemon runs a bounded loop and exits after about a second,
-and it is started without a policy. A run-until-signalled mode is a good first task (below).
+install**: the daemon runs until `systemctl stop` (it exits cleanly on `SIGTERM`), but the unit
+starts it without a policy, and nothing yet creates the `aisme` user or installs to `/usr/lib/aisme`.
 
 ## Monitor an agent
 
@@ -126,13 +126,14 @@ and the place to start writing your own.
 
 ```bash
 mkdir -p ~/.local/state/aisme/wal
-aisme-agentd --run ~/.local/state/aisme/wal --ticks 2000000 \
+aisme-agentd --run ~/.local/state/aisme/wal \
     --serve-ipc "$XDG_RUNTIME_DIR/aisme.sock" --policy deploy/policy/skeleton.aisme &
 export AISME_AGENTD_SOCKET="$XDG_RUNTIME_DIR/aisme.sock"
 ```
 
-`--ticks` bounds the run — two million is about half an hour — because a continuous mode does not
-exist yet.
+It runs until `SIGTERM` or `SIGINT` (`kill %1`, or Ctrl-C in the foreground), and stops between
+ticks, so every event it drained is already fsynced to the WAL. `--ticks N` bounds the run instead,
+which is what the tests and gates use.
 
 **2. Run the agent under it.** Any agent, unmodified — but give it the directories it keeps its own
 state in, or it cannot save anything:
@@ -284,7 +285,7 @@ cargo xtask gate --level commit        # what the pre-commit hook runs, under 10
 # And see it enforce something. The daemon holds the policy; the session asks it.
 cargo build --workspace
 mkdir -p /tmp/aisme/{wal,ws}
-./target/debug/aisme-agentd --run /tmp/aisme/wal --ticks 2000000 \
+./target/debug/aisme-agentd --run /tmp/aisme/wal \
     --serve-ipc /tmp/aisme/a.sock --policy deploy/policy/skeleton.aisme &
 AISME_AGENTD_SOCKET=/tmp/aisme/a.sock \
     ./target/debug/aisme run --scope /tmp/aisme/ws --trap-openat -- /bin/cat /etc/shadow
@@ -322,7 +323,6 @@ open in [docs/ai/STATE.md](docs/ai/STATE.md) before you start.
 | Task | Why it is a good first one |
 |---|---|
 | **The degradation banner asserts absences it never measured.** On a host where the sensor loads with `ringbuf: true`, the banner still prints `degraded: no BPF ring buffer`. `probe()` is right to claim nothing it did not measure; the banner turns that silence into an assertion. It needs a third state — *not measured* — rather than a reworded second one | self-contained, no kernel, one enum and its printer. `STATE.md` → *Open, not blocking* |
-| **The daemon cannot run until it is told to stop.** `aisme-agentd --run` serves for `--ticks` ticks (1000 by default, about a second) and exits, so the systemd units in `deploy/systemd/` start it and lose it a second later. It needs a run-until-signalled mode — `SIGTERM` and `SIGINT` drain the WAL and exit cleanly — and a test that sends the signal | self-contained, no kernel, and it is what turns the units from a target shape into something that installs |
 | **Write-mode opens under `--trap-openat`.** The supervisor reproduces only read-mode opens, so trap mode refuses every write, even inside the scope — which is why an interactive agent runs scope-only today (see [Monitor an agent](#monitor-an-agent)) | larger than the others, user space only, and the most useful single change for real sessions. The routes are costed in `docs/14` point 4; agree one in an issue first |
 | **The exit tracepoint** (`docs/17` point 5) — `sys_exit_openat`, so a denial the filter never trapped is *recorded* and not only enforced | for somebody who wants kernel work and has a VM. Needs `cargo xtask vm up` |
 

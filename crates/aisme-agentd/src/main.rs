@@ -38,8 +38,10 @@ static ALLOCATOR: mimalloc::MiMalloc = mimalloc::MiMalloc;
 /// tuple stops being readable: a caller destructuring four same-typed options
 /// in a row has no way to notice it swapped two of them.
 struct RunArgs {
-    /// How many turns of the loop before the slice stops.
-    ticks: u64,
+    /// How many turns of the loop before the slice stops. `None` is a
+    /// service: it runs until `SIGTERM` or `SIGINT`, which is how a unit runs
+    /// it. A bound is for tests and gates, which need the daemon to end.
+    ticks: Option<u64>,
     /// The control-plane socket, when one is served.
     socket: Option<String>,
     /// The operator's policy file.
@@ -49,7 +51,7 @@ struct RunArgs {
 }
 
 fn parse_run_args(rest: &[String]) -> std::io::Result<RunArgs> {
-    let mut ticks: u64 = 1_000;
+    let mut ticks: Option<u64> = None;
     let mut socket: Option<String> = None;
     let mut policy: Option<String> = None;
     let mut trace: Option<String> = None;
@@ -60,9 +62,9 @@ fn parse_run_args(rest: &[String]) -> std::io::Result<RunArgs> {
                 let Some(raw) = it.next() else {
                     return Err(std::io::Error::other("--ticks needs a value"));
                 };
-                ticks = raw
-                    .parse()
-                    .map_err(|_| std::io::Error::other(format!("--ticks {raw} is not a number")))?;
+                ticks = Some(raw.parse().map_err(|_| {
+                    std::io::Error::other(format!("--ticks {raw} is not a number"))
+                })?);
             }
             "--serve-ipc" => socket = it.next().cloned(),
             // The operator's policy. The daemon's, never a session's.
@@ -284,7 +286,11 @@ fn run_slice(dir: &std::path::Path, rest: &[String]) -> std::io::Result<()> {
         println!("ready: notified the service manager");
     }
 
-    println!("run: wal {}, {ticks} tick(s)", segment.display());
+    runtime::stop_on_signals()?;
+    match ticks {
+        Some(n) => println!("run: wal {}, {n} tick(s)", segment.display()),
+        None => println!("run: wal {}, until SIGTERM or SIGINT", segment.display()),
+    }
     // The tick budget, and the pace. Nothing in the loop blocks — a sensor with
     // no events returns immediately — so without this the loop spins a core
     // flat out, burns the §2.22 CPU budget on nothing, and drains no more
@@ -292,7 +298,8 @@ fn run_slice(dir: &std::path::Path, rest: &[String]) -> std::io::Result<()> {
     // busy one does not sleep at all, so throughput under load is unaffected.
     let budget = Duration::from_millis(1);
     let mut totals = aisme_core::engine::TickReport::default();
-    for tick in 0..ticks {
+    let mut tick = 0;
+    while ticks.is_none_or(|n| tick < n) && !runtime::stop_requested() {
         let started = std::time::Instant::now();
         match engine.tick(resolver.as_mut(), budget, tick) {
             Ok(report) => {
@@ -305,12 +312,16 @@ fn run_slice(dir: &std::path::Path, rest: &[String]) -> std::io::Result<()> {
                 totals.resolved += report.resolved;
                 totals.unresolved += report.unresolved;
                 totals.findings += report.findings;
+                tick += 1;
             }
             // A sink that cannot write is the one failure the loop must not
             // continue through: events would be observed and lost, which is
             // worse than stopping and saying so.
             Err(e) => return Err(std::io::Error::other(e.detail)),
         }
+    }
+    if runtime::stop_requested() {
+        println!("run: stopped by signal after {tick} tick(s)");
     }
     println!(
         "run: {} event(s) drained, {} path(s) resolved, {} unresolved, {} finding(s)",

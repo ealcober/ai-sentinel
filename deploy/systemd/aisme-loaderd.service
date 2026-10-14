@@ -15,7 +15,7 @@
 # the split it belongs to instead.
 [Unit]
 Description=AISME privileged loader
-Documentation=https://github.com/ealcober/aisme
+Documentation=https://github.com/ealcober/ai-sentinel
 Before=aisme-agentd.service
 RequiresMountsFor=/sys/fs/bpf
 

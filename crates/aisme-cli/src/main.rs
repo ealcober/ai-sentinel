@@ -20,9 +20,11 @@ fn main() {
             std::process::exit(i32::from(declare::declare(rest)));
         }
         _ => {
-            println!("aisme run [--scope <path>…] -- <command> [args…]");
             println!(
-                "aisme declare [--tool <name>] [--session <id>]   # from a pre-tool hook, on stdin"
+                "aisme run [--scope <path>…] [--trap-openat] [--escalate <prefix>…] -- <command> [args…]"
+            );
+            println!(
+                "aisme declare [--tool <name>] [--session <id>] [--phase start|end]   # from a tool hook, on stdin"
             );
             println!("status, policy, verify and pair arrive with F8.CLI.01");
         }

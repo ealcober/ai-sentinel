@@ -4,6 +4,34 @@ Kernel-level runtime security and provenance for autonomous AI coding agents —
 
 AISME watches what an AI agent *says it is going to do* and what it *actually does to your machine*, links the two causally, and stops the operations that do not match. It supervises **off-the-shelf agents** through their own hook interface — Claude Code, Cursor, Codex CLI, Copilot CLI, Gemini CLI, OpenCode, Amp — so the agent needs no modification and no cooperation beyond starting under `aisme run`. It runs on Linux workstations from Ring-0, including **Windows via WSL2**, and on Android and iOS through the **AI Sentinel** app.
 
+**[See it in action](#see-it-in-action)** · **[What it stops today](#what-it-stops-today)** · **[Install](#install)** · **[Monitor an agent](#monitor-an-agent)** · **[Contributing](#contributing)** · **[Support the project](#support-the-project)**
+
+## See it in action
+
+A real transcript, not a mock-up. The daemon holds a three-rule policy; the agent runs under
+`aisme run`, which is the session's own parent and supervises every process it spawns.
+
+```console
+$ aisme run --scope ~/project --trap-openat -- cat /etc/shadow
+session 4a337b739a88dd55: denied an openat from pid 518764: refused by the session's adjudicator
+/bin/cat: /etc/shadow: Permission denied
+session 4a337b739a88dd55 ended: 2 delivered, 1 denied, 0 asked
+
+$ aisme run --scope ~/project -- sh -c "rm -f /tmp/outside.txt"
+rm: cannot remove '/tmp/outside.txt': Permission denied
+```
+
+Two different mechanisms, and the difference is the architecture. The first is a **compiled deny**:
+the open is held by a seccomp supervisor, judged against the policy, and refused — with **`0 asked`**,
+because a rule that never prompts cannot be answered away. The second is the **write scope**: one
+Landlock ruleset, applied before the agent starts, refuses a deletion outside the project **in the
+kernel**, without waking any supervisor at all.
+
+> **The architectural argument, in figures** — over 100 000 samples: a write denied in kernel by
+> Landlock costs **2.42 µs** p99; a held syscall answered by the supervisor costs **46.6 µs** p99.
+> The in-kernel deny is **19× cheaper**, which is why AISME puts every decision it can in the kernel.
+> Reproduce with `cargo xtask bench-t0 --syscalls 100000`.
+
 ## Status
 
 A working **walking skeleton**, phase F2 of eleven. What follows is what runs today, with the command that proves each line — not a roadmap.
@@ -30,7 +58,7 @@ syscall answered by the supervisor with a validated descriptor at **46.6 µs** p
 in-kernel deny costs **19× less** than the supervised round trip — which is the whole architectural
 argument, in figures. Reproduce with `cargo xtask bench-t0 --syscalls 100000`.
 
-**387 tests pass and the local gate is green** — `cargo test --workspace` and
+**392 tests pass and the local gate is green** at the time of writing — `cargo test --workspace` and
 `cargo xtask gate --level commit`. There is **no hosted CI**: every gate runs on your machine
 (`I-27`), which is a deliberate constraint and not an omission.
 
@@ -38,6 +66,110 @@ Start at [the plan](docs/01_phase5_implementation_plan.md); the live position is
 [STATE](docs/ai/STATE.md); every change is in the [changelog](docs/CHANGELOG.md).
 
 ---
+
+## What it stops today
+
+Each line below is measured, with a test that fails if it stops being true. What is **not** in this
+list is not claimed. The rows about **reading** files need `--trap-openat`, which today also refuses
+writes — so they hold for scripted runs, and an interactive agent gets the write-scope rows (see
+[Monitor an agent](#monitor-an-agent)).
+
+| An agent tries to… | What happens | Mechanism |
+|---|---|---|
+| read a file the policy denies (`/etc/shadow`) | refused, **nobody is asked** | compiled deny, seccomp supervisor |
+| read credentials (`~/.aws/credentials`) | the call is **held** and a human answers in the terminal; the answer is obeyed both ways | escalation, terminal adjudicator |
+| write or delete outside the project | refused **in the kernel**, no supervisor woken | Landlock write scope |
+| reach a denied file **through a symlink** | refused — the decision is taken on what the descriptor *names*, never on the path typed | locate with `O_PATH`, then decide |
+| use `open` or `openat2` instead of `openat` | trapped too; `openat2` is refused outright | all three path-opening syscalls are filtered |
+| escape through a child, a grandchild, a shell three deep | supervised all the way down | `aisme run` is the session's ancestor |
+| switch off its own approvals (`--dangerously-skip-permissions` and similar) | **no verdict changes** | the policy never consults the agent |
+
+**Not yet, and said plainly:** blocking network egress (the cgroup connect hook is phase `F3`);
+catching an action that contradicts what the agent *declared* it would do (the correlation engine is
+`F5`); seeing prompts and tool results before TLS (`F4`). The intent plane already records every
+declaration beside every action — what is unbuilt is the engine that judges the pair.
+
+## Install
+
+**There is no packaged release yet.** AISME installs from source, and today it is a tool for people
+who want to run it, test it and help build it — not yet a service to leave running unattended.
+
+**You need:** Linux **5.14 or newer** (seccomp's descriptor injection arrived in 5.14 and Landlock in
+5.13; WSL2's kernel qualifies), a systemd user session (each agent session gets its own cgroup), and
+Rust — `rustup` picks up the pinned toolchain from `rust-toolchain.toml` on its own.
+
+```bash
+git clone https://github.com/ealcober/ai-sentinel && cd ai-sentinel
+cargo xtask doctor                      # measures your host and names anything missing
+cargo build --release
+install -Dm755 target/release/aisme target/release/aisme-agentd target/release/aisme-forensicd \
+    -t ~/.local/bin                     # `aisme` must be on PATH for the hook below
+```
+
+**The eBPF sensor is optional.** Enforcement — the seccomp supervisor and the Landlock scope — needs
+no BPF and no privilege at all. The sensor adds kernel-wide observation; building it needs the pinned
+nightly and `bpf-linker` (`cargo xtask build-ebpf`), and loading it needs `CAP_BPF`.
+
+**About `deploy/systemd/`:** those units are the **target** deployment — an unprivileged daemon with
+an empty capability set, and a separate loader holding `CAP_BPF`. They are **not yet a working
+install**: with their arguments today the daemon runs a bounded loop and exits after about a second,
+and it is started without a policy. A run-until-signalled mode is a good first task (below).
+
+## Monitor an agent
+
+Three pieces: the daemon holds the policy and the log, `aisme run` supervises the agent, and a hook
+tells AISME what the agent *says* it is about to do.
+
+**1. Start the daemon** with a policy. [`deploy/policy/skeleton.aisme`](deploy/policy/skeleton.aisme)
+is a working three-rule example — deny `/etc/shadow`, escalate `${home}/.aws/**`, allow the rest —
+and the place to start writing your own.
+
+```bash
+mkdir -p ~/.local/state/aisme/wal
+aisme-agentd --run ~/.local/state/aisme/wal --ticks 2000000 \
+    --serve-ipc "$XDG_RUNTIME_DIR/aisme.sock" --policy deploy/policy/skeleton.aisme &
+export AISME_AGENTD_SOCKET="$XDG_RUNTIME_DIR/aisme.sock"
+```
+
+`--ticks` bounds the run — two million is about half an hour — because a continuous mode does not
+exist yet.
+
+**2. Run the agent under it.** Any agent, unmodified — but give it the directories it keeps its own
+state in, or it cannot save anything:
+
+```bash
+aisme run --scope ~/my-project --scope ~/.claude --scope ~/.claude.json --scope /tmp -- claude
+```
+
+Every `--scope` is a place the agent may **write**; everything else is refused in the kernel. A real
+agent writes more than its project — Claude Code keeps sessions and history in `~/.claude/` and
+`~/.claude.json`, and scratch files under `/tmp`; other agents have their own places — and measured,
+without those scopes those writes are simply refused. **The trade-off is real:** granting
+`~/.claude` also lets the agent rewrite its own hook configuration, which the narrower scope forbids.
+
+**`--trap-openat` is not for interactive agents yet.** It puts every file open in front of the
+policy, which is what makes the deny and escalate rules work — and today it refuses **every open for
+writing, even inside the scope**, because the supervisor only reproduces read-mode opens faithfully.
+Use it for scripted runs and testing. Widening the supervisor to the write class is one of the
+routes costed for `F3.EN.11`/`F3.EN.12`, and the choice among them is still open.
+
+**3. Install the intent hook** — optional, and it is what lets AISME attribute each action to the
+tool call that caused it. Merge the `hooks` key of
+[`deploy/hooks/aisme-hooks.json`](deploy/hooks/aisme-hooks.json) into **`~/.claude/settings.json`**,
+your *user* file — **never** a project's `.claude/settings.json`, which is attacker-writable content
+and the exact surface of CVE-2025-59536 and CVE-2026-48124. Several other agents read Claude Code's
+settings format as well; which ones, and how, is in [`docs/research/02`](docs/research/02_hooks_de_agentes_como_fuente_de_intencion.md).
+On a shared machine, put the hook in managed settings with `allowManagedHooksOnly: true`, so an agent
+cannot switch it off mid-session.
+
+**4. Watch it.** Every open, every denial and every declared tool call goes to an append-only log:
+
+```bash
+aisme-forensicd --tail ~/.local/state/aisme/wal         # follows the log; resumes with zero loss
+```
+
+When a rule escalates, the question appears **in the agent's own terminal** with four answers —
+deny, allow once, allow for this session, always — and the held system call waits for it.
 
 ## The problem
 
@@ -146,7 +278,7 @@ What AISME does **not** defend against is stated as plainly as what it does: see
 
 ```bash
 cargo xtask doctor                     # the host, measured — names every missing prerequisite
-cargo test --workspace                 # 387 tests, no kernel touched
+cargo test --workspace                 # the whole suite, no kernel touched
 cargo xtask gate --level commit        # what the pre-commit hook runs, under 10 minutes
 
 # And see it enforce something. The daemon holds the policy; the session asks it.
@@ -190,8 +322,8 @@ open in [docs/ai/STATE.md](docs/ai/STATE.md) before you start.
 | Task | Why it is a good first one |
 |---|---|
 | **The degradation banner asserts absences it never measured.** On a host where the sensor loads with `ringbuf: true`, the banner still prints `degraded: no BPF ring buffer`. `probe()` is right to claim nothing it did not measure; the banner turns that silence into an assertion. It needs a third state — *not measured* — rather than a reworded second one | self-contained, no kernel, one enum and its printer. `STATE.md` → *Open, not blocking* |
-| **`crates/aisme-ebpf-policy` has 52 lines and no test.** It is the second BPF object; `aisme-loaderd` depends on its map names, key sizes and the order of the two slots in `Array<u64,2>`, and nothing checks them | a renamed map currently fails at publication time in a guest instead of at `cargo test` on a laptop |
-| **Edge cases in `crates/aisme-proto`.** A codec with 961 lines and 8 tests. The interesting inputs are the ones that would be *accepted* wrongly: an `id` that is a float, a duplicate key, an unterminated escape, a lone surrogate, a number past `i64` | pure functions, no setup, and the project's rule 4 says a defect biasing toward acceptance is the urgent kind |
+| **The daemon cannot run until it is told to stop.** `aisme-agentd --run` serves for `--ticks` ticks (1000 by default, about a second) and exits, so the systemd units in `deploy/systemd/` start it and lose it a second later. It needs a run-until-signalled mode — `SIGTERM` and `SIGINT` drain the WAL and exit cleanly — and a test that sends the signal | self-contained, no kernel, and it is what turns the units from a target shape into something that installs |
+| **Write-mode opens under `--trap-openat`.** The supervisor reproduces only read-mode opens, so trap mode refuses every write, even inside the scope — which is why an interactive agent runs scope-only today (see [Monitor an agent](#monitor-an-agent)) | larger than the others, user space only, and the most useful single change for real sessions. The routes are costed in `docs/14` point 4; agree one in an issue first |
 | **The exit tracepoint** (`docs/17` point 5) — `sys_exit_openat`, so a denial the filter never trapped is *recorded* and not only enforced | for somebody who wants kernel work and has a VM. Needs `cargo xtask vm up` |
 
 ### The deep end
@@ -203,6 +335,23 @@ its done-condition is. You do not need to read the plan to start — doctor, tes
 — but it is where you go to understand why anything is the way it is.
 
 Contributions are under the [DCO](CONTRIBUTING.md): no CLA, and you keep your copyright.
+
+## Support the project
+
+AISME is built by a small team, and donations pay for the work. Send **only** on the networks named
+here — anything else is lost.
+
+| Currency | Network | Address |
+|---|---|---|
+| Bitcoin | Bitcoin (native SegWit) | `bc1q0j72u04dr560p29072ckgqqmggc5xnfk6c6hm4` |
+| ETH and EVM tokens | Ethereum, BNB Smart Chain and other EVM-compatible networks | `0xDac59b7A1A212d7AaD1a8456bD2b6618456EF109` |
+| Solana | Solana | `ASrFjfFNwKLCURqZE7WgFMudacyJMt87HxGLTW3zFCHC` |
+
+**This README is the only place these addresses are published.** An address in an issue, a pull
+request, a message or anywhere else that claims to be ours is not — check it against this file in
+the official repository, [`github.com/ealcober/ai-sentinel`](https://github.com/ealcober/ai-sentinel),
+before sending anything. Each address passes its network's checksum (bech32, EIP-55, base58 to a
+32-byte key).
 
 ## Licence
 

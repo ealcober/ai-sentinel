@@ -7,7 +7,7 @@
 # delegated subtree is an ordinary write by its owner.
 [Unit]
 Description=AISME agent daemon (hot path)
-Documentation=https://github.com/ealcober/aisme
+Documentation=https://github.com/ealcober/ai-sentinel
 After=aisme-loaderd.service
 Requires=aisme-loaderd.service
 

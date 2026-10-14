@@ -349,6 +349,17 @@ or a new session in this distribution opened from Windows. A third option, the o
 
 ## Open, not blocking
 
+**`aisme-agentd --run` has no run-until-signalled mode.** It serves for `--ticks` ticks (1000 by
+default) and exits: started exactly as `deploy/systemd/aisme-agentd.service` starts it, it lived
+**1149 ms**, measured. The units are therefore a target shape, and the README says so under
+*Install*. Listed as a good first task.
+
+**What an agent can write under each supervision mode, measured** for the README's *Monitor an
+agent*: `--trap-openat` refused a write inside the scope and a write to `/dev/null`; scope-only
+wrote inside the scope and to `/dev/null`, refused the agent's own state directory, and wrote there
+once it was a second `--scope`. So an interactive agent runs scope-only today, and granting
+`~/.claude` reopens hook tampering — the `F3.EN.11` routes in `docs/14` point 4 are what close it.
+
 **No task table names `crates/aisme-otel`.** Every other stub in the workspace can point at the
 phase that implements it — `aisme-tls` to `F4`, `aisme-compress` and `aisme-observer` to `F6`,
 `aisme-sdkhost` to `F9`, `sentinel-core` to `F10`, `aisme-relay` to `F11`, `aisme-clientcore` to

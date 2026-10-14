@@ -2893,7 +2893,7 @@ Written in `docs/ops/`, one file per scenario, each with symptom → diagnosis �
 This layout exists in the repository, and `verify-docs` checks it against `crates/` and `layers.toml`: every crate on disk is listed, every listed crate exists, and the `[Ln]` tag matches the declared layer. It **checks** rather than regenerates, because the third column is prose describing what each crate is for — regenerating the block would delete the only part a reader needs.
 
 ```
-AI-SYSTEM-MONITOR/
+ai-sentinel/
 ├── README.md                     Product overview, scope, honesty statement
 ├── CLAUDE.md                     Entry contract for development LLMs
 ├── CONTRIBUTING.md · SECURITY.md · CITATION.cff · NOTICE

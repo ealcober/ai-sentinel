@@ -1,7 +1,7 @@
 # STATE — live project status
 
 > **Update this file at the end of every working session.** It is the first thing the next session reads.
-> Last updated: **2026-09-15** · Last nightly: — · Last weekly: — · Phase: **F2 — the walking skeleton, in flight** · Code written: **~20 800 lines of Rust over 19 members**; the test count is what `cargo test --workspace` reports, which is the one place it cannot go stale. F0 and F1 are closed on their gates
+> Last updated: **2026-10-14** · Last nightly: — · Last weekly: — · Phase: **F2 — the walking skeleton, in flight** · Code written: **~21 000 lines of Rust over 19 members**; the test count is what `cargo test --workspace` reports, which is the one place it cannot go stale. F0 and F1 are closed on their gates
 
 ## Where we are
 

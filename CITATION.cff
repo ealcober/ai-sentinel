@@ -5,7 +5,7 @@ type: software
 authors:
   - family-names: Alcober
     given-names: Eduardo
-repository-code: "https://github.com/ealcober/AI-SYSTEM-MONITOR"
+repository-code: "https://github.com/ealcober/ai-sentinel"
 abstract: >-
   Kernel-level observability and containment for autonomous AI coding agents.
   AISME correlates what an AI agent declares it will do with what it actually

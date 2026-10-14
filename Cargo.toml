@@ -54,7 +54,7 @@ edition = "2021"
 #   crates/aisme-ebpf-common GPL-2.0-only OR BSD-2-Clause  (shared with the kernel side)
 # Map and reasoning: LICENSE.md, ADR-06.
 license = "Apache-2.0"
-repository = "https://github.com/ealcober/AI-SYSTEM-MONITOR"
+repository = "https://github.com/ealcober/ai-sentinel"
 rust-version = "1.87"   # aya 0.14 and aya-ebpf 0.2 both declare 1.87.0 (F0.VER.01)
 # One sentence that has to stand alone: this is what a search result shows, with
 # no README under it. The terms are the ones the field already uses — the papers

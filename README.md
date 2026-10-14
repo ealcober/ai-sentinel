@@ -117,9 +117,16 @@ tests/         Fixtures, labelled corpora, adversarial scenarios
 
 ## Naming
 
+The **repository** is `ai-sentinel`, after the idea the whole project is about. The **components**
+keep their own names, and they are not interchangeable — the plan, the ADRs and the capability
+parity matrix all say which component does what:
+
 - **AISME** — the system as a whole, and the workstation engine (Linux, including Windows through WSL2).
 - **AI Sentinel** — the Android and iOS application.
 - **AI Sentinel SDK** — the embeddable library for third-party AI applications.
+
+So "AI Sentinel" is the mobile app, not the repository and not the engine. Never *"AISME
+Sentinel"*.
 
 ## Scope and honesty
 

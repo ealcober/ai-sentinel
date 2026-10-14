@@ -1,5 +1,12 @@
 // SPDX-License-Identifier: GPL-2.0-only
-//! The policy maps, and nothing else (`F2.WS.04`).
+//! **A reproduction of the BTF-map obstruction, not the shipped policy maps.**
+//!
+//! The maps `F2.WS.04` actually publishes to are `AISME_POLICY_A`,
+//! `AISME_POLICY_B` and `AISME_POLICY_META` in `crates/aisme-ebpf`, declared
+//! `#[map]` in the legacy `maps` section — the style that loads on every matrix
+//! kernel. **The BTF form below is the one that was refuted**, and this crate
+//! exists so the refutation can be reproduced in one command rather than
+//! re-argued. See this crate's `README.md` and `docs/06` point 1.
 //!
 //! A second object, deliberately. `BPF_MAP_TYPE_ARRAY_OF_MAPS` exists at the
 //! pinned `aya-ebpf 0.2.1` only as a **BTF** map, while the sensor's four maps

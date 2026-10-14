@@ -507,6 +507,52 @@ mod tests {
     use super::*;
     use aisme_core::policy::{compile, parse, Bindings};
 
+    /// **The map names the loader hardcodes exist in the object it loads them
+    /// from.**
+    ///
+    /// `MAP_POLICY_A`, `_B` and `_META` are strings on this side and `static`
+    /// declarations on the kernel side, in a different crate, built by a
+    /// different toolchain. Nothing joined the two: rename a map in
+    /// `crates/aisme-ebpf/src/main.rs` and the publication fails at
+    /// `bpf_map_update_elem` **inside a guest**, minutes into a VM boot, with
+    /// an error about a map that does not exist. It fails at `cargo test` on a
+    /// laptop now.
+    ///
+    /// It reads the **compiled object**, not the source: a test that grepped
+    /// `main.rs` would pass with a stale artefact embedded, which is the one
+    /// state this is meant to catch.
+    #[test]
+    fn the_loader_names_maps_that_exist_in_the_object_it_loads() {
+        let object = crate::sensor::OBJECT;
+        if object.is_empty() {
+            // `cargo xtask build-ebpf` has not run. Said out loud rather than
+            // passed silently: a test that reports success over an empty input
+            // is an absence read as a value.
+            eprintln!("SKIP: no BPF object is embedded; run `cargo xtask build-ebpf`");
+            return;
+        }
+
+        // A map name reaches the ELF as a NUL-terminated symbol, so the bytes
+        // are searched for rather than the string being parsed out of BTF —
+        // which would make this test depend on the BTF layout it is not about.
+        let contains = |needle: &str| object.windows(needle.len()).any(|w| w == needle.as_bytes());
+
+        for name in [MAP_POLICY_A, MAP_POLICY_B, MAP_POLICY_META] {
+            assert!(
+                contains(name),
+                "the loader looks up {name:?} and the embedded object does not declare it — \
+                 one side was renamed and the other was not"
+            );
+        }
+
+        // And the two tries are distinct names, because the double buffer's
+        // whole property is that publication fills the one nobody reads.
+        assert_ne!(
+            MAP_POLICY_A, MAP_POLICY_B,
+            "the double buffer's two halves share a name, so there is no idle half"
+        );
+    }
+
     /// The policy an operator edits, compiled by the real compiler.
     const SKELETON: &str = include_str!("../../../deploy/policy/skeleton.aisme");
 

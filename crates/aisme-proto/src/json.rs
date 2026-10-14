@@ -231,7 +231,12 @@ impl Parser<'_> {
     }
 
     fn value(&mut self, depth: usize) -> Result<Value, ParseError> {
-        if depth > MAX_DEPTH {
+        // `>=`, not `>`: `depth` is the level of the value about to be parsed
+        // and the outermost is 0, so `>` admitted `MAX_DEPTH + 1` levels while
+        // the constant said `MAX_DEPTH`. The off-by-one is visible in the test
+        // that was written against it — it probes `MAX_DEPTH + 2`, because
+        // `+ 1` would have passed.
+        if depth >= MAX_DEPTH {
             return Err(self.error("nested deeper than MAX_DEPTH"));
         }
         match self.peek() {
@@ -310,8 +315,21 @@ impl Parser<'_> {
         if self.peek() == Some(b'-') {
             self.at += 1;
         }
+        // **A leading zero is not a number JSON admits**, and accepting it is
+        // accepting something no conforming sender produces. `01` parsed to
+        // `1`, so the value was right and the laxness was free — which is
+        // exactly the kind that survives until something depends on it. `0`
+        // alone is legal; `0` followed by a digit is not.
+        if self.peek() == Some(b'0') && matches!(self.bytes.get(self.at + 1), Some(b'0'..=b'9')) {
+            return Err(self.error("a leading zero is not a JSON number"));
+        }
+        let digits = self.at;
         while matches!(self.peek(), Some(b'0'..=b'9')) {
             self.at += 1;
+        }
+        // `-` with nothing after it, or a bare sign.
+        if self.at == digits {
+            return Err(self.error("a number with no digits"));
         }
         if matches!(self.peek(), Some(b'.' | b'e' | b'E')) {
             return Err(self.error("the protocol has no floats"));
@@ -395,6 +413,145 @@ const fn utf8_len(byte: u8) -> usize {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// **Malformed input is refused, not accepted with a guess.**
+    ///
+    /// Ordered by the direction the failure biases: a parser that *accepts*
+    /// something malformed hands a handler a value it will trust, and that is
+    /// the urgent kind (general rule 4). A parser that rejects something valid
+    /// is a bug too, and the test below it covers that direction.
+    #[test]
+    fn malformed_input_is_refused_rather_than_guessed_at() {
+        for (text, why) in [
+            ("", "empty input"),
+            ("   ", "only whitespace"),
+            ("{", "an object that never closes"),
+            ("}", "a closing brace alone"),
+            ("[", "an array that never closes"),
+            (r#"{"a""#, "a key with no colon"),
+            (r#"{"a":}"#, "a colon with no value"),
+            (r#"{"a":1,}"#, "a trailing comma"),
+            (r#"{,"a":1}"#, "a leading comma"),
+            (r#"{"a":1}{"b":2}"#, "two documents in one line"),
+            (
+                r#"{"a":1} trailing"#,
+                "trailing junk after a complete value",
+            ),
+            (r#"{"a":"unterminated"#, "an unterminated string"),
+            (
+                r#"{"a":"bad \escape"}"#,
+                "an escape this codec does not know",
+            ),
+            (r#"{"a":"\u00"}"#, "a truncated unicode escape"),
+            (
+                "{\"a\":\"literal\nnewline\"}",
+                "a literal newline inside a string",
+            ),
+            (r#"{"a":01}"#, "a leading zero"),
+            (r#"{"a":+1}"#, "a leading plus"),
+            (r#"{"a":.5}"#, "a bare decimal point"),
+            (r#"{"a":1e}"#, "an exponent with no digits"),
+            ("{'a':1}", "single quotes"),
+            (r"{a:1}", "an unquoted key"),
+            (r#"{"a":nul}"#, "a misspelled literal"),
+            (r#"{"a":NaN}"#, "a value JSON has no syntax for"),
+            // Legal JSON, refused on purpose: `Value` has no float, because
+            // the protocol has none. A codec that accepted one would have to
+            // decide what to do with it, and the honest answer is to say so at
+            // the parse rather than round somewhere downstream.
+            (
+                r#"{"a":1.5e-3}"#,
+                "a float, which this protocol does not have",
+            ),
+            ("{\"a\":1.0}", "a float written as a whole number"),
+            // Also legal JSON and also refused on purpose: a message where two
+            // implementations could disagree about what it said is refused
+            // rather than resolved by a rule nobody wrote down.
+            (r#"{"a":1,"a":2}"#, "a duplicate key"),
+        ] {
+            assert!(
+                parse(text).is_err(),
+                "{why} was accepted: {text:?} parsed to {:?}",
+                parse(text).ok()
+            );
+        }
+    }
+
+    /// And valid input is **not** refused, which is the other direction of the
+    /// same defect.
+    ///
+    /// A parser tightened until it rejects malformed input and also rejects a
+    /// legal document has not been fixed, it has been broken differently.
+    #[test]
+    fn valid_input_is_accepted_including_the_awkward_shapes() {
+        for (text, why) in [
+            ("{}", "an empty object"),
+            ("[]", "an empty array"),
+            ("null", "a bare null"),
+            ("0", "zero"),
+            ("-0", "negative zero"),
+            (r#""""#, "an empty string"),
+            (r#"{"a":-1}"#, "a negative number"),
+            (
+                r#"{"a":"tab\tand\nnewline"}"#,
+                "escapes this codec does know",
+            ),
+            (r#"{"a":"\u0041"}"#, "a unicode escape"),
+            (
+                r#"{"a":"con acentos y emoji 🙂"}"#,
+                "non-ASCII, which is UTF-8 and legal",
+            ),
+            (
+                "  {\n  \"a\" : 1\n}  ",
+                "insignificant whitespace, including newlines",
+            ),
+            (
+                r#"{"a":{"b":{"c":[1,2,{"d":null}]}}}"#,
+                "nesting within the bound",
+            ),
+        ] {
+            assert!(parse(text).is_ok(), "{why} was refused: {text:?}");
+        }
+    }
+
+    /// The nesting bound is refused **at** the limit it declares, and accepted
+    /// one below it.
+    ///
+    /// Boundaries get both sides. A bound tested only from the far side is a
+    /// bound nobody has checked: off by one, and every deeply-nested document
+    /// is either accepted when it should not be or refused when it should not.
+    #[test]
+    fn the_nesting_bound_is_exact() {
+        // `MAX_DEPTH` arrays, which the parser admits, and one more, which it
+        // does not.
+        let inside = format!("{}{}", "[".repeat(MAX_DEPTH), "]".repeat(MAX_DEPTH));
+        let outside = format!("{}{}", "[".repeat(MAX_DEPTH + 1), "]".repeat(MAX_DEPTH + 1));
+        assert!(
+            parse(&inside).is_ok(),
+            "nesting at exactly MAX_DEPTH was refused, so the bound is off by one"
+        );
+        assert!(
+            parse(&outside).is_err(),
+            "nesting past MAX_DEPTH was accepted, so the bound does not hold"
+        );
+    }
+
+    /// A duplicate key is **refused**, not resolved.
+    ///
+    /// JSON permits it and does not say which wins, so every resolution rule is
+    /// somebody's convention: last-wins, first-wins, merge. A protocol that
+    /// picked one would be a protocol where two implementations can disagree
+    /// about what a message said and both be right. Refusing is stricter than
+    /// JSON and it is the correct direction for a wire format a security
+    /// decision is taken from.
+    #[test]
+    fn a_duplicate_key_is_refused_rather_than_resolved() {
+        let refused = parse(r#"{"a":1,"a":2}"#).expect_err("a duplicate key must be refused");
+        assert!(
+            refused.message.contains("duplicate"),
+            "it was refused for some other reason, so this test is not about duplicates: {refused:?}"
+        );
+    }
 
     #[test]
     fn the_shapes_the_protocol_uses_round_trip() {

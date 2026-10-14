@@ -3,3 +3,6 @@
 //!
 //! Deterministic by construction: the same input yields the same output, which is
 //! what makes the inter-rater reliability harness meaningful (plan §4.7).
+//!
+//! **A stub until phase `F6`**, which freezes the compressed-context format
+//! for `F10`.

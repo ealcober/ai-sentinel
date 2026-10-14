@@ -123,6 +123,7 @@ fn run(name: &str, args: &[&str]) -> Option<u8> {
         "verify-layering" => verify::layering(),
         "verify-budgets" => verify::budgets(args),
         "verify-docs" => verify::docs(),
+        "verify-release" => verify::release(),
         "verify-backlog" => verify::backlog(),
         "doctor" => doctor::run(),
         "gate" => gate::run(args),

@@ -332,11 +332,17 @@ pub(crate) fn nn_naming() -> Result<(), String> {
 /// `keywords`, no `categories`. Those are what crates.io ranks on, and their
 /// absence is why this repository was findable by nobody.
 ///
-/// **The third clause is the one that earns its keep.** It compares the last
-/// path segment of `repository` against the directory name, so the day the
+/// **The third clause is the one that earns its keep.** It compares the
+/// `repository` URL against the one git actually pushes to, so the day the
 /// repository is renamed and the manifest is not, the gate says so — which is
 /// exactly the failure a rename risks, and the only part of a rename a machine
 /// can check.
+///
+/// It compares against the **remote**, not against the directory name: a clone
+/// lands in whatever directory its owner chose, and a check that demanded they
+/// match would fail for every contributor who cloned into `~/code/sentinel`.
+/// A tree with no remote — a tarball, or a fresh `git init` — is not a failure
+/// and is skipped.
 pub(crate) fn workspace_is_discoverable() -> Result<(), String> {
     let Ok(manifest) = std::fs::read_to_string("Cargo.toml") else {
         return Err("Cargo.toml could not be read".to_owned());
@@ -373,16 +379,30 @@ pub(crate) fn workspace_is_discoverable() -> Result<(), String> {
 
     match value("repository") {
         Some(url) => {
-            let last = url.rsplit('/').next().unwrap_or_default().to_owned();
-            let here = std::env::current_dir()
+            // `git@host:owner/name.git` and `https://host/owner/name` both
+            // reduce to `owner/name`, which is the part a rename changes.
+            let slug = |u: &str| -> String {
+                let u = u.trim_end_matches('/').trim_end_matches(".git");
+                let u = u.rsplit_once("://").map_or(u, |(_, rest)| rest);
+                let u = u.rsplit_once(':').map_or(u, |(_, rest)| rest);
+                let parts: Vec<&str> = u.rsplit('/').take(2).collect();
+                parts.into_iter().rev().collect::<Vec<_>>().join("/")
+            };
+            let remote = std::process::Command::new("git")
+                .args(["remote", "get-url", "origin"])
+                .output()
                 .ok()
-                .and_then(|p| p.file_name().map(|n| n.to_string_lossy().into_owned()))
-                .unwrap_or_default();
-            if !here.is_empty() && last != here {
-                bad.push(format!(
-                    "repository ends in {last:?} and this directory is {here:?} — one of the \
-                     two was renamed and the other was not"
-                ));
+                .filter(|o| o.status.success())
+                .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_owned());
+            if let Some(remote) = remote.filter(|r| !r.is_empty()) {
+                if slug(&url) != slug(&remote) {
+                    bad.push(format!(
+                        "the manifest's repository is {:?} and git pushes to {:?} — one was \
+                         renamed and the other was not",
+                        slug(&url),
+                        slug(&remote)
+                    ));
+                }
             }
         }
         None => bad.push("[workspace.package] declares no repository".to_owned()),

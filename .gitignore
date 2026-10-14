@@ -10,6 +10,12 @@ target/
 # beside them and are disposable by design (I-12: snapshot VMs only).
 vm/images/
 **/*.rs.bk
+
+# A page saved from a browser, in the root. One got in — 691 KB of somebody
+# else's documentation, committed, beside this project's own LICENSE — and
+# publishing it would have been redistributing it. The root allow-list in
+# `verify-docs` is the guard; this line stops it reaching the index at all.
+/*.html
 # Cargo.lock IS committed: this workspace ships binaries, and reproducible release
 # builds (plan DEP.BLD.05, DEP.SUP.07) and cargo-auditable manifests are meaningless
 # without a fixed resolved dependency set.

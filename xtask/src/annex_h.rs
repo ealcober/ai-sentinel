@@ -473,6 +473,16 @@ pub(crate) const COMMANDS: &[Command] = &[
         level: Some(Level::Commit),
     },
     Command {
+        name: "verify-release",
+        owner: "F0.REPO.03",
+        phase: "F0",
+        // Deliberately not a gate member. It answers "is this tree safe to
+        // publish", which is a question somebody asks before a release and not
+        // one every commit should pay for — and a check nobody runs is better
+        // named honestly than wired into a gate where it would be noise.
+        level: None,
+    },
+    Command {
         name: "verify-layering",
         owner: "F0.REPO.03",
         phase: "F0",

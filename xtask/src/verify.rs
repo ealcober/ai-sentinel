@@ -399,6 +399,170 @@ fn collect_metrics<'a>(
 
 /// Cross-document consistency. `F0.REPO.03` owns the Annex H half and `I-27`;
 /// the rest of the list in `F0.GATE.08` is named below rather than skipped.
+/// `cargo xtask verify-release` — is this tree safe to publish?
+///
+/// **The value is that "we checked" becomes "the check is in the tree".** A
+/// secret sweep done once by hand is an assertion; one that anybody can re-run
+/// is evidence. Five checks, each named so a failure says which.
+///
+/// It is **not** a gate member: it answers a question asked before a release,
+/// and making every commit pay for a full-history scan would turn a useful
+/// check into noise people learn to skip.
+pub(crate) fn release() -> u8 {
+    // Shapes, not entropy. A high-entropy heuristic flags every hash in the
+    // changelog; a shape flags the thing that is actually dangerous.
+    const SECRET_SHAPES: &str = concat!(
+        "(api[_-]?key|secret[_-]?key|BEGIN (RSA|EC|OPENSSH|PGP) PRIVATE|",
+        "password *[:=] *[\"']|sk-ant-[A-Za-z0-9_-]{8}|ghp_[A-Za-z0-9]{20}|",
+        "github_pat_[A-Za-z0-9_]{20}|AKIA[0-9A-Z]{16}|xox[baprs]-[A-Za-z0-9-]{10})"
+    );
+
+    println!("verify-release — is this tree safe to publish?\n");
+    let mut r = Report::default();
+    let hits = git_grep(&["-lIE", SECRET_SHAPES]);
+    r.check(
+        hits.is_empty(),
+        "no secret-shaped string in a tracked file",
+        || hits.join(", "),
+    );
+
+    // A credential file that was committed and later deleted is still in the
+    // history, and a public clone carries the history.
+    let ever = git_lines(&[
+        "log",
+        "--all",
+        "--pretty=format:",
+        "--name-only",
+        "--diff-filter=A",
+    ]);
+    let credentials: Vec<String> = ever
+        .into_iter()
+        .filter(|path| {
+            // Lower-cased first, so `KEY.PEM` is caught too; clippy's
+            // `case_sensitive_file_extension_comparisons` is satisfied by
+            // comparing the parsed extension rather than the string's tail.
+            let lower = path.to_ascii_lowercase();
+            let extension = std::path::Path::new(&lower)
+                .extension()
+                .map(|e| e.to_string_lossy().into_owned())
+                .unwrap_or_default();
+            matches!(extension.as_str(), "pem" | "p12" | "pfx" | "jks" | "key")
+                || lower.ends_with("/.env")
+                || lower == ".env"
+                || lower.contains("id_rsa")
+                || lower.contains("id_ed25519")
+                || lower.contains("credentials")
+        })
+        .collect();
+    r.check(
+        credentials.is_empty(),
+        "no credential-shaped file was ever added, on any branch",
+        || credentials.join(", "),
+    );
+
+    // **The identity of whoever runs this, not a pattern for "developer".**
+    //
+    // A generic pattern was tried first and it flags fixtures: this tree has
+    // `/home/u/` nineteen times and `/home/agent/` four times, all of them
+    // fabricated paths in policy tests, and `user@UID.service` is a systemd
+    // unit name rather than an address. Flagging those teaches people to
+    // ignore the check.
+    //
+    // What is actually dangerous is **this** machine's username and **this**
+    // committer's address, and that is knowable. It generalises for free: each
+    // contributor's run catches their own leak, which is the only leak they can
+    // do anything about.
+    let user = std::env::var("USER")
+        .ok()
+        .filter(|u| u.len() >= 3 && u != "root" && u != "user");
+    match &user {
+        Some(user) => {
+            let mine = git_grep(&["-lIF", &format!("/home/{user}")]);
+            let media = git_grep(&["-lIF", &format!("/media/{user}")]);
+            let hits: Vec<String> = mine.into_iter().chain(media).collect();
+            r.check(
+                hits.is_empty(),
+                "no path from this machine's home in a tracked file",
+                || hits.join(", "),
+            );
+        }
+        // Absence recorded as absence: a check that silently passed because it
+        // could not read `$USER` would be worse than one that says so.
+        None => println!("  SKIP  this machine's home — $USER is unset or generic"),
+    }
+
+    let committer = std::process::Command::new("git")
+        .args(["config", "user.email"])
+        .output()
+        .ok()
+        .filter(|o| o.status.success())
+        .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_owned())
+        .filter(|e| e.contains('@'));
+    match &committer {
+        Some(mail) => {
+            // The files that are *meant* to carry it: the citation, the
+            // security contact, and the licence notices.
+            let hits: Vec<String> = git_grep(&["-lIF", mail])
+                .into_iter()
+                .filter(|f| {
+                    !matches!(
+                        f.as_str(),
+                        "CITATION.cff"
+                            | "SECURITY.md"
+                            | "NOTICE"
+                            | "LICENSE.md"
+                            | "CONTRIBUTING.md"
+                    ) && !f.starts_with("LICENSE-")
+                })
+                .collect();
+            r.check(
+                hits.is_empty(),
+                "the committer's address appears only where it belongs",
+                || hits.join(", "),
+            );
+        }
+        None => println!("  SKIP  the committer's address — git has no user.email"),
+    }
+
+    let artefacts = git_lines(&["ls-files"])
+        .into_iter()
+        .filter(|p| p.contains("/target/") || p.starts_with("target/"))
+        .collect::<Vec<String>>();
+    r.check(artefacts.is_empty(), "no build artefact is tracked", || {
+        artefacts.join(", ")
+    });
+
+    r.finish("verify-release")
+}
+
+/// `git grep` over tracked files, returning the matching paths.
+fn git_grep(args: &[&str]) -> Vec<String> {
+    let mut all = vec!["grep"];
+    all.extend_from_slice(args);
+    git_lines(&all)
+}
+
+/// A git invocation's stdout as lines, empty where git is absent or fails.
+///
+/// A failure is **not** reported as "clean": `git grep` exits non-zero when it
+/// matches nothing, which is the common case here, so the two are told apart by
+/// the caller asking for paths rather than for an exit code.
+fn git_lines(args: &[&str]) -> Vec<String> {
+    std::process::Command::new("git")
+        .args(args)
+        .output()
+        .ok()
+        .map(|o| {
+            String::from_utf8_lossy(&o.stdout)
+                .lines()
+                .map(str::trim)
+                .filter(|l| !l.is_empty())
+                .map(ToOwned::to_owned)
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
 pub(crate) fn docs() -> u8 {
     println!("verify-docs — cross-document consistency\n");
     let mut r = Report::default();

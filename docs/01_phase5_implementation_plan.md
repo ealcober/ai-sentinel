@@ -3868,6 +3868,7 @@ The consequence is worth stating: **the command surface becomes the plan's own p
 | `cargo xtask verify-budgets` | `F0.GATE.04` | F0 | `commit` |
 | `cargo xtask verify-backlog` | `F0.REPO.03` | F0 | `commit` |
 | `cargo xtask verify-docs` | `F0.REPO.03` | F0 | `commit` |
+| `cargo xtask verify-release` | `F0.REPO.03` | F0 | — **not a gate member**, deliberately. It answers *"is this tree safe to publish"*: no secret-shaped string in a tracked file, no credential-shaped filename ever added in any commit on any branch, no path from a developer's machine, no email address, and no build artefact tracked. That is a question asked before a release, not one every commit should pay for — and the value is that *"we checked"* becomes *"the check is in the tree and here is its output"* |
 | `cargo xtask verify-layering` | `F0.REPO.03` | F0 | `commit` |
 
 **`vm-*`**

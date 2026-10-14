@@ -710,7 +710,10 @@ In this order, and stopping at the first that disagrees.
 
 # 2. Point this working copy at it, keeping the old remote under another name
 #    so nothing is lost if you change your mind.
-cd "/media/ealcober/DATOS_ACTIVOS/CODE 2026/AI-SYSTEM-MONITOR"
+cd <the working copy>          # a placeholder on purpose: an absolute path here
+                               # is this machine's layout, and `verify-release`
+                               # fails on it — as it did on the first draft of
+                               # this very document
 git remote rename origin old-origin
 git remote add origin git@github.com:ealcober/AI-SENTINEL-EALCOBER.git
 
